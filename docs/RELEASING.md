@@ -44,7 +44,7 @@ A tag with a suffix, such as `v0.2.0-rc.1`, is published as a prerelease and doe
 
 1. It runs the CI workflow, `.github/workflows/ci.yml`, with every job: build, vet and race tests on macOS and Linux, lint, and the Docker integration test.
 Nothing is published unless they all pass.
-2. It checks that `HOMEBREW_TAP_GITHUB_TOKEN` is set.
+2. It checks that the tag points at a commit on `main` and that `HOMEBREW_TAP_GITHUB_TOKEN` is set.
 3. It runs GoReleaser, `go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --clean`, with the newest stable Go.
 The job has `contents: write` on this repository and no other permission.
 

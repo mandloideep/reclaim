@@ -178,7 +178,7 @@ type Scanner interface {
 }
 ```
 
-`Env` carries the roots, the home directory, the OS, the time the scan started, the folders holding installed applications, an environment variable reader, a command runner for asking tools where their caches live, a Docker client that may be nil, the Docker label filter, the size walker, the shared project walk, sizes already measured in the same run, a logger and a diagnostics sink for warnings and notes.
+`Env` carries the roots, the home directory, the OS, the time the scan started, the folders holding installed applications, the models folder of a system wide Ollama service on Linux, an environment variable reader, a command runner for asking tools where their caches live, a Docker client that may be nil, the Docker label filter, the size walker, the shared project walk, sizes already measured in the same run, a logger and a diagnostics sink for warnings and notes.
 Everything a scanner needs comes from `Env` so tests can substitute fakes.
 There is no general filesystem abstraction.
 The walker needs device ids, inodes and link counts, which an in-memory filesystem would have to fake, so scanner tests build real fixtures in temp directories instead.

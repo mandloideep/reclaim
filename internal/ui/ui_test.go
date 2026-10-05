@@ -188,8 +188,8 @@ func TestHere(t *testing.T) {
 		{Name: "README.md", Path: "/Users/me/Code/app/README.md", Size: 1200},
 	}}
 	fs := []finding.Finding{
-		{Scanner: "node_modules", Tier: finding.TierA, Path: "/Users/me/Code/app/node_modules", Size: 2_900_000_000, Restore: "npm install"},
-		{Scanner: "next", Tier: finding.TierA, Path: "/Users/me/Code/app/packages/web/.next", Size: 80_000_000},
+		{Scanner: "node_modules", Tier: finding.TierA, Path: "/Users/me/Code/app/node_modules", Size: 2_900_000_000, Action: finding.ActionRemovePath, Restore: "npm install"},
+		{Scanner: "next", Tier: finding.TierA, Path: "/Users/me/Code/app/packages/web/.next", Size: 80_000_000, Action: finding.ActionRemovePath},
 	}
 	var buf bytes.Buffer
 	New(&buf, "/Users/me", now).Here(root, fs, nil, nil)

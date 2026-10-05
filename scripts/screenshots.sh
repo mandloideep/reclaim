@@ -12,7 +12,8 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-RECLAIM_UPDATE_SCREENSHOTS=1 go test -count=1 -run '^TestScreenshots$' ./cmd/reclaim/
+# Character widths must not depend on the locale of the machine.
+RUNEWIDTH_EASTASIAN=0 RECLAIM_UPDATE_SCREENSHOTS=1 go test -count=1 -run '^TestScreenshots$' ./cmd/reclaim/
 
 mkdir -p docs/screenshots
 for name in scan here select; do

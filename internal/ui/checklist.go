@@ -734,7 +734,7 @@ func (m *Checklist) leafText(n *node) string {
 		label = shortener(m.opts.Home)(label)
 	}
 	tier := " "
-	if f.Action != finding.ActionNone {
+	if f.Actionable() {
 		tier = m.tierText(f.Tier)
 	}
 	s := box + " " + tier + " " + size(f.Size) + "  " + label + m.styles.dim.Render("  "+f.Scanner)

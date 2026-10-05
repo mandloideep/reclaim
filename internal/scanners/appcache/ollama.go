@@ -49,12 +49,13 @@ type ollamaFolder struct {
 }
 
 // ollamaFolders returns the models folders to scan: the user's, from
-// OLLAMA_MODELS or ~/.ollama/models, and on Linux the system wide service's.
+// OLLAMA_MODELS or ~/.ollama/models, and the system wide service's when the
+// environment names one, as it does on Linux.
 func ollamaFolders(env *scan.Env) []ollamaFolder {
 	user := resolve(firstNonEmpty(absVar(env, "OLLAMA_MODELS"), filepath.Join(env.Home, ".ollama", "models")))
 	out := []ollamaFolder{{dir: user}}
-	if env.GOOS == "linux" {
-		if sys := resolve(plan.OllamaSystemModels); sys != user {
+	if env.OllamaSystemModels != "" {
+		if sys := resolve(env.OllamaSystemModels); sys != user {
 			out = append(out, ollamaFolder{dir: sys, system: true})
 		}
 	}

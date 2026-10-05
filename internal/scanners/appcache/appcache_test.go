@@ -518,22 +518,24 @@ func TestOllama(t *testing.T) {
 func TestOllamaFolders(t *testing.T) {
 	home := fakeHome(t)
 	user := filepath.Join(home, ".ollama", "models")
+	system := filepath.Join(t.TempDir(), "ollama", ".ollama", "models")
 	tests := []struct {
-		name string
-		goos string
-		vars map[string]string
-		want []ollamaFolder
+		name   string
+		system string
+		vars   map[string]string
+		want   []ollamaFolder
 	}{
-		{name: "macOS", goos: "darwin", want: []ollamaFolder{{dir: user}}},
-		{name: "Linux", goos: "linux", want: []ollamaFolder{{dir: user}, {dir: plan.OllamaSystemModels, system: true}}},
-		{name: "Linux with OLLAMA_MODELS", goos: "linux", vars: map[string]string{"OLLAMA_MODELS": "/srv/models"},
-			want: []ollamaFolder{{dir: "/srv/models"}, {dir: plan.OllamaSystemModels, system: true}}},
-		{name: "OLLAMA_MODELS names the system folder", goos: "linux", vars: map[string]string{"OLLAMA_MODELS": plan.OllamaSystemModels},
-			want: []ollamaFolder{{dir: plan.OllamaSystemModels}}},
+		{name: "no system service", want: []ollamaFolder{{dir: user}}},
+		{name: "a system service", system: system, want: []ollamaFolder{{dir: user}, {dir: system, system: true}}},
+		{name: "OLLAMA_MODELS", system: system, vars: map[string]string{"OLLAMA_MODELS": "/srv/models"},
+			want: []ollamaFolder{{dir: "/srv/models"}, {dir: system, system: true}}},
+		{name: "OLLAMA_MODELS names the system folder", system: system, vars: map[string]string{"OLLAMA_MODELS": system},
+			want: []ollamaFolder{{dir: system}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := testEnv(home, tt.goos, nil)
+			env := testEnv(home, "linux", nil)
+			env.OllamaSystemModels = tt.system
 			env.Getenv = func(k string) string { return tt.vars[k] }
 			require.Equal(t, tt.want, ollamaFolders(&env))
 		})

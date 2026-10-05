@@ -68,7 +68,7 @@ func (p *Printer) markdownTable(g *Group) {
 // mdTier is the tier cell of a finding, blank for findings listed for
 // attention only, which carry no action.
 func mdTier(f *finding.Finding) string {
-	if f.Action == finding.ActionNone {
+	if !f.Actionable() {
 		return ""
 	}
 	return string(f.Tier)

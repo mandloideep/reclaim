@@ -41,10 +41,12 @@ func TestScreenshots(t *testing.T) {
 	// lipgloss reads it from the environment.
 	t.Setenv("CLICOLOR_FORCE", "1")
 	t.Setenv("NO_COLOR", "")
-	// The provenance line shows the local time of the report.
-	local := time.Local
-	time.Local = time.UTC
-	t.Cleanup(func() { time.Local = local })
+	// Box drawing characters count as one column, as they do outside East
+	// Asian locales; go-runewidth reads this once at startup, so
+	// scripts/screenshots.sh sets RUNEWIDTH_EASTASIAN=0.
+	if os.Getenv("RUNEWIDTH_EASTASIAN") == "1" {
+		t.Skip("East Asian character widths are on")
+	}
 
 	a, out := screenshotApp(t)
 	shots := map[string]string{}

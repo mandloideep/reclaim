@@ -91,7 +91,7 @@ func (p *Printer) Tier(t finding.Tier) string {
 // attention only carry no action, so their tier column is blank: the tier
 // letter would suggest that they could be selected.
 func (p *Printer) TierCell(f *finding.Finding) string {
-	if f.Action == finding.ActionNone {
+	if !f.Actionable() {
 		return " "
 	}
 	return p.Tier(f.Tier)
