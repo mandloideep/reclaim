@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mandloideep/reclaim/internal/dockerx"
 	"github.com/mandloideep/reclaim/internal/execx"
@@ -35,6 +36,21 @@ type Scanner interface {
 	Scan(ctx context.Context, env Env) ([]finding.Finding, error)
 }
 
+// CatchAll is implemented by scanners that report every entry of a shared
+// folder, such as the one that reports each entry of ~/Library/Caches. The
+// runner drops their findings that overlap a finding of another scanner, so
+// the same bytes are never offered twice and the specific scanner, which
+// knows the right tier and restore hint, wins.
+type CatchAll interface {
+	// CatchAll reports whether the scanner is a catch-all.
+	CatchAll() bool
+}
+
+func isCatchAll(s Scanner) bool {
+	c, ok := s.(CatchAll)
+	return ok && c.CatchAll()
+}
+
 // Env carries everything a scanner needs, so tests can substitute fakes.
 type Env struct {
 	// Roots are the directories project scanners walk.
@@ -43,6 +59,13 @@ type Env struct {
 	Home string
 	// GOOS is the operating system, as in runtime.GOOS.
 	GOOS string
+	// Now is when the scan started. Scanners that judge age, such as the
+	// Downloads attention list, measure it from here.
+	Now time.Time
+	// Applications are the folders that hold installed applications, such as
+	// /Applications and ~/Applications on macOS. The Downloads scanner looks
+	// there for the apps that installers belong to.
+	Applications []string
 	// Getenv reads an environment variable. Nil reads nothing.
 	Getenv func(string) string
 	// Exec runs external tools, such as "npm config get cache".
@@ -236,6 +259,7 @@ func Run(ctx context.Context, scanners []Scanner, env Env, concurrency int) Resu
 	var (
 		mu       sync.Mutex
 		findings []finding.Finding
+		catchAll []finding.Finding
 		wg       sync.WaitGroup
 		sem      = make(chan struct{}, concurrency)
 	)
@@ -251,7 +275,11 @@ func Run(ctx context.Context, scanners []Scanner, env Env, concurrency int) Resu
 			senv.Diag = diag.For(s.Name())
 			got := runOne(ctx, s, senv)
 			mu.Lock()
-			findings = append(findings, got...)
+			if isCatchAll(s) {
+				catchAll = append(catchAll, got...)
+			} else {
+				findings = append(findings, got...)
+			}
 			mu.Unlock()
 		})
 	}
@@ -259,11 +287,38 @@ func Run(ctx context.Context, scanners []Scanner, env Env, concurrency int) Resu
 	if err := ctx.Err(); err != nil {
 		diag.Warn("", "scan interrupted: "+err.Error())
 	}
+	findings = append(findings, withoutOverlaps(catchAll, findings)...)
 	finding.Sort(findings)
 	if findings == nil {
 		findings = []finding.Finding{}
 	}
 	return Result{Findings: findings, Warnings: diag.Warnings(), Notes: diag.Notes()}
+}
+
+// withoutOverlaps returns the catch-all findings whose path neither contains
+// nor lies inside the path of a specific finding.
+func withoutOverlaps(catchAll, specific []finding.Finding) []finding.Finding {
+	var paths []string
+	for i := range specific {
+		if specific[i].Path != "" {
+			paths = append(paths, specific[i].Path)
+		}
+	}
+	out := make([]finding.Finding, 0, len(catchAll))
+	for _, f := range catchAll {
+		overlaps := f.Path != "" && slices.ContainsFunc(paths, func(p string) bool {
+			return isWithin(p, f.Path) || isWithin(f.Path, p)
+		})
+		if !overlaps {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// isWithin reports whether path is parent or lies below it.
+func isWithin(path, parent string) bool {
+	return path == parent || strings.HasPrefix(path, strings.TrimSuffix(parent, string(filepath.Separator))+string(filepath.Separator))
 }
 
 func runOne(ctx context.Context, s Scanner, env Env) (out []finding.Finding) {

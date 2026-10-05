@@ -316,6 +316,13 @@ type Options struct {
 	// CommitTime returns the time of the last commit of a git project. When
 	// nil, last activity uses file modification times only.
 	CommitTime func(ctx context.Context, root string) (time.Time, error)
+	// Exclude lists clean absolute paths the walk never enters. A root that
+	// is excluded, or lies inside an excluded path, is not walked at all.
+	Exclude []string
+}
+
+func (o *Options) excluded(path string) bool {
+	return slices.ContainsFunc(o.Exclude, func(ex string) bool { return IsWithin(path, ex) })
 }
 
 // NormalizeRoots cleans the roots, drops duplicates and drops roots nested
@@ -366,6 +373,9 @@ func Discover(ctx context.Context, roots []string, matchers []Matcher, opts Opti
 	for _, root := range idx.Roots {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if opts.excluded(root) {
+			continue
 		}
 		info, err := os.Lstat(root)
 		if err != nil {
@@ -475,6 +485,9 @@ func (ds *discovery) visit(t task) {
 				continue
 			}
 			child := filepath.Join(t.path, name)
+			if ds.opts.excluded(child) {
+				continue
+			}
 			info, err := e.Info()
 			if err != nil {
 				if !errors.Is(err, fs.ErrNotExist) {

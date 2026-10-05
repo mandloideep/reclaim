@@ -226,6 +226,22 @@ func TestDiscoverDepth(t *testing.T) {
 	require.Equal(t, []string{filepath.Join(root, "a", "target")}, artifactPaths(ix))
 }
 
+func TestDiscoverExclude(t *testing.T) {
+	root := t.TempDir()
+	mkdir(t, filepath.Join(root, "keep", "target"))
+	mkdir(t, filepath.Join(root, "archive", "old", "target"))
+	mkdir(t, filepath.Join(root, "keep", "vendor", "target"))
+	other := filepath.Join(t.TempDir(), "excluded-root")
+	mkdir(t, filepath.Join(other, "target"))
+
+	ix, err := Discover(context.Background(), []string{root, other}, []Matcher{nameMatcher("target")}, Options{
+		Home:    filepath.Dir(root),
+		Exclude: []string{filepath.Join(root, "archive"), filepath.Join(root, "keep", "vendor", "target"), other},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{filepath.Join(root, "keep", "target")}, artifactPaths(ix))
+}
+
 func TestDiscoverEnclosingProject(t *testing.T) {
 	home := t.TempDir()
 	repo := filepath.Join(home, "Code", "repo")
