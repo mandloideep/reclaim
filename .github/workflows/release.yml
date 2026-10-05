@@ -1,0 +1,43 @@
+# Publishes a release when a tag such as v0.1.0 is pushed: the CI jobs run
+# first, then GoReleaser builds the archives, creates the GitHub release with
+# notes from the commit subjects and updates the formula in
+# mandloideep/homebrew-tap. docs/RELEASING.md has the details.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+  goreleaser:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      # Create the release and upload its assets. Nothing broader.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # GoReleaser reads the previous tag and the commits since it.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          # Release binaries are built with the newest Go, which also runs
+          # GoReleaser; CI tests the version go.mod names.
+          go-version: stable
+          check-latest: true
+      - name: Check the tap token
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_GITHUB_TOKEN" ]; then
+            echo "::error::The HOMEBREW_TAP_GITHUB_TOKEN secret is missing; see docs/RELEASING.md."
+            exit 1
+          fi
+      - name: GoReleaser
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --clean
