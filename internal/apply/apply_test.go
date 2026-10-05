@@ -37,7 +37,12 @@ func newEnv(t *testing.T) env {
 		require.NoError(t, err)
 		return r
 	}
-	return env{root: filepath.Join(resolve(t.TempDir()), "Code"), home: resolve(t.TempDir())}
+	// The fake home sits as deep as a real one, /Users/me or /home/me, below
+	// the temp directory, so the minimum depth rule never masks the rule a
+	// test is about, even where the temp directory itself is shallow.
+	home := filepath.Join(resolve(t.TempDir()), "home", "me")
+	require.NoError(t, os.MkdirAll(home, 0o755))
+	return env{root: filepath.Join(resolve(t.TempDir()), "Code"), home: home}
 }
 
 func write(t *testing.T, path string, size int) {
