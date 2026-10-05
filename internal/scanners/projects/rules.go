@@ -1,0 +1,393 @@
+package projects
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/project"
+)
+
+// rules lists every artifact rule in matching order. The first rule that
+// matches a directory claims it.
+func rules() []rule {
+	return []rule{
+		{
+			name:        "node_modules",
+			ecosystem:   "node",
+			description: "node_modules dependency folders",
+			match:       named("node_modules"),
+			classify: func(d *project.Dir) verdict {
+				if d.Parent.HasFile("package.json") {
+					return verdict{tier: finding.TierA, restore: nodeInstall(d.Parent)}
+				}
+				return verdict{
+					tier:    finding.TierB,
+					restore: "reinstall the packages it held",
+					warning: "no package.json next to it, so an install will not recreate it",
+				}
+			},
+		},
+		{
+			name:        "python-venv",
+			ecosystem:   "python",
+			description: "Python virtual environments (any folder with pyvenv.cfg)",
+			match:       func(d *project.Dir) bool { return d.HasFile("pyvenv.cfg") },
+			classify: func(d *project.Dir) verdict {
+				if d.Project != nil {
+					return verdict{tier: finding.TierA, restore: pythonRestore(d)}
+				}
+				return verdict{
+					tier:    finding.TierB,
+					restore: "recreate the virtual environment and reinstall its packages",
+					warning: "not inside a project, so nothing records what was installed in it",
+				}
+			},
+		},
+		{
+			name:        "rust-target",
+			ecosystem:   "rust",
+			description: "Rust target folders next to Cargo.toml",
+			match: func(d *project.Dir) bool {
+				return d.Name == "target" && (d.Parent.HasFile("Cargo.toml") || tagContains(d, "cargo"))
+			},
+			classify: tierA("cargo build"),
+		},
+		{
+			name:        "go-build-local",
+			ecosystem:   "go",
+			description: "Go build caches inside projects (.cache/go-build or a GOCACHE layout)",
+			match: func(d *project.Dir) bool {
+				if d.Project == nil {
+					return false
+				}
+				if d.Name == "go-build" && d.Parent != nil && d.Parent.Name == ".cache" {
+					return true
+				}
+				return isGoBuildCache(d)
+			},
+			classify: func(d *project.Dir) verdict {
+				if strings.Contains(d.Name, "golangci") {
+					return verdict{tier: finding.TierA, restore: "rebuilt by the next golangci-lint run"}
+				}
+				return verdict{tier: finding.TierA, restore: "rebuilt automatically by the next go build"}
+			},
+		},
+		{
+			name:        "go-mod-local",
+			ecosystem:   "go",
+			description: "Go module caches inside projects (a GOMODCACHE layout with cache/download)",
+			match: func(d *project.Dir) bool {
+				return d.Project != nil && isGoModCache(d)
+			},
+			classify: func(*project.Dir) verdict {
+				return verdict{
+					tier:    finding.TierB,
+					restore: "downloaded again by the next go build or go mod download",
+					warning: "modules are downloaded again, which needs network access",
+				}
+			},
+		},
+		{
+			name:        "pnpm-store-local",
+			ecosystem:   "node",
+			description: "pnpm stores inside projects (a store-dir with v<N>/files)",
+			match: func(d *project.Dir) bool {
+				return d.Project != nil && isPnpmStore(d)
+			},
+			classify: func(*project.Dir) verdict {
+				return verdict{
+					tier:    finding.TierB,
+					restore: "downloaded again by the next pnpm install",
+					warning: "files hard linked into node_modules folders are only freed once those folders are removed too",
+				}
+			},
+		},
+		{
+			name:        "next",
+			ecosystem:   "node",
+			description: "Next.js .next build output",
+			match:       named(".next"),
+			classify:    tierA("next build or next dev"),
+		},
+		{
+			name:        "turbo",
+			ecosystem:   "node",
+			description: "Turborepo .turbo cache",
+			match:       named(".turbo"),
+			classify:    tierA("rebuilt by the next turbo run"),
+		},
+		{
+			name:        "nuxt",
+			ecosystem:   "node",
+			description: "Nuxt .nuxt build output",
+			match:       named(".nuxt"),
+			classify:    tierA("nuxi prepare or nuxt build"),
+		},
+		{
+			name:        "svelte-kit",
+			ecosystem:   "node",
+			description: "SvelteKit .svelte-kit build output",
+			match:       named(".svelte-kit"),
+			classify:    tierA("svelte-kit sync or vite build"),
+		},
+		{
+			name:        "parcel-cache",
+			ecosystem:   "node",
+			description: "Parcel .parcel-cache",
+			match:       named(".parcel-cache"),
+			classify:    tierA("rebuilt by the next parcel build"),
+		},
+		{
+			name:        "dist",
+			ecosystem:   "build",
+			description: "dist folders in project roots (tier A with a build config, else tier C)",
+			match:       outputDir("dist"),
+			classify:    classifyOutput,
+		},
+		{
+			name:        "build",
+			ecosystem:   "build",
+			description: "build folders in project roots (tier A with a build config, else tier C)",
+			match:       outputDir("build"),
+			classify:    classifyOutput,
+		},
+		{
+			name:        "pycache",
+			ecosystem:   "python",
+			description: "Python __pycache__ bytecode folders",
+			match:       named("__pycache__"),
+			classify:    tierA("regenerated by Python on the next import"),
+		},
+		{
+			name:        "pytest-cache",
+			ecosystem:   "python",
+			description: "pytest .pytest_cache",
+			match:       named(".pytest_cache"),
+			classify:    tierA("regenerated by the next pytest run"),
+		},
+		{
+			name:        "mypy-cache",
+			ecosystem:   "python",
+			description: "mypy .mypy_cache",
+			match:       named(".mypy_cache"),
+			classify:    tierA("regenerated by the next mypy run"),
+		},
+		{
+			name:        "ruff-cache",
+			ecosystem:   "python",
+			description: "Ruff .ruff_cache",
+			match:       named(".ruff_cache"),
+			classify:    tierA("regenerated by the next ruff run"),
+		},
+		{
+			name:        "gradle-project",
+			ecosystem:   "java",
+			description: "Gradle project .gradle folders next to a Gradle build",
+			match: func(d *project.Dir) bool {
+				return d.Name == ".gradle" && d.Parent.HasAny("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "gradlew")
+			},
+			classify: tierA("regenerated by the next Gradle build"),
+		},
+		{
+			name:        "pods",
+			ecosystem:   "cocoapods",
+			description: "CocoaPods Pods folders next to a Podfile",
+			match: func(d *project.Dir) bool {
+				return d.Name == "Pods" && d.Parent.HasFile("Podfile")
+			},
+			classify: tierA("pod install"),
+		},
+		{
+			name:        "dart-tool",
+			ecosystem:   "dart",
+			description: "Dart and Flutter .dart_tool folders next to pubspec.yaml",
+			match: func(d *project.Dir) bool {
+				return d.Name == ".dart_tool" && d.Parent.HasFile("pubspec.yaml")
+			},
+			classify: tierA("dart pub get or flutter pub get"),
+		},
+		{
+			name:        "terraform",
+			ecosystem:   "terraform",
+			description: "Terraform .terraform provider and module folders",
+			match: func(d *project.Dir) bool {
+				return d.Name == ".terraform" && (d.Parent.HasSuffix(".tf") || d.Parent.HasFile(".terraform.lock.hcl"))
+			},
+			classify: tierA("terraform init (select your workspace again if you use one)"),
+		},
+	}
+}
+
+func named(name string) func(d *project.Dir) bool {
+	return func(d *project.Dir) bool { return d.Name == name }
+}
+
+// tierA classifies every match as tier A with a fixed restore hint.
+func tierA(restore string) func(*project.Dir) verdict {
+	return func(*project.Dir) verdict { return verdict{tier: finding.TierA, restore: restore} }
+}
+
+// outputDir matches a build output folder directly inside a project root.
+func outputDir(name string) func(d *project.Dir) bool {
+	return func(d *project.Dir) bool {
+		return d.Name == name && d.Parent != nil && d.Parent.IsProject()
+	}
+}
+
+func classifyOutput(d *project.Dir) verdict {
+	if restore, ok := buildConfig(d.Parent); ok {
+		return verdict{tier: finding.TierA, restore: restore}
+	}
+	return verdict{
+		tier:    finding.TierC,
+		restore: "unknown, no build config was found",
+		warning: "no build config next to it, so this may be the only copy of its contents",
+	}
+}
+
+// buildConfig reports whether the project directory has a build configuration
+// that regenerates its dist or build folder, and the command that does it.
+func buildConfig(p *project.Dir) (string, bool) {
+	if hasBuildScript(p) {
+		return nodeRunner(p) + " run build", true
+	}
+	jsConfigs := []string{
+		"vite.config.", "webpack.config.", "rollup.config.", "tsup.config.", "esbuild.config.",
+		"next.config.", "nuxt.config.", "svelte.config.", "astro.config.", "forge.config.",
+		"gulpfile.", "Gruntfile.",
+	}
+	for _, prefix := range jsConfigs {
+		if p.HasPrefix(prefix) {
+			return "rebuild with the project's " + strings.TrimSuffix(prefix, ".") + " setup", true
+		}
+	}
+	switch {
+	case p.HasAny("angular.json"):
+		return "ng build", true
+	case p.HasAny("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"):
+		return "gradle build", true
+	case p.HasAny("pyproject.toml", "setup.py", "setup.cfg"):
+		return "python -m build", true
+	case p.HasAny("CMakeLists.txt", "meson.build"):
+		return "re-run the CMake or Meson build", true
+	case p.HasAny("pubspec.yaml"):
+		return "flutter build", true
+	}
+	return "", false
+}
+
+// hasBuildScript reports whether package.json defines a "build" script.
+func hasBuildScript(p *project.Dir) bool {
+	data, err := p.ReadFile("package.json", 4<<20)
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if json.Unmarshal(data, &pkg) != nil {
+		return false
+	}
+	_, ok := pkg.Scripts["build"]
+	return ok
+}
+
+// nodeRunner picks the package manager from the lockfile.
+func nodeRunner(p *project.Dir) string {
+	switch {
+	case p.HasFile("pnpm-lock.yaml"):
+		return "pnpm"
+	case p.HasFile("yarn.lock"):
+		return "yarn"
+	case p.HasAny("bun.lockb", "bun.lock"):
+		return "bun"
+	default:
+		return "npm"
+	}
+}
+
+func nodeInstall(p *project.Dir) string {
+	return nodeRunner(p) + " install"
+}
+
+func pythonRestore(venv *project.Dir) string {
+	p := venv.Parent
+	switch {
+	case p.HasFile("uv.lock"):
+		return "uv sync"
+	case p.HasFile("poetry.lock"):
+		return "poetry install"
+	case p.HasFile("Pipfile"):
+		return "pipenv install"
+	case p.HasFile("requirements.txt"):
+		return "python -m venv " + venv.Name + " && " + venv.Name + "/bin/pip install -r requirements.txt"
+	default:
+		return "recreate the virtual environment and reinstall the project's dependencies"
+	}
+}
+
+// tagContains reports whether the directory has a CACHEDIR.TAG mentioning word.
+func tagContains(d *project.Dir, word string) bool {
+	data, err := d.ReadFile("CACHEDIR.TAG", 4096)
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(bytes.ToLower(data), []byte(word))
+}
+
+// isPnpmStore recognizes a pnpm content addressable store: a folder holding a
+// versioned store such as v10 with a files folder inside.
+func isPnpmStore(d *project.Dir) bool {
+	for _, name := range d.Names() {
+		if len(name) < 2 || name[0] != 'v' || !isDigits(name[1:]) || !d.HasDir(name) {
+			continue
+		}
+		if info, err := os.Lstat(filepath.Join(d.Path, name, "files")); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// isGoModCache recognizes the layout of a Go module cache: a cache/download
+// folder next to the extracted module folders.
+func isGoModCache(d *project.Dir) bool {
+	if !d.HasDir("cache") {
+		return false
+	}
+	info, err := os.Lstat(filepath.Join(d.Path, "cache", "download"))
+	return err == nil && info.IsDir()
+}
+
+// isGoBuildCache recognizes the layout the Go command writes to GOCACHE: a
+// trim.txt file next to a README naming the Go build system or the 00 to ff
+// fan out folders, or a CACHEDIR.TAG written by Go.
+func isGoBuildCache(d *project.Dir) bool {
+	if d.HasFile("trim.txt") {
+		if readme, err := d.ReadFile("README", 4096); err == nil && bytes.Contains(readme, []byte("Go build system")) {
+			return true
+		}
+		if d.HasDir("00") && d.HasDir("ff") {
+			return true
+		}
+	}
+	data, err := d.ReadFile("CACHEDIR.TAG", 4096)
+	if err != nil {
+		return false
+	}
+	low := bytes.ToLower(data)
+	return bytes.Contains(low, []byte("go build")) || bytes.Contains(low, []byte("created by go"))
+}
