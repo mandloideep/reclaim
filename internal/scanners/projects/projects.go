@@ -9,6 +9,7 @@ package projects
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 
 	"github.com/mandloideep/reclaim/internal/finding"
@@ -95,7 +96,9 @@ func (s *Scanner) Scan(ctx context.Context, env scan.Env) ([]finding.Finding, er
 			if size == 0 {
 				return
 			}
-			out[i] = s.finding(a, size)
+			f := s.finding(a, size)
+			checkGit(ctx, env, a, &f)
+			out[i] = f
 			keep[i] = true
 		}()
 	}
@@ -132,6 +135,47 @@ func (s *Scanner) finding(a project.Artifact, size int64) finding.Finding {
 		}
 	}
 	return f
+}
+
+// checkGit downgrades a finding to tier C when it lives in a git working
+// tree that tracks files inside it or does not ignore all of it. A committed
+// build folder, such as electron-builder's build resources, matches the
+// rules by name but holds source, so it must never be preselected. When git
+// is not installed the classification stands.
+func checkGit(ctx context.Context, env scan.Env, a project.Artifact, f *finding.Finding) {
+	if f.Tier == finding.TierC || a.Project == nil || !a.Project.Git || env.Exec == nil {
+		return
+	}
+	if _, err := env.Exec.LookPath("git"); err != nil {
+		return
+	}
+	rel, err := filepath.Rel(a.Project.Root, a.Dir.Path)
+	if err != nil {
+		return
+	}
+	root := a.Project.Root
+	// Files in the index, including ones added with --force inside an
+	// ignored folder, are committed work.
+	tracked, err := env.Exec.Output(ctx, "git", "-C", root, "ls-files", "--cached", "--", rel)
+	if err != nil {
+		f.Tier = finding.TierC
+		f.Warning = "git could not tell whether this folder holds committed files"
+		return
+	}
+	if tracked != "" {
+		f.Tier = finding.TierC
+		f.Warning = "git tracks files inside this folder, so removing it deletes committed files"
+		return
+	}
+	// Untracked files that no ignore rule covers may be work not yet added.
+	// Nested ignore files count, such as the "*" a virtual environment or a
+	// tool cache writes into itself.
+	untracked, err := env.Exec.Output(ctx, "git", "-C", root, "ls-files", "--others", "--exclude-standard",
+		"--directory", "--no-empty-directory", "--", rel)
+	if err != nil || untracked != "" {
+		f.Tier = finding.TierC
+		f.Warning = "git does not ignore this folder, so it may hold work that is not committed yet"
+	}
 }
 
 // Scanners returns one scanner per rule, in matching order.

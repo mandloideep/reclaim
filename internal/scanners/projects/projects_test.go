@@ -3,12 +3,14 @@ package projects
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/fsx"
 	"github.com/mandloideep/reclaim/internal/project"
@@ -37,7 +39,7 @@ func runAll(t *testing.T, root string) map[string]finding.Finding {
 	env := scan.Env{
 		Roots:    []string{root},
 		Walker:   fsx.NewWalker(4),
-		Projects: project.NewSource([]string{root}, Matchers(all), project.Options{}),
+		Projects: project.NewSource([]string{root}, Matchers(all), project.Options{Home: filepath.Dir(root)}),
 	}
 	ss := make([]scan.Scanner, 0, len(all))
 	for _, s := range all {
@@ -202,6 +204,73 @@ func TestLastUsedComesFromProjectActivity(t *testing.T) {
 	}
 	got := runAll(t, root)
 	require.True(t, old.Equal(got["app/node_modules"].LastUsed), "got %v", got["app/node_modules"].LastUsed)
+}
+
+// TestGitTrackedFoldersAreTierC uses the real git binary on a throwaway
+// repository, because the meaning of check-ignore and ls-files output is the
+// point of the test.
+func TestGitTrackedFoldersAreTierC(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	repo := filepath.Join(root, "app")
+	fixture(t, repo, map[string]string{
+		".gitignore":              "node_modules/\ndist/\n.next\n",
+		"package.json":            `{"scripts":{"build":"electron-builder"}}`,
+		"node_modules/a/index.js": "dep",
+		"dist/app.js":             "built",
+		"dist/keep.txt":           "force added",
+		".next/cache/x":           "next",
+		"pyproject.toml":          "[project]",
+		".venv/pyvenv.cfg":        "home = /usr/bin",
+		".venv/.gitignore":        "*",
+		".venv/lib/site.py":       "ignored by its own .gitignore",
+		"build/icon.icns":         "icon committed to the repository",
+		"__pycache__/m.pyc":       "not ignored and not committed",
+	})
+	gitCmd := func(args ...string) {
+		cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+	}
+	gitCmd("init", "-q")
+	gitCmd("add", ".gitignore", "package.json", "build/icon.icns")
+	gitCmd("add", "--force", "dist/keep.txt")
+	gitCmd("commit", "-q", "-m", "init")
+
+	all := Scanners()
+	env := scan.Env{
+		Roots:    []string{root},
+		Walker:   fsx.NewWalker(4),
+		Exec:     execx.OS{},
+		Projects: project.NewSource([]string{root}, Matchers(all), project.Options{Home: filepath.Dir(root)}),
+	}
+	ss := make([]scan.Scanner, 0, len(all))
+	for _, s := range all {
+		ss = append(ss, s)
+	}
+	res := scan.Run(context.Background(), ss, env, 4)
+	tiers := map[string]finding.Tier{}
+	warnings := map[string]string{}
+	for _, f := range res.Findings {
+		rel, err := filepath.Rel(repo, f.Path)
+		require.NoError(t, err)
+		tiers[rel] = f.Tier
+		warnings[rel] = f.Warning
+	}
+	require.Equal(t, map[string]finding.Tier{
+		"node_modules": finding.TierA,
+		".next":        finding.TierA,
+		".venv":        finding.TierA,
+		"dist":         finding.TierC,
+		"build":        finding.TierC,
+		"__pycache__":  finding.TierC,
+	}, tiers)
+	require.Contains(t, warnings["dist"], "tracks files")
+	require.Contains(t, warnings["build"], "tracks files")
+	require.Contains(t, warnings["__pycache__"], "does not ignore")
 }
 
 func TestScannerMetadata(t *testing.T) {
