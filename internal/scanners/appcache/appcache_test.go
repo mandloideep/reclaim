@@ -238,6 +238,140 @@ func TestDerivedData(t *testing.T) {
 	require.Equal(t, finding.TierA, got[0].Tier)
 }
 
+// TestDerivedDataLocation reads Xcode's custom DerivedData location through
+// the command runner: a location inside the home directory is scanned instead
+// of the default and offers only folders named the way Xcode names them, and
+// every other answer falls back to the default or scans nothing.
+func TestDerivedDataLocation(t *testing.T) {
+	const query = "defaults read com.apple.dt.Xcode IDECustomDerivedDataLocation"
+	const project = "App-bxrjzktdwfaugpcvhzjmlzkhwqyi"
+	home := fakeHome(t)
+	def := filepath.Join(home, "Library", "Developer", "Xcode", "DerivedData")
+	put(t, filepath.Join(def, "Old-abc", "Build", "x"), 500)
+	custom := filepath.Join(home, "Builds", "DerivedData")
+	put(t, filepath.Join(custom, project, "Build", "x"), 700)
+	put(t, filepath.Join(custom, "ModuleCache.noindex", "y"), 300)
+	put(t, filepath.Join(custom, "notes", "todo.txt"), 900)
+	put(t, filepath.Join(custom, "App-SHORT", "x"), 900)
+	outside := filepath.Join(filepath.Dir(filepath.Dir(home)), "Volumes", "Fast", "DerivedData")
+	put(t, filepath.Join(outside, project, "x"), 100)
+
+	tests := []struct {
+		name  string
+		tools map[string]string
+		value *string
+		want  []string
+		warn  string
+		note  string
+	}{
+		{name: "defaults is missing", want: []string{filepath.Join(def, "Old-abc")}},
+		{name: "the key is not set", tools: map[string]string{"defaults": "/usr/bin/defaults"}, want: []string{filepath.Join(def, "Old-abc")}},
+		{name: "an empty value", tools: map[string]string{"defaults": "/usr/bin/defaults"}, value: ptr("  \n"), want: []string{filepath.Join(def, "Old-abc")}},
+		{
+			name: "a custom location", tools: map[string]string{"defaults": "/usr/bin/defaults"}, value: ptr(custom + "\n"),
+			want: []string{filepath.Join(custom, project), filepath.Join(custom, "ModuleCache.noindex")},
+		},
+		{
+			name: "a custom location under ~", tools: map[string]string{"defaults": "/usr/bin/defaults"}, value: ptr("~/Builds/DerivedData"),
+			want: []string{filepath.Join(custom, project), filepath.Join(custom, "ModuleCache.noindex")},
+		},
+		{name: "outside the home directory", tools: map[string]string{"defaults": "/usr/bin/defaults"}, value: ptr(outside), note: "outside the home folder"},
+		{name: "the home directory itself", tools: map[string]string{"defaults": "/usr/bin/defaults"}, value: ptr(home), note: "outside the home folder"},
+		{name: "a relative path", tools: map[string]string{"defaults": "/usr/bin/defaults"}, value: ptr("Builds"), warn: "not an absolute path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &execx.Fake{Tools: tt.tools, Outputs: map[string]string{}}
+			if tt.value != nil {
+				fake.Outputs[query] = *tt.value
+			}
+			res := scan.Run(context.Background(), []scan.Scanner{scannerNamed(t, "xcode-derived-data")}, testEnv(home, "darwin", fake), 1)
+			got := paths(res.Findings)
+			want := append([]string{}, tt.want...)
+			slices.Sort(want)
+			require.Equal(t, want, append([]string{}, got...))
+			for _, f := range res.Findings {
+				require.Equal(t, finding.TierA, f.Tier)
+				require.Equal(t, finding.ActionRemovePath, f.Action)
+			}
+			if tt.warn != "" {
+				require.Len(t, res.Warnings, 1)
+				require.Contains(t, res.Warnings[0].Message, tt.warn)
+			} else {
+				require.Empty(t, res.Warnings)
+			}
+			if tt.note != "" {
+				require.Len(t, res.Notes, 1)
+				require.Contains(t, res.Notes[0], tt.note)
+			} else {
+				require.Empty(t, res.Notes)
+			}
+		})
+	}
+}
+
+func TestDerivedDataEntry(t *testing.T) {
+	for name, want := range map[string]bool{
+		"App-bxrjzktdwfaugpcvhzjmlzkhwqyi":     true,
+		"My-App-bxrjzktdwfaugpcvhzjmlzkhwqyi":  true,
+		"ModuleCache.noindex":                  true,
+		"SymbolCache.noindex":                  true,
+		".noindex":                             false,
+		"-bxrjzktdwfaugpcvhzjmlzkhwqyi":        false,
+		"App-bxrjzktdwfaugpcvhzjmlzkhwqy":      false,
+		"App-bxrjzktdwfaugpcvhzjmlzkhwqyiz":    false,
+		"App-BXRJZKTDWFAUGPCVHZJMLZKHWQYI":     false,
+		"App-bxrjzktdwfaugpcvhzjmlzkhwq1i":     false,
+		"notes":                                false,
+		"App-bxrjzktdwfaugpcvhzjmlzkhwqyi.bak": false,
+	} {
+		require.Equal(t, want, derivedDataEntry(name), name)
+	}
+}
+
+// TestApplyRemovesOnlyCustomDerivedData applies every finding from a custom
+// DerivedData location and checks that exactly those folders are gone: the
+// location itself, the folders Xcode did not make and the default location
+// all survive.
+func TestApplyRemovesOnlyCustomDerivedData(t *testing.T) {
+	home := fakeHome(t)
+	custom := filepath.Join(home, "Builds", "DerivedData")
+	put(t, filepath.Join(custom, "App-bxrjzktdwfaugpcvhzjmlzkhwqyi", "Build", "x"), 700)
+	put(t, filepath.Join(custom, "ModuleCache.noindex", "y"), 300)
+	put(t, filepath.Join(custom, "notes", "todo.txt"), 900)
+	put(t, filepath.Join(custom, "info.plist"), 10)
+	put(t, filepath.Join(home, "Library", "Developer", "Xcode", "DerivedData", "Old-abc", "x"), 500)
+	fake := &execx.Fake{
+		Tools:   map[string]string{"defaults": "/usr/bin/defaults"},
+		Outputs: map[string]string{"defaults read com.apple.dt.Xcode IDECustomDerivedDataLocation": custom},
+	}
+	res := scan.Run(context.Background(), []scan.Scanner{scannerNamed(t, "xcode-derived-data")}, testEnv(home, "darwin", fake), 1)
+	require.Len(t, res.Findings, 2)
+	r := &finding.Report{Version: finding.ReportVersion, Created: now, Roots: []string{home}, Findings: res.Findings}
+	p, err := plan.New(r, r.Findings, "host", now)
+	require.NoError(t, err)
+
+	before := tree(t, home)
+	sum, err := apply.Run(context.Background(), p, apply.Options{Home: home, Walker: fsx.NewWalker(2), Exec: fake, Now: func() time.Time { return now }})
+	require.NoError(t, err)
+	for _, o := range sum.Outcomes {
+		require.Equal(t, apply.StatusDone, o.Status, o.Action.Label())
+	}
+	targets := paths(res.Findings)
+	var want []string
+	for _, p := range before {
+		if !slices.ContainsFunc(targets, func(t string) bool { return p == t || strings.HasPrefix(p, t+"/") }) {
+			want = append(want, p)
+		}
+	}
+	require.Equal(t, want, tree(t, home))
+	require.FileExists(t, filepath.Join(custom, "notes", "todo.txt"))
+	require.FileExists(t, filepath.Join(custom, "info.plist"))
+	require.Empty(t, fake.Ran(), "removing folders runs no command")
+}
+
+func ptr[T any](v T) *T { return &v }
+
 func TestSimulators(t *testing.T) {
 	home := fakeHome(t)
 	devices := filepath.Join(home, "Library", "Developer", "CoreSimulator", "Devices")

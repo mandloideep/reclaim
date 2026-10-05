@@ -74,7 +74,7 @@ func Scanners() []*Scanner {
 		{name: "puppeteer", ecosystem: "puppeteer", scan: scanPuppeteer,
 			description: "browsers downloaded by Puppeteer"},
 		{name: "xcode-derived-data", ecosystem: "xcode", scan: scanDerivedData,
-			description: "Xcode DerivedData build folders, one per project"},
+			description: "Xcode DerivedData build folders, one per project, in the custom location when Xcode has one"},
 		{name: "simulator-devices", ecosystem: "xcode", scan: scanSimulatorDevices,
 			description: "iOS and other simulators whose runtime is no longer installed"},
 		{name: "simulator-runtimes", ecosystem: "xcode", scan: scanSimulatorRuntimes,
