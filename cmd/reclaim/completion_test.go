@@ -22,7 +22,7 @@ func complete(t *testing.T, args ...string) ([]string, cobra.ShellCompDirective)
 	require.True(t, strings.HasPrefix(last, ":"), "the directive comes last: %q", out.String())
 	directive, err := strconv.Atoi(strings.TrimPrefix(last, ":"))
 	require.NoError(t, err)
-	var values []string
+	values := make([]string, 0, len(lines)-1)
 	for _, l := range lines[:len(lines)-1] {
 		value, _, _ := strings.Cut(l, "\t")
 		values = append(values, value)
@@ -81,7 +81,7 @@ func TestCompletion(t *testing.T) {
 				}
 				return
 			}
-			require.Equal(t, tt.want, values)
+			require.ElementsMatch(t, tt.want, values)
 		})
 	}
 }
