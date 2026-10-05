@@ -44,7 +44,7 @@ changelog:
   abbrev: 7
   groups:
     - title: New
-      regexp: '^(Phase \d+:|Add|Support|Scan|Show|Print)\b'
+      regexp: '^(Phase \d+:|(Add|Support|Scan|Show|Print|Render)\b)'
       order: 0
     - title: Fixes
       regexp: '^Fix\b'
@@ -56,10 +56,11 @@ changelog:
       # Merge commits.
       - '^Merge\b'
       # Commits that only change documentation, by the subject conventions
-      # in docs/RELEASING.md.
-      - '^(?i:docs?)\b'
-      - '^(?i:document)\b'
-      - '(?i)\b(readme|design\.md|releasing\.md|worker brief)\b'
+      # in docs/RELEASING.md. Only the start of a subject counts, so a
+      # change that also touches the README stays in the notes.
+      - '^(?i:docs?|document)\b'
+      - '^(Rewrite|Update|Edit|Fix) (the )?(README|DESIGN\.md|RELEASING\.md)\b'
+      - '^Add phase \d+ worker brief'
 
 release:
   github:

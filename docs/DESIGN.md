@@ -322,10 +322,11 @@ It is a catch-all scanner, so a cache another scanner reports, even after being 
 Playwright MCP keeps persistent browser profiles with logins in `ms-playwright-mcp` and sometimes in `ms-playwright` itself, as `mcp-*` folders; such folders are tier C with a warning naming the profiles.
 - `puppeteer`: `~/.cache/puppeteer` or `PUPPETEER_CACHE_DIR`, tier B.
 A browser folder named by `PLAYWRIGHT_BROWSERS_PATH` or `PUPPETEER_CACHE_DIR` is offered only when it lies strictly inside the home directory, is neither the cache folder nor holds it, and holds at least one entry that looks like a downloaded browser.
-- `xcode-derived-data`: each folder in Xcode's DerivedData location, tier A.
-The location is the `IDECustomDerivedDataLocation` setting, read with `defaults read com.apple.dt.Xcode IDECustomDerivedDataLocation` through the command runner, and `~/Library/Developer/Xcode/DerivedData` when it is not set.
+- `xcode-derived-data`: each folder in `~/Library/Developer/Xcode/DerivedData` and in the custom DerivedData location, tier A.
+The custom location is the `IDECustomDerivedDataLocation` setting, read with `defaults read com.apple.dt.Xcode IDECustomDerivedDataLocation` through the command runner.
+The default location is scanned even when a custom one is set, because Xcode leaves the folders it built there before the setting changed.
 A custom location is scanned only when it lies strictly inside the home directory, because apply removes nothing outside the recorded roots, and the report notes when it does not.
-Because a folder the user chose may hold other things, only entries named the way Xcode names them are offered there: a project name followed by a dash and 28 lowercase letters, or a `.noindex` cache.
+Because a folder the user chose may hold other things, only folders Xcode made are offered there: its shared caches (`ModuleCache.noindex`, `SymbolCache.noindex`, `SDKStatCaches.noindex`, `CompilationCache.noindex`) and project folders named after the project with a dash and 28 lowercase letters that hold an `info.plist` recording a `WorkspacePath`.
 - `simulator-devices`: simulators that `xcrun simctl list -j devices` reports unavailable, usually because their runtime is gone, tier B, removed with `xcrun simctl delete <udid>` so CoreSimulator's own records stay consistent.
 - `simulator-runtimes`: deletable runtimes from `xcrun simctl runtime list -j`, tier B, `NeedsSudo`, with the `xcrun simctl runtime delete <identifier>` command for the user to run.
 Without Xcode there is no `simctl`, and both simulator scanners report nothing.

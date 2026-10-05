@@ -1,11 +1,13 @@
 package appcache
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -21,79 +23,102 @@ func scanDerivedData(ctx context.Context, env *scan.Env) ([]finding.Finding, err
 	if env.GOOS != "darwin" {
 		return nil, nil
 	}
-	dir, custom, ok := derivedDataDir(ctx, env)
-	if !ok {
-		return nil, nil
-	}
+	def := resolve(filepath.Join(env.Home, "Library", "Developer", "Xcode", "DerivedData"))
 	var entries []entry
-	for _, e := range subdirs(env, dir) {
-		// A folder the user chose may hold other things than Xcode's
-		// build folders, so only entries named the way Xcode names them
-		// are offered there.
-		if custom && !derivedDataEntry(e.Name()) {
-			continue
+	for _, e := range subdirs(env, def) {
+		entries = append(entries, derivedDataFolder(def, e.Name()))
+	}
+	// Once a custom location is set Xcode builds there, but folders it
+	// left in the default location stay, so both are scanned.
+	if custom, ok := customDerivedData(ctx, env); ok && !project.IsWithin(custom, def) {
+		for _, e := range subdirs(env, custom) {
+			// A folder the user chose may hold other things than Xcode's
+			// build folders, so only what Xcode made is offered there.
+			if xcodeMade(filepath.Join(custom, e.Name())) {
+				entries = append(entries, derivedDataFolder(custom, e.Name()))
+			}
 		}
-		entries = append(entries, entry{
-			path:    filepath.Join(dir, e.Name()),
-			tier:    finding.TierA,
-			restore: "rebuilt by the next Xcode build of the project",
-		})
 	}
 	return collect(ctx, env, entries)
+}
+
+func derivedDataFolder(dir, name string) entry {
+	return entry{
+		path:    filepath.Join(dir, name),
+		tier:    finding.TierA,
+		restore: "rebuilt by the next Xcode build of the project",
+	}
 }
 
 // derivedDataKey is the Xcode setting that holds a custom DerivedData
 // location, set in Xcode > Settings > Locations.
 const derivedDataKey = "IDECustomDerivedDataLocation"
 
-// derivedDataDir returns the folder Xcode keeps DerivedData in: the custom
-// location from Xcode's defaults when one is set, else the default under
-// ~/Library/Developer/Xcode. custom reports whether the location came from
-// the setting. A custom location is used only when it lies strictly inside
-// the home directory, because apply removes nothing outside the recorded
-// roots; otherwise ok is false and the report says why.
-func derivedDataDir(ctx context.Context, env *scan.Env) (dir string, custom, ok bool) {
-	def := resolve(filepath.Join(env.Home, "Library", "Developer", "Xcode", "DerivedData"))
+// customDerivedData returns the custom DerivedData location from Xcode's
+// defaults. ok is false when none is set, and when the location does not lie
+// strictly inside the home directory, because apply removes nothing outside
+// the recorded roots; the report then says why.
+func customDerivedData(ctx context.Context, env *scan.Env) (dir string, ok bool) {
 	if env.Exec == nil {
-		return def, false, true
+		return "", false
 	}
-	// defaults fails when the key is not set, which means the default
-	// location.
+	// defaults fails when the key is not set.
 	out, err := env.Exec.Output(ctx, "defaults", "read", "com.apple.dt.Xcode", derivedDataKey)
 	if err != nil {
 		if !errors.Is(err, execx.ErrNotInstalled) {
 			env.Logger().Debug("no custom DerivedData location", "err", err)
 		}
-		return def, false, true
+		return "", false
 	}
 	value := strings.TrimSpace(out)
 	if value == "" {
-		return def, false, true
+		return "", false
 	}
 	if rest, found := strings.CutPrefix(value, "~/"); found {
 		value = filepath.Join(env.Home, rest)
 	}
 	if !filepath.IsAbs(value) {
 		env.Diag.Warn("", "Xcode's custom DerivedData location "+value+" is not an absolute path, so it is not scanned")
-		return "", true, false
+		return "", false
 	}
 	dir = resolve(filepath.Clean(value))
 	home := resolve(env.Home)
 	if dir == home || !project.IsWithin(dir, home) {
 		env.Diag.Note("Xcode keeps DerivedData in " + dir + ", outside the home folder, so reclaim does not offer it; clear it from Xcode or remove its folders yourself.")
-		return "", true, false
+		return "", false
 	}
-	return dir, true, true
+	return dir, true
 }
 
-// derivedDataEntry reports whether a folder name looks like one Xcode makes
-// in DerivedData: a project folder named after the project and a 28 letter
-// hash, such as "App-bxrjzktdwfaugpcvhzjmlzkhwqyi", or a shared cache such
-// as "ModuleCache.noindex".
-func derivedDataEntry(name string) bool {
-	if base, found := strings.CutSuffix(name, ".noindex"); found {
-		return base != ""
+// xcodeCaches are the shared caches Xcode keeps in DerivedData.
+func xcodeCaches() []string {
+	return []string{"ModuleCache.noindex", "SymbolCache.noindex", "SDKStatCaches.noindex", "CompilationCache.noindex"}
+}
+
+// xcodeMade reports whether a folder in a DerivedData location is one Xcode
+// made: one of its shared caches, or a project folder, which is named after
+// the project and a 28 letter hash, such as
+// "App-bxrjzktdwfaugpcvhzjmlzkhwqyi", and holds an info.plist that records
+// the workspace it belongs to.
+func xcodeMade(path string) bool {
+	name := filepath.Base(path)
+	if slices.Contains(xcodeCaches(), name) {
+		return true
 	}
+	if !hashedName(name) {
+		return false
+	}
+	plist := filepath.Join(path, "info.plist")
+	info, err := os.Lstat(plist)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > maxManifestSize {
+		return false
+	}
+	data, err := os.ReadFile(plist)
+	return err == nil && bytes.Contains(data, []byte("WorkspacePath"))
+}
+
+// hashedName reports whether name ends in a dash and 28 lowercase letters.
+func hashedName(name string) bool {
 	i := strings.LastIndexByte(name, '-')
 	if i <= 0 || len(name)-i-1 != 28 {
 		return false

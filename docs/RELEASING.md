@@ -62,12 +62,13 @@ The release notes on the GitHub release are the change log.
 
 The notes list commit subjects since the previous tag, oldest first, in three groups:
 
-- New: subjects that start with `Phase N:`, `Add`, `Support`, `Scan`, `Show` or `Print`.
+- New: subjects that start with `Phase N:`, `Add`, `Support`, `Scan`, `Show`, `Print` or `Render`.
 - Fixes: subjects that start with `Fix`.
 - Other changes: everything else.
 
 Merge commits are left out, and so are commits that only change documentation.
-GoReleaser can only judge a commit by its subject, so a documentation-only commit is recognized when its subject starts with `Docs` or `Document`, or names the README, `DESIGN.md`, `RELEASING.md` or a worker brief.
+GoReleaser can only judge a commit by its subject, so a documentation-only commit is recognized by how its subject starts: `Docs`, `Document`, `Rewrite the README`, `Update DESIGN.md` and the like, or `Add phase N worker brief`.
+A subject that only mentions the README further on, such as the squash commit of a phase, stays in the notes.
 Write subjects with that in mind, and edit the notes on the GitHub release afterwards if one slipped through.
 
 ## Verifying the formula
