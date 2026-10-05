@@ -32,9 +32,19 @@ type Printer struct {
 	header lipgloss.Style
 }
 
-// New returns a Printer for w. Paths under home are shortened to "~".
+// New returns a Printer for w. Paths under home are shortened to "~". It
+// uses colors only when w is a terminal and NO_COLOR is unset.
 func New(w io.Writer, home string, now time.Time) *Printer {
-	r := lipgloss.NewRenderer(w)
+	return newPrinter(w, lipgloss.NewRenderer(w), home, now)
+}
+
+// NewPlain returns a Printer for w that never styles its output, for
+// formats such as Markdown that are read as text.
+func NewPlain(w io.Writer, home string, now time.Time) *Printer {
+	return newPrinter(w, lipgloss.NewRenderer(io.Discard), home, now)
+}
+
+func newPrinter(w io.Writer, r *lipgloss.Renderer, home string, now time.Time) *Printer {
 	return &Printer{
 		w:      w,
 		home:   home,
@@ -113,7 +123,9 @@ func (p *Printer) age(t time.Time) string {
 func tierTotals(fs []finding.Finding) string {
 	sums := map[finding.Tier]int64{}
 	for i := range fs {
-		sums[fs[i].Tier] += fs[i].Size
+		if fs[i].Actionable() {
+			sums[fs[i].Tier] += fs[i].Size
+		}
 	}
 	var parts []string
 	for _, t := range finding.Tiers() {

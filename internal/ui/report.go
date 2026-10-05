@@ -1,9 +1,7 @@
 package ui
 
 import (
-	"cmp"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -11,8 +9,8 @@ import (
 	"github.com/mandloideep/reclaim/internal/units"
 )
 
-// Report prints a report grouped by category and, for project artifacts, by
-// project, with the largest groups first.
+// Report prints a report grouped by category and then by project, Docker
+// object kind or scanner, with subtotals, largest groups first.
 func (p *Printer) Report(r *finding.Report) {
 	if len(r.Findings) == 0 {
 		p.println("Nothing reclaimable found.")
@@ -23,78 +21,51 @@ func (p *Printer) Report(r *finding.Report) {
 	for i := range r.Findings {
 		nameWidth = max(nameWidth, len(r.Findings[i].Scanner))
 	}
-	for _, cat := range categoriesIn(r.Findings) {
-		fs := filterCategory(r.Findings, cat)
-		var total int64
-		for i := range fs {
-			total += fs[i].Size
-		}
+	for _, s := range Sections(r.Findings, p.Path) {
 		p.println("")
-		p.printf("%s  %s  %s\n", p.header.Render(cat.Title()), p.bold.Render(units.FormatSize(total)), p.dim.Render(plural(len(fs), "item", "items")))
-		if cat == finding.CategoryProject {
-			p.projectGroups(fs, nameWidth)
+		p.printf("%s  %s  %s\n", p.header.Render(s.Category.Title()), p.bold.Render(units.FormatSize(s.Size)), p.dim.Render(plural(s.Count, "item", "items")))
+		if s.Flat() {
+			for _, f := range s.Groups[0].Findings {
+				p.findingRow(&f, nameWidth, "  ", p.Path(f.DisplayName()))
+			}
 			continue
 		}
-		for i := range fs {
-			p.findingRow(&fs[i], nameWidth, "  ", p.Path(fs[i].DisplayName()))
+		for _, g := range s.Groups {
+			p.groupHeader(&g, "  ")
+			for _, f := range g.Findings {
+				p.findingRow(&f, nameWidth, "    ", p.label(&g, &f))
+			}
 		}
 	}
 	p.println("")
 	p.printf("%s %s in %s (%s)\n", p.bold.Render("Total reclaimable:"), p.bold.Render(units.FormatSize(r.TotalSize())),
-		plural(len(r.Findings), "item", "items"), tierTotals(r.Findings))
+		plural(actionable(r.Findings), "item", "items"), tierTotals(r.Findings))
 	p.println(p.dim.Render("Tier A rebuilds itself, B costs a download or rebuild, C may be data. Nothing was removed."))
 	p.Warnings(r.Warnings, r.Notes)
 }
 
-type projectGroup struct {
-	root     string
-	total    int64
-	findings []finding.Finding
+// groupHeader prints the heading of a group with its subtotal.
+func (p *Printer) groupHeader(g *Group, indent string) {
+	extra := ""
+	if g.Attention {
+		extra = p.dim.Render("  not counted, reclaim never removes these")
+	} else if g.Project != "" && len(g.Findings) > 0 && !g.Findings[0].LastUsed.IsZero() {
+		extra = p.dim.Render("  active " + p.age(g.Findings[0].LastUsed))
+	}
+	p.printf("%s%s  %s  %s%s\n", indent, p.bold.Render(g.Title), units.FormatSize(g.Size),
+		p.dim.Render(plural(len(g.Findings), "item", "items")), extra)
 }
 
-func (p *Printer) projectGroups(fs []finding.Finding, nameWidth int) {
-	byRoot := map[string]*projectGroup{}
-	var groups []*projectGroup
-	for i := range fs {
-		g, ok := byRoot[fs[i].Project]
-		if !ok {
-			g = &projectGroup{root: fs[i].Project}
-			byRoot[fs[i].Project] = g
-			groups = append(groups, g)
-		}
-		g.total += fs[i].Size
-		g.findings = append(g.findings, fs[i])
-	}
-	slices.SortStableFunc(groups, func(a, b *projectGroup) int {
-		if a.root == "" || b.root == "" {
-			return cmp.Compare(boolInt(a.root == ""), boolInt(b.root == ""))
-		}
-		if a.total != b.total {
-			return cmp.Compare(b.total, a.total)
-		}
-		return strings.Compare(a.root, b.root)
-	})
-	for _, g := range groups {
-		title := p.Path(g.root)
-		if g.root == "" {
-			title = "(not in a project)"
-		}
-		var last string
-		if len(g.findings) > 0 && !g.findings[0].LastUsed.IsZero() {
-			last = p.dim.Render("  active " + p.age(g.findings[0].LastUsed))
-		}
-		p.printf("  %s  %s%s\n", p.bold.Render(title), units.FormatSize(g.total), last)
-		for i := range g.findings {
-			f := &g.findings[i]
-			label := p.Path(f.Path)
-			if g.root != "" {
-				if rel, err := filepath.Rel(g.root, f.Path); err == nil && !strings.HasPrefix(rel, "..") {
-					label = rel
-				}
-			}
-			p.findingRow(f, nameWidth, "    ", label)
+// label is how a finding is named inside its group: relative to its project
+// for project groups, otherwise its display name with the home directory
+// shortened.
+func (p *Printer) label(g *Group, f *finding.Finding) string {
+	if g.Project != "" && f.Path != "" {
+		if rel, err := filepath.Rel(g.Project, f.Path); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
 		}
 	}
+	return p.Path(f.DisplayName())
 }
 
 func boolInt(b bool) int {
@@ -104,10 +75,24 @@ func boolInt(b bool) int {
 	return 0
 }
 
+func actionable(fs []finding.Finding) int {
+	n := 0
+	for i := range fs {
+		if fs[i].Actionable() {
+			n++
+		}
+	}
+	return n
+}
+
 func (p *Printer) findingRow(f *finding.Finding, nameWidth int, indent, label string) {
 	line := indent + p.Tier(f.Tier) + " " + size(f.Size) + "  " + pad(f.Scanner, nameWidth) + "  " + label
 	if f.Action == finding.ActionRunCommand {
-		line += p.dim.Render("  via " + strings.Join(f.Command, " "))
+		cmd := strings.Join(f.Command, " ")
+		if f.NeedsSudo {
+			cmd = "sudo " + cmd
+		}
+		line += p.dim.Render("  via " + cmd)
 	}
 	if f.Tier == finding.TierC && f.Warning != "" {
 		line += "\n" + indent + strings.Repeat(" ", 15+nameWidth) + p.warn.Render("! "+f.Warning)
@@ -115,40 +100,52 @@ func (p *Printer) findingRow(f *finding.Finding, nameWidth int, indent, label st
 	p.println(line)
 }
 
-func categoriesIn(fs []finding.Finding) []finding.Category {
-	var out []finding.Category
-	for i := range fs {
-		if !slices.Contains(out, fs[i].Category) {
-			out = append(out, fs[i].Category)
+// Numbered prints the findings grouped like the report, numbering the ones
+// that can be selected, and returns them in numbering order: the finding
+// numbered 1 comes first. Findings listed for attention only are shown
+// without a number, so they can never be selected.
+func (p *Printer) Numbered(fs []finding.Finding) []finding.Finding {
+	sections := Sections(fs, p.Path)
+	var numbered []finding.Finding
+	for _, f := range Ordered(sections) {
+		if f.Actionable() {
+			numbered = append(numbered, f)
 		}
 	}
-	return out
-}
-
-func filterCategory(fs []finding.Finding, c finding.Category) []finding.Finding {
-	var out []finding.Finding
-	for i := range fs {
-		if fs[i].Category == c {
-			out = append(out, fs[i])
-		}
-	}
-	return out
-}
-
-// Numbered prints findings with 1 based indices for selection from stdin.
-func (p *Printer) Numbered(fs []finding.Finding) {
 	nameWidth := len("SCANNER")
 	for i := range fs {
 		nameWidth = max(nameWidth, len(fs[i].Scanner))
 	}
-	idxWidth := len(strconv.Itoa(len(fs)))
-	p.println(p.dim.Render(pad("#", idxWidth+2) + "T " + pad("     SIZE", 9) + "  " + pad("SCANNER", nameWidth) + "  ITEM"))
-	for i := range fs {
-		f := &fs[i]
-		line := pad(strconv.Itoa(i+1)+".", idxWidth+2) + p.Tier(f.Tier) + " " + size(f.Size) + "  " + pad(f.Scanner, nameWidth) + "  " + p.Path(f.DisplayName())
-		if f.Tier == finding.TierC && f.Warning != "" {
-			line += "\n" + strings.Repeat(" ", idxWidth+2+15+nameWidth) + p.warn.Render("! "+f.Warning)
+	idxWidth := len(strconv.Itoa(len(numbered))) + 2
+	p.println(p.dim.Render(pad("#", idxWidth) + "T " + pad("     SIZE", 9) + "  " + pad("SCANNER", nameWidth) + "  ITEM"))
+	n := 0
+	for _, s := range sections {
+		p.printf("%s  %s\n", p.header.Render(s.Category.Title()), p.dim.Render(units.FormatSize(s.Size)+", "+plural(s.Count, "item", "items")))
+		for _, g := range s.Groups {
+			if !s.Flat() {
+				p.printf("%s%s  %s\n", strings.Repeat(" ", idxWidth), p.bold.Render(g.Title),
+					p.dim.Render(units.FormatSize(g.Size)+", "+plural(len(g.Findings), "item", "items")+attentionNote(&g)))
+			}
+			for _, f := range g.Findings {
+				idx := "-"
+				if f.Actionable() {
+					n++
+					idx = strconv.Itoa(n) + "."
+				}
+				line := pad(idx, idxWidth) + p.Tier(f.Tier) + " " + size(f.Size) + "  " + pad(f.Scanner, nameWidth) + "  " + p.label(&g, &f)
+				if (f.Tier == finding.TierC || !f.Actionable()) && f.Warning != "" {
+					line += "\n" + strings.Repeat(" ", idxWidth+15+nameWidth) + p.warn.Render("! "+f.Warning)
+				}
+				p.println(line)
+			}
 		}
-		p.println(line)
 	}
+	return numbered
+}
+
+func attentionNote(g *Group) string {
+	if g.Attention {
+		return ", not counted, cannot be selected"
+	}
+	return ""
 }
