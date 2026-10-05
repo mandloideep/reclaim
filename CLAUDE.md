@@ -13,7 +13,7 @@ Tests create their own fixtures in temp directories and, for Docker, label every
 - Never use the em dash character in code, comments or docs.
 Use a plain hyphen.
 - In Markdown files, put each full sentence on its own line.
-- Do not add co-author trailers to commits.
+- Do not add co-author trailers, `Claude-Session:` lines, session URLs or any other attribution to commits or pull request bodies.
 - Do not edit `CHANGELOG.md` by hand.
 - Prefer quality, simplicity and long term maintainability over development speed.
 
