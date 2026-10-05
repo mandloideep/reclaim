@@ -119,6 +119,7 @@ func FormatAge(d time.Duration) string {
 	case d < 365*day:
 		return strconv.Itoa(int(d/(7*day))) + "w"
 	default:
-		return strconv.FormatFloat(float64(d)/float64(365*day), 'f', 1, 64) + "y"
+		years := strconv.FormatFloat(float64(d)/float64(365*day), 'f', 1, 64)
+		return strings.TrimSuffix(years, ".0") + "y"
 	}
 }

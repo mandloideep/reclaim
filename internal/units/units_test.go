@@ -96,5 +96,6 @@ func TestFormatAge(t *testing.T) {
 	require.Equal(t, "5h", FormatAge(5*time.Hour))
 	require.Equal(t, "3d", FormatAge(3*day))
 	require.Equal(t, "4w", FormatAge(30*day))
-	require.Equal(t, "2.0y", FormatAge(730*day))
+	require.Equal(t, "2y", FormatAge(730*day))
+	require.Equal(t, "1.5y", FormatAge(548*day))
 }
