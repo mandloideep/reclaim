@@ -90,9 +90,12 @@ func buildImage(t *testing.T, cli *client.Client, tag, marker string) string {
 	ctx := context.Background()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	// A LABEL only Dockerfile makes a distinct image without intermediate
-	// images, so the build leaves nothing unlabeled behind.
-	dockerfile := []byte("FROM busybox:latest\nLABEL reclaim.marker=" + marker + "\n")
+	// A Dockerfile with a single LABEL instruction makes a distinct image in
+	// one step, so the build leaves no intermediate image behind. The test
+	// label is part of that instruction: build time labels passed through
+	// the API add a step of their own on the classic builder, whose
+	// intermediate image would carry no test label.
+	dockerfile := []byte("FROM busybox:latest\nLABEL reclaim.marker=" + marker + " " + testLabelKey + "=" + testLabelValue + "\n")
 	require.NoError(t, tw.WriteHeader(&tar.Header{Name: "Dockerfile", Mode: 0o644, Size: int64(len(dockerfile))}))
 	_, err := tw.Write(dockerfile)
 	require.NoError(t, err)
@@ -100,7 +103,6 @@ func buildImage(t *testing.T, cli *client.Client, tag, marker string) string {
 
 	resp, err := cli.ImageBuild(ctx, &buf, build.ImageBuildOptions{
 		Tags:        []string{tag},
-		Labels:      map[string]string{testLabelKey: testLabelValue},
 		Remove:      true,
 		ForceRemove: true,
 	})

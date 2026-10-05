@@ -418,7 +418,8 @@ Fixtures build a fake home with projects, artifact folders and caches, then asse
 They create their own fixtures: a `busybox` image, a stopped container, an unused volume and a small build, all labeled `reclaim.test=1`.
 They assert that the scanner finds exactly those fixtures when filtered by the label and that `apply` removes them.
 They never touch anything without the label.
-The fixture images are built from `LABEL` only Dockerfiles on top of `busybox`, so the build leaves no unlabeled intermediate images, and the `busybox` base image is never removed.
+The fixture images are built from Dockerfiles with a single `LABEL` instruction on top of `busybox` that sets the test label too, so the build has one step and leaves no unlabeled intermediate images, and the `busybox` base image is never removed.
+Build time labels passed through the API are not used, because the classic builder adds a step for them whose intermediate image carries no label.
 The build cache prune is covered by unit tests against a fake client only, because a real prune cannot be limited to labeled records.
 Without `RECLAIM_DOCKER_TESTS=1` the tests skip, and the scanner and the Docker executors are unit tested against an in-memory fake of the client interface in `internal/dockerx`.
 - An end-to-end test runs `scan` on a fixture tree, writes a plan with `--preset safe`, runs `apply --yes`, and asserts that only the expected paths are gone.

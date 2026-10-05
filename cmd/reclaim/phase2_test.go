@@ -284,7 +284,7 @@ func TestHereThenSelectSaysWhereTheReportCameFrom(t *testing.T) {
 	out.Reset()
 	planPath := filepath.Join(t.TempDir(), "plan.json")
 	require.NoError(t, execute(a, "select", "--preset", "safe", "--out", planPath))
-	first := strings.SplitN(out.String(), "\n", 2)[0]
+	first, _, _ := strings.Cut(out.String(), "\n")
 	require.True(t, strings.HasPrefix(first, "Report from reclaim here "+web+" --depth=2, just now ("), first)
 	require.Contains(t, first, ": 3 findings, ")
 	require.Contains(t, first, "It covers only ~/Code/web, not the whole machine; run reclaim scan for everything.")
