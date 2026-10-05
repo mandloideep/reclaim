@@ -27,3 +27,26 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: latest
+  docker:
+    # Runs the Docker integration test against the runner's real daemon. The
+    # test creates its own fixtures, all labeled reclaim.test=1, and touches
+    # nothing without that label.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: docker version
+      - name: Docker integration test
+        env:
+          RECLAIM_DOCKER_TESTS: "1"
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -race -count=1 -v -run '^TestDockerIntegration$' ./cmd/reclaim/ | tee docker-test.log
+          if grep -q -- '--- SKIP' docker-test.log; then
+            echo "the Docker integration test was skipped" >&2
+            exit 1
+          fi
+          grep -q -- '--- PASS: TestDockerIntegration' docker-test.log
