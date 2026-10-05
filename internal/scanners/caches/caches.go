@@ -13,7 +13,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
@@ -135,13 +134,7 @@ func query(ctx context.Context, env *scan.Env, tool string, args ...string) stri
 		}
 		return ""
 	}
-	for line := range strings.Lines(out) {
-		line = strings.TrimSpace(line)
-		if filepath.IsAbs(line) {
-			return filepath.Clean(line)
-		}
-	}
-	return ""
+	return execx.FirstAbsPath(out)
 }
 
 // absVar returns an environment variable when it holds an absolute path.

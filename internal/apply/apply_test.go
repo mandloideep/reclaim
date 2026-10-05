@@ -393,8 +393,9 @@ func TestRunCommand(t *testing.T) {
 	cache := filepath.Join(e.home, ".npm", "_cacache")
 	write(t, filepath.Join(cache, "a"), 400)
 	fake := &execx.Fake{
-		Tools: map[string]string{"npm": "/usr/bin/npm"},
-		OnRun: func([]string) error { return os.Remove(filepath.Join(cache, "a")) },
+		Tools:   map[string]string{"npm": "/usr/bin/npm"},
+		Outputs: map[string]string{"npm config get cache": filepath.Dir(cache)},
+		OnRun:   func([]string) error { return os.Remove(filepath.Join(cache, "a")) },
 	}
 	sum, log, err := run(t, e, newPlan([]string{e.root, e.home}, commandAction(cache, "npm", "cache", "clean", "--force")),
 		func(o *Options) { o.Exec = fake })
@@ -412,7 +413,8 @@ func TestRunCommand(t *testing.T) {
 		require.Empty(t, fake.Ran())
 	})
 	t.Run("command fails", func(t *testing.T) {
-		fake := &execx.Fake{Tools: map[string]string{"npm": "/usr/bin/npm"}, RunErr: errors.New("exit status 1")}
+		fake := &execx.Fake{Tools: map[string]string{"npm": "/usr/bin/npm"}, RunErr: errors.New("exit status 1"),
+			Outputs: map[string]string{"npm config get cache": filepath.Dir(cache)}}
 		sum, _, err := run(t, e, newPlan(nil, commandAction(cache, "npm", "cache", "clean", "--force")), func(o *Options) { o.Exec = fake })
 		require.Error(t, err)
 		require.Equal(t, StatusFailed, sum.Outcomes[0].Status)
@@ -427,6 +429,103 @@ func TestRunCommand(t *testing.T) {
 		require.ErrorContains(t, sum.Outcomes[0].Err, "not an allowed clean command")
 		require.Empty(t, fake.Ran())
 	})
+}
+
+// TestRunCommandAsksAgainWhereTheCacheIs checks that apply asks the tool for
+// its cache location right before running its clean command and refuses
+// when the answer is not the directory the plan was made for.
+func TestRunCommandAsksAgainWhereTheCacheIs(t *testing.T) {
+	e := newEnv(t)
+	cache := filepath.Join(e.home, ".npm", "_cacache")
+	write(t, filepath.Join(cache, "a"), 400)
+	moved := filepath.Join(e.home, "elsewhere", "npm")
+	write(t, filepath.Join(moved, "_cacache", "b"), 10)
+	link := filepath.Join(e.home, "npm-link")
+	require.NoError(t, os.Symlink(filepath.Dir(cache), link))
+
+	tests := []struct {
+		name     string
+		answer   string
+		queryErr bool
+		action   func() plan.Action
+		want     Status
+		wantErr  string
+	}{
+		{name: "same place", answer: filepath.Dir(cache), want: StatusDone},
+		{name: "same place through a symbolic link", answer: link, want: StatusDone},
+		{name: "same place after notices", answer: "npm notice: new version\n" + filepath.Dir(cache), want: StatusDone},
+		{name: "moved", answer: moved, want: StatusFailed, wantErr: "now reports " + filepath.Join(moved, "_cacache")},
+		{name: "moved somewhere missing", answer: filepath.Join(e.home, "nowhere"), want: StatusFailed, wantErr: "now reports"},
+		{name: "no answer", answer: "not a path", want: StatusFailed, wantErr: "did not report a cache directory"},
+		{name: "query fails", queryErr: true, want: StatusFailed, wantErr: "could not ask npm"},
+		{name: "plan without a path", answer: filepath.Dir(cache), action: func() plan.Action {
+			a := commandAction(cache, "npm", "cache", "clean", "--force")
+			a.Path = ""
+			return a
+		}, want: StatusFailed, wantErr: "does not record the directory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &execx.Fake{Tools: map[string]string{"npm": "/usr/bin/npm"}, Outputs: map[string]string{}}
+			if !tt.queryErr {
+				fake.Outputs["npm config get cache"] = tt.answer
+			}
+			a := commandAction(cache, "npm", "cache", "clean", "--force")
+			if tt.action != nil {
+				a = tt.action()
+			}
+			sum, _, err := run(t, e, newPlan(nil, a), func(o *Options) { o.Exec = fake })
+			require.Equal(t, tt.want, sum.Outcomes[0].Status)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				require.ErrorContains(t, sum.Outcomes[0].Err, tt.wantErr)
+				require.Empty(t, fake.Ran(), "the clean command never runs when the cache moved")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, [][]string{{"npm", "cache", "clean", "--force"}}, fake.Ran())
+		})
+	}
+
+	t.Run("the cache is gone", func(t *testing.T) {
+		gone := filepath.Join(e.home, ".npm2", "_cacache")
+		fake := &execx.Fake{Tools: map[string]string{"npm": "/usr/bin/npm"}, Outputs: map[string]string{"npm config get cache": filepath.Dir(gone)}}
+		sum, _, err := run(t, e, newPlan(nil, commandAction(gone, "npm", "cache", "clean", "--force")), func(o *Options) { o.Exec = fake })
+		require.NoError(t, err)
+		require.Equal(t, StatusGone, sum.Outcomes[0].Status)
+		require.Empty(t, fake.Ran())
+	})
+
+	t.Run("removal commands with an argument run without a location query", func(t *testing.T) {
+		models := filepath.Join(e.home, ".ollama", "models")
+		write(t, filepath.Join(models, "blobs", "sha256-1"), 500)
+		write(t, filepath.Join(models, "blobs", "sha256-2"), 70)
+		fake := &execx.Fake{
+			Tools: map[string]string{"ollama": "/usr/local/bin/ollama"},
+			OnRun: func([]string) error { return os.Remove(filepath.Join(models, "blobs", "sha256-1")) },
+		}
+		a := plan.Action{ID: finding.MakeID("ollama", "ollama:llama3:latest"), Action: finding.ActionRunCommand, Path: models,
+			Target: "ollama:llama3:latest", Tier: finding.TierB, Scanner: "ollama", Command: []string{"ollama", "rm", "llama3:latest"}}
+		sum, _, err := run(t, e, newPlan(nil, a), func(o *Options) { o.Exec = fake })
+		require.NoError(t, err)
+		require.Equal(t, int64(500), sum.Freed)
+		require.Equal(t, [][]string{{"ollama", "rm", "llama3:latest"}}, fake.Ran())
+		require.True(t, exists(filepath.Join(models, "blobs", "sha256-2")))
+	})
+}
+
+func TestAttentionFindingsAreNeverApplied(t *testing.T) {
+	e := newEnv(t)
+	target := filepath.Join(e.root, "Downloads", "old.mov")
+	write(t, target, 100)
+	a := removeAction(target, finding.KindFile)
+	a.Action = finding.ActionNone
+	// Plan validation refuses it; apply refuses it on its own as well.
+	sum, err := Run(context.Background(), newPlan([]string{e.root}, a), Options{Home: e.home, Exec: &execx.Fake{}, Walker: fsx.NewWalker(1)})
+	require.Error(t, err)
+	require.Equal(t, StatusFailed, sum.Outcomes[0].Status)
+	require.ErrorContains(t, sum.Outcomes[0].Err, "cannot be applied")
+	require.True(t, exists(target))
 }
 
 func TestNeedsSudoIsNeverExecuted(t *testing.T) {

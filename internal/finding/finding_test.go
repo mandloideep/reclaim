@@ -116,8 +116,47 @@ func TestReportValidate(t *testing.T) {
 }
 
 func TestReportTotalSize(t *testing.T) {
-	r := Report{Findings: []Finding{{Size: 3}, {Size: 4}}}
-	require.Equal(t, int64(7), r.TotalSize())
+	r := Report{Findings: []Finding{
+		{Size: 3, Action: ActionRemovePath},
+		{Size: 4, Action: ActionDockerRemoveImage},
+		{Size: 1000, Action: ActionNone},
+	}}
+	require.Equal(t, int64(7), r.TotalSize(), "attention findings are not reclaimable")
+}
+
+func TestActionable(t *testing.T) {
+	for _, a := range Actions() {
+		f := Finding{Action: a}
+		require.Equal(t, a != ActionNone, f.Actionable(), a)
+		require.True(t, a.Valid(), "reports may carry every action, %s included", a)
+	}
+	require.False(t, (&Finding{Action: "Nuke"}).Actionable())
+}
+
+func TestDockerKind(t *testing.T) {
+	tests := []struct {
+		f    Finding
+		want string
+	}{
+		{f: Finding{Action: ActionDockerPruneBuildCache}, want: DockerKindBuildCache},
+		{f: Finding{Action: ActionDockerRemoveContainer}, want: DockerKindContainers},
+		{f: Finding{Action: ActionDockerRemoveImage}, want: DockerKindDangling},
+		{f: Finding{Action: ActionDockerRemoveImage, Tags: []string{"x:1"}}, want: DockerKindImages},
+		{f: Finding{Action: ActionDockerRemoveVolume}, want: DockerKindVolumes},
+		{f: Finding{Action: ActionRemovePath}, want: ""},
+	}
+	for _, tt := range tests {
+		require.Equal(t, tt.want, tt.f.DockerKind())
+	}
+	require.Equal(t, []string{"build cache", "stopped containers", "dangling images", "unused images", "volumes"}, DockerKinds())
+}
+
+func TestScopePartial(t *testing.T) {
+	var none *Scope
+	require.False(t, none.Partial())
+	require.False(t, (&Scope{Command: "scan"}).Partial())
+	require.True(t, (&Scope{Command: "scan", Paths: []string{"/x"}}).Partial())
+	require.True(t, (&Scope{Command: "here", Paths: []string{"/x"}}).Partial())
 }
 
 func TestWarningString(t *testing.T) {

@@ -177,6 +177,13 @@ func TestToolReportedLocationsUseCleanCommands(t *testing.T) {
 		require.Equal(t, finding.ActionRunCommand, f.Action, name)
 		require.Equal(t, cmd, f.Command, name)
 		require.True(t, plan.AllowedCommand(f.Command), "%s emits a command apply refuses: %v", name, f.Command)
+		// Apply asks the tool again with the query plan records for the
+		// command; the answer must lead back to the measured directory.
+		query, sub, ok := plan.LocateQuery(f.Command)
+		require.True(t, ok, name)
+		answer, err := fake.Output(context.Background(), query[0], query[1:]...)
+		require.NoError(t, err, name)
+		require.Equal(t, f.Path, filepath.Join(execx.FirstAbsPath(answer), sub), name)
 	}
 	require.Equal(t, filepath.Join(dirs["npm"], "_cacache"), got["npm-cache"][0].Path)
 	require.Equal(t, filepath.Join(dirs["npm"], "_npx"), got["npx-cache"][0].Path)

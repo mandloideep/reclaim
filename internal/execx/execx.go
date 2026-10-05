@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -115,6 +116,19 @@ func (o OS) dir() string {
 		return "/"
 	}
 	return o.Dir
+}
+
+// FirstAbsPath returns the first line of a tool's output that is an absolute
+// path, cleaned, or an empty string when there is none. Tools such as npm may
+// print notices around the answer.
+func FirstAbsPath(out string) string {
+	for line := range strings.Lines(out) {
+		line = strings.TrimSpace(line)
+		if filepath.IsAbs(line) {
+			return filepath.Clean(line)
+		}
+	}
+	return ""
 }
 
 func firstLine(s string) string {

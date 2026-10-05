@@ -60,10 +60,12 @@ func TestPresets(t *testing.T) {
 	require.Error(t, err)
 
 	now := r.Created.Add(time.Hour)
-	p := New(r, SelectTiers(r.Findings, safe), "mac", now)
+	p, err := New(r, SelectTiers(r.Findings, safe), "mac", now)
+	require.NoError(t, err)
 	require.Equal(t, []string{"c1", "/Users/me/Code/a/node_modules"}, targets(p))
 
-	p = New(r, SelectTiers(r.Findings, aggressive), "mac", now)
+	p, err = New(r, SelectTiers(r.Findings, aggressive), "mac", now)
+	require.NoError(t, err)
 	require.Equal(t, []string{"c1", "sha256:img", "vol", "/Users/me/Code/a/node_modules", "/Users/me/.npm/_cacache"}, targets(p),
 		"containers go first so their images and volumes are free, tier C is never preset")
 	require.Equal(t, int64(5+70+7+100+50), p.TotalSize())
@@ -80,7 +82,8 @@ func TestPresets(t *testing.T) {
 
 func TestSaveLoadRoundTrip(t *testing.T) {
 	r := sampleReport()
-	p := New(r, r.Findings, "mac", r.Created)
+	p, err := New(r, r.Findings, "mac", r.Created)
+	require.NoError(t, err)
 	path := filepath.Join(t.TempDir(), "plan.json")
 	require.NoError(t, Save(path, p))
 
@@ -97,7 +100,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 func TestLoadRejects(t *testing.T) {
 	valid := func() string {
 		r := sampleReport()
-		p := New(r, r.Findings[:1], "mac", r.Created)
+		p, err := New(r, r.Findings[:1], "mac", r.Created)
+		require.NoError(t, err)
 		path := filepath.Join(t.TempDir(), "p.json")
 		require.NoError(t, Save(path, p))
 		data, err := os.ReadFile(path)
@@ -113,6 +117,7 @@ func TestLoadRejects(t *testing.T) {
 		{name: "unknown field", edit: func(s string) string { return strings.Replace(s, `"host"`, `"hostname"`, 1) }, wantErr: "unknown field"},
 		{name: "future version", edit: func(s string) string { return strings.Replace(s, `"version": 1`, `"version": 2`, 1) }, wantErr: "unsupported plan version"},
 		{name: "unknown action", edit: func(s string) string { return strings.Replace(s, `"RemovePath"`, `"Shred"`, 1) }, wantErr: "unknown action"},
+		{name: "attention only", edit: func(s string) string { return strings.Replace(s, `"RemovePath"`, `"None"`, 1) }, wantErr: "attention only"},
 		{name: "path edited without id", edit: func(s string) string {
 			return strings.ReplaceAll(s, "/Users/me/Code/a/node_modules", "/Users/me/Documents")
 		}, wantErr: "id does not match"},
@@ -191,11 +196,76 @@ func TestValidateActions(t *testing.T) {
 	})
 }
 
+func TestNewRefusesAttentionFindings(t *testing.T) {
+	r := sampleReport()
+	old := finding.Finding{
+		ID: finding.MakeID("old-downloads", "/Users/me/Downloads/big.mov"), Scanner: "old-downloads", Tier: finding.TierC,
+		Action: finding.ActionNone, Path: "/Users/me/Downloads/big.mov", Target: "/Users/me/Downloads/big.mov", Kind: finding.KindFile, Size: 1 << 30,
+	}
+	r.Findings = append(r.Findings, old)
+	_, err := New(r, []finding.Finding{r.Findings[0], old}, "mac", r.Created)
+	require.ErrorContains(t, err, "attention only")
+	all := []finding.Tier{finding.TierA, finding.TierB, finding.TierC}
+	require.NotContains(t, targets(func() *Plan {
+		p, err := New(r, SelectTiers(r.Findings, all), "mac", r.Created)
+		require.NoError(t, err)
+		return p
+	}()), old.Target, "presets never select attention findings")
+
+	a := FromFinding(&old)
+	p := &Plan{Version: Version, Created: time.Now(), Actions: []Action{a}}
+	require.ErrorContains(t, p.Validate(), "attention only", "a hand edited plan cannot carry one")
+}
+
 func TestAllowedCommand(t *testing.T) {
-	require.True(t, AllowedCommand([]string{"go", "clean", "-modcache"}))
-	require.False(t, AllowedCommand([]string{"go", "clean", "-modcache", "-x"}))
-	require.False(t, AllowedCommand([]string{"/usr/bin/go", "clean", "-modcache"}))
-	require.False(t, AllowedCommand(nil))
+	tests := []struct {
+		argv []string
+		want bool
+	}{
+		{argv: []string{"go", "clean", "-modcache"}, want: true},
+		{argv: []string{"go", "clean", "-modcache", "-x"}},
+		{argv: []string{"/usr/bin/go", "clean", "-modcache"}},
+		{argv: nil},
+		{argv: []string{"ollama", "rm", "llama3:latest"}, want: true},
+		{argv: []string{"ollama", "rm", "library/qwen2.5-coder:7b"}, want: true},
+		{argv: []string{"ollama", "rm", "--help"}},
+		{argv: []string{"ollama", "rm", "a", "b"}},
+		{argv: []string{"ollama", "rm"}},
+		{argv: []string{"ollama", "rm", "x;rm -rf /"}},
+		{argv: []string{"xcrun", "simctl", "delete", "0A1B2C3D-0000-4000-8000-1234567890AB"}, want: true},
+		{argv: []string{"xcrun", "simctl", "delete", "unavailable"}},
+		{argv: []string{"xcrun", "simctl", "delete", "all"}},
+		{argv: []string{"xcrun", "simctl", "runtime", "delete", "0a1b2c3d-0000-4000-8000-1234567890ab"}, want: true},
+		{argv: []string{"xcrun", "simctl", "runtime", "delete", "all"}},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.argv, " "), func(t *testing.T) {
+			require.Equal(t, tt.want, AllowedCommand(tt.argv))
+		})
+	}
+}
+
+func TestLocateQuery(t *testing.T) {
+	q, sub, ok := LocateQuery([]string{"npm", "cache", "clean", "--force"})
+	require.True(t, ok)
+	require.Equal(t, []string{"npm", "config", "get", "cache"}, q)
+	require.Equal(t, "_cacache", sub)
+
+	q, sub, ok = LocateQuery([]string{"brew", "cleanup", "-s"})
+	require.True(t, ok)
+	require.Equal(t, []string{"brew", "--cache"}, q)
+	require.Empty(t, sub)
+
+	_, _, ok = LocateQuery([]string{"ollama", "rm", "llama3:latest"})
+	require.False(t, ok, "removal commands name their target and need no location")
+	_, _, ok = LocateQuery([]string{"rm", "-rf", "/"})
+	require.False(t, ok)
+
+	for _, c := range cleanCommands() {
+		if c.arg == nil {
+			require.NotEmpty(t, c.locate, "every clean command of a cache can be located again: %v", c.argv)
+		}
+	}
 }
 
 func TestCheckAge(t *testing.T) {

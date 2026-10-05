@@ -56,13 +56,17 @@ const (
 	CategoryPackageCache Category = "package-cache"
 	// CategoryDocker covers Docker containers, images, volumes and build cache.
 	CategoryDocker Category = "docker"
-	// CategoryAppCache covers application caches. Its scanners arrive in phase 2.
+	// CategoryAppCache covers application caches, downloaded browsers and
+	// models, Xcode build data and the leftovers of agent tools.
 	CategoryAppCache Category = "app-cache"
+	// CategoryDownloads covers installers and archives in the Downloads folder,
+	// and large old files listed for attention only.
+	CategoryDownloads Category = "downloads"
 )
 
 // Categories lists every known category in report order.
 func Categories() []Category {
-	return []Category{CategoryProject, CategoryPackageCache, CategoryDocker, CategoryAppCache}
+	return []Category{CategoryProject, CategoryPackageCache, CategoryDocker, CategoryAppCache, CategoryDownloads}
 }
 
 // Title is the human readable section heading for the category.
@@ -76,6 +80,8 @@ func (c Category) Title() string {
 		return "Docker"
 	case CategoryAppCache:
 		return "App caches"
+	case CategoryDownloads:
+		return "Downloads"
 	default:
 		return string(c)
 	}
@@ -98,6 +104,10 @@ const (
 	ActionDockerRemoveVolume Action = "DockerRemoveVolume"
 	// ActionDockerPruneBuildCache prunes the unused Docker build cache.
 	ActionDockerPruneBuildCache Action = "DockerPruneBuildCache"
+	// ActionNone marks a finding that is shown for attention only, such as a
+	// large old file in Downloads. Select never puts it in a plan and apply
+	// refuses a plan that contains it.
+	ActionNone Action = "None"
 )
 
 // Actions lists every known action.
@@ -109,6 +119,7 @@ func Actions() []Action {
 		ActionDockerRemoveImage,
 		ActionDockerRemoveVolume,
 		ActionDockerPruneBuildCache,
+		ActionNone,
 	}
 }
 
@@ -124,6 +135,10 @@ func (a Action) IsDocker() bool {
 		return false
 	}
 }
+
+// Applicable reports whether apply can act on the action. Every known action
+// is applicable except ActionNone.
+func (a Action) Applicable() bool { return a.Valid() && a != ActionNone }
 
 // Kind records what kind of filesystem object a path finding is, so apply can
 // check that the object did not change kind between scan and removal.
@@ -179,6 +194,50 @@ type Finding struct {
 	Warning string `json:"warning,omitempty"`
 }
 
+// Actionable reports whether the finding can be selected and applied. Findings
+// with ActionNone are listed for attention only.
+func (f *Finding) Actionable() bool { return f.Action.Applicable() }
+
+// DockerKind names the kind of Docker object a Docker finding is, for
+// grouping: "build cache", "stopped containers", "dangling images", "unused
+// images" or "volumes". It returns an empty string for other findings.
+func (f *Finding) DockerKind() string {
+	switch f.Action {
+	case ActionDockerPruneBuildCache:
+		return DockerKindBuildCache
+	case ActionDockerRemoveContainer:
+		return DockerKindContainers
+	case ActionDockerRemoveImage:
+		if len(f.Tags) == 0 {
+			return DockerKindDangling
+		}
+		return DockerKindImages
+	case ActionDockerRemoveVolume:
+		return DockerKindVolumes
+	default:
+		return ""
+	}
+}
+
+// Docker finding kinds, in the order reports list them.
+const (
+	// DockerKindBuildCache is the unused build cache.
+	DockerKindBuildCache = "build cache"
+	// DockerKindContainers are stopped containers.
+	DockerKindContainers = "stopped containers"
+	// DockerKindDangling are images without a tag.
+	DockerKindDangling = "dangling images"
+	// DockerKindImages are tagged images that no container uses.
+	DockerKindImages = "unused images"
+	// DockerKindVolumes are volumes that no running container uses.
+	DockerKindVolumes = "volumes"
+)
+
+// DockerKinds lists the Docker finding kinds in report order.
+func DockerKinds() []string {
+	return []string{DockerKindBuildCache, DockerKindContainers, DockerKindDangling, DockerKindImages, DockerKindVolumes}
+}
+
 // MakeID returns the stable id for a scanner and target pair.
 func MakeID(scanner, target string) string {
 	sum := sha256.Sum256([]byte(scanner + "\x00" + target))
@@ -224,6 +283,27 @@ func (w Warning) String() string {
 	return b.String()
 }
 
+// Scope records what produced a report, so select can say where its findings
+// came from.
+type Scope struct {
+	// Command is the command that wrote the report: "scan" or "here".
+	Command string `json:"command"`
+	// Args are the command line arguments after the command name, with the
+	// flags that were set written as --name=value.
+	Args []string `json:"args,omitempty"`
+	// Paths are the resolved path arguments. Empty for a scan of the
+	// configured roots.
+	Paths []string `json:"paths,omitempty"`
+	// Roots are the directories the project walk covered.
+	Roots []string `json:"roots,omitempty"`
+}
+
+// Partial reports whether the report covers only some folders rather than
+// the whole machine: it came from here, or from a scan given paths.
+func (s *Scope) Partial() bool {
+	return s != nil && (s.Command == "here" || len(s.Paths) > 0)
+}
+
 // Report is the result of a scan. Its JSON form is the input of select.
 type Report struct {
 	// Version is the report schema version, ReportVersion when written by this build.
@@ -234,6 +314,9 @@ type Report struct {
 	Host string `json:"host"`
 	// OS is the operating system the scan ran on, as in runtime.GOOS.
 	OS string `json:"os"`
+	// Scope records the command that produced the report. Reports written
+	// before scopes existed have none.
+	Scope *Scope `json:"scope,omitempty"`
 	// Roots are the directories filesystem findings may live under. Apply
 	// refuses to remove paths outside them.
 	Roots []string `json:"roots"`
@@ -245,11 +328,19 @@ type Report struct {
 	Notes []string `json:"notes,omitempty"`
 }
 
-// TotalSize sums the size of every finding in the report.
+// TotalSize sums the size of every finding that can be applied. Findings
+// listed for attention only are not reclaimable and are not counted.
 func (r *Report) TotalSize() int64 {
+	return ReclaimableSize(r.Findings)
+}
+
+// ReclaimableSize sums the size of the findings that can be applied.
+func ReclaimableSize(fs []Finding) int64 {
 	var total int64
-	for i := range r.Findings {
-		total += r.Findings[i].Size
+	for i := range fs {
+		if fs[i].Actionable() {
+			total += fs[i].Size
+		}
 	}
 	return total
 }

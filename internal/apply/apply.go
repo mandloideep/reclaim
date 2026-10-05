@@ -194,6 +194,9 @@ func (r *runner) log(e logEntry) {
 }
 
 func (r *runner) one(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome {
+	if !a.Action.Applicable() {
+		return Outcome{Action: *a, Status: StatusFailed, Err: fmt.Errorf("refusing %s: action %q cannot be applied", a.Label(), a.Action)}
+	}
 	if a.NeedsSudo {
 		return Outcome{Action: *a, Status: StatusManual}
 	}
@@ -316,6 +319,9 @@ func (r *runner) runCommand(ctx context.Context, a *plan.Action) Outcome {
 	if _, err := r.opts.Exec.LookPath(a.Command[0]); err != nil {
 		return Outcome{Err: err}
 	}
+	if err := r.relocate(ctx, a); err != nil {
+		return Outcome{Err: err}
+	}
 	var before int64
 	measured := false
 	if a.Path != "" {
@@ -336,6 +342,45 @@ func (r *runner) runCommand(ctx context.Context, a *plan.Action) Outcome {
 		o.Err = err
 	}
 	return o
+}
+
+// relocate asks the tool again where its cache lives, right before running
+// its clean command, and refuses when the answer is not the directory the
+// plan recorded. The clean command acts on wherever the tool's configuration
+// points now, so a cache moved since the scan would otherwise be cleaned
+// without having been measured or shown.
+func (r *runner) relocate(ctx context.Context, a *plan.Action) error {
+	query, sub, ok := plan.LocateQuery(a.Command)
+	if !ok {
+		return nil
+	}
+	cmdline := strings.Join(a.Command, " ")
+	if a.Path == "" {
+		return fmt.Errorf("refusing %q: the plan does not record the directory it cleans", cmdline)
+	}
+	out, err := r.opts.Exec.Output(ctx, query[0], query[1:]...)
+	if err != nil {
+		return fmt.Errorf("refusing %q: could not ask %s where its cache is: %w", cmdline, query[0], err)
+	}
+	dir := execx.FirstAbsPath(out)
+	if dir == "" {
+		return fmt.Errorf("refusing %q: %s did not report a cache directory", cmdline, strings.Join(query, " "))
+	}
+	now := filepath.Join(dir, sub)
+	resolved, err := filepath.EvalSymlinks(now)
+	switch {
+	case err == nil:
+	case errors.Is(err, fs.ErrNotExist) && now == a.Path:
+		return errGone
+	case errors.Is(err, fs.ErrNotExist):
+		resolved = now
+	default:
+		return fmt.Errorf("refusing %q: resolve %s: %w", cmdline, now, err)
+	}
+	if resolved != a.Path {
+		return fmt.Errorf("refusing %q: %s now reports %s, but the plan was made for %s", cmdline, strings.Join(query, " "), resolved, a.Path)
+	}
+	return nil
 }
 
 func truncate(s string, n int) string {
