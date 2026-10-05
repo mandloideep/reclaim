@@ -1,0 +1,30 @@
+[1;4;4mr[0m[1;4;4me[0m[1;4;4mc[0m[1;4;4ml[0m[1;4;4ma[0m[1;4;4mi[0m[1;4;4mm[0m[4m [0m[1;4;4ms[0m[1;4;4me[0m[1;4;4ml[0m[1;4;4me[0m[1;4;4mc[0m[1;4;4mt[0m
+[2mReport from reclaim scan, just now (2026-10-05 09:30): 25 findings and 1 for attention only, 25.9 GB reclaimable.[0m
+[2msort: size  tier: all[0m
+  [-] ▾ [1mProject artifacts[0m  8.7 GB  [2m9 items[0m[2m, 8 selected[0m
+    [x] ▾ ~/Code/ripgrep-fork  3.9 GB  [2m1 item[0m[2m, 1 selected[0m
+      [x] [1;32mA[0m    3.9 GB  target[2m  rust-target[0m[2m  used 21w ago[0m
+    [x] ▾ ~/Code/ml-pipeline  2.4 GB  [2m2 items[0m[2m, 2 selected[0m
+      [x] [1;32mA[0m    2.3 GB  .venv[2m  python-venv[0m[2m  used 2w ago[0m
+      [x] [1;32mA[0m   61.0 MB  .mypy_cache[2m  mypy-cache[0m[2m  used 2w ago[0m
+    [x] ▸ ~/Code/storefront  1.7 GB  [2m3 items[0m[2m, 3 selected[0m
+    [x] ▸ ~/Code/weather  698.0 MB  [2m2 items[0m[2m, 2 selected[0m
+    [ ] ▸ ~/Code/blog  24.0 MB  [2m1 item[0m
+  [-] ▾ [1mPackage caches[0m  5.8 GB  [2m4 items[0m[2m, 2 selected[0m
+    [ ] [1;33mB[0m    2.1 GB  ~/go/pkg/mod[2m  go-modcache[0m[2m  used 3d ago[0m
+[7m>[0m   [x] [1;33mB[0m    1.8 GB  ~/.npm/_cacache[2m  npm-cache[0m[2m  used 3d ago[0m
+    [x] [1;32mA[0m  940.0 MB  ~/Library/Caches/go-build[2m  go-build-cache[0m[2m  used 3d ago[0m
+    [ ] [1;33mB[0m  870.0 MB  ~/Library/Caches/Homebrew[2m  homebrew-cache[0m[2m  used 3d ago[0m
+  [-] ▾ [1mDocker[0m  6.1 GB  [2m6 items[0m[2m, 3 selected[0m
+    [x] ▸ Build cache  3.2 GB  [2m1 item[0m[2m, 1 selected[0m
+    [x] ▸ Stopped containers  48.0 MB  [2m1 item[0m[2m, 1 selected[0m
+    [x] ▸ Dangling images  1.2 GB  [2m1 item[0m[2m, 1 selected[0m
+    [ ] ▸ Unused images  1.5 GB  [2m2 items[0m
+    [ ] ▸ Volumes  205.0 MB  [2m1 item[0m
+  [-] ▾ [1mApp caches[0m  5.2 GB  [2m5 items[0m[2m, 3 selected[0m
+    [ ] ▸ ollama  2.0 GB  [2m1 item[0m
+[33m~/.npm/_cacache[0m
+
+[1mSelected: 16 items, 18.1 GB[0m   w writes plan.json   q quits without writing
+[2mspace toggle  enter expand  / filter  s sort  t tier  a select tier A  arrows move[0m
+

@@ -1,0 +1,61 @@
+[2m$[0m [1mreclaim scan[0m
+
+[1;4;4mP[0m[1;4;4mr[0m[1;4;4mo[0m[1;4;4mj[0m[1;4;4me[0m[1;4;4mc[0m[1;4;4mt[0m[4m [0m[1;4;4ma[0m[1;4;4mr[0m[1;4;4mt[0m[1;4;4mi[0m[1;4;4mf[0m[1;4;4ma[0m[1;4;4mc[0m[1;4;4mt[0m[1;4;4ms[0m  [1m8.7 GB[0m  [2m9 items[0m
+  [1m~/Code/ripgrep-fork[0m  3.9 GB  [2m1 item[0m[2m  active 21w ago[0m
+    [1;32mA[0m    3.9 GB  rust-target         target
+  [1m~/Code/ml-pipeline[0m  2.4 GB  [2m2 items[0m[2m  active 2w ago[0m
+    [1;32mA[0m    2.3 GB  python-venv         .venv
+    [1;32mA[0m   61.0 MB  mypy-cache          .mypy_cache
+  [1m~/Code/storefront[0m  1.7 GB  [2m3 items[0m[2m  active 2d ago[0m
+    [1;32mA[0m    1.2 GB  node_modules        node_modules
+    [1;32mA[0m  412.0 MB  next                .next
+    [1;32mA[0m   38.0 MB  dist                dist
+  [1m~/Code/weather[0m  698.0 MB  [2m2 items[0m[2m  active 8w ago[0m
+    [1;32mA[0m  512.0 MB  build               build
+    [1;32mA[0m  186.0 MB  dart-tool           .dart_tool
+  [1m~/Code/blog[0m  24.0 MB  [2m1 item[0m[2m  active 1y ago[0m
+    [1;31mC[0m   24.0 MB  dist                dist
+                                     [33m! no build config next to it, so this may be the only copy of its contents[0m
+
+[1;4;4mP[0m[1;4;4ma[0m[1;4;4mc[0m[1;4;4mk[0m[1;4;4ma[0m[1;4;4mg[0m[1;4;4me[0m[4m [0m[1;4;4mc[0m[1;4;4ma[0m[1;4;4mc[0m[1;4;4mh[0m[1;4;4me[0m[1;4;4ms[0m  [1m5.8 GB[0m  [2m4 items[0m
+  [1;33mB[0m    2.1 GB  go-modcache         ~/go/pkg/mod[2m  via go clean -modcache[0m
+  [1;33mB[0m    1.8 GB  npm-cache           ~/.npm/_cacache[2m  via npm cache clean --force[0m
+  [1;32mA[0m  940.0 MB  go-build-cache      ~/Library/Caches/go-build[2m  via go clean -cache[0m
+  [1;33mB[0m  870.0 MB  homebrew-cache      ~/Library/Caches/Homebrew[2m  via brew cleanup -s[0m
+
+[1;4;4mD[0m[1;4;4mo[0m[1;4;4mc[0m[1;4;4mk[0m[1;4;4me[0m[1;4;4mr[0m  [1m6.1 GB[0m  [2m6 items[0m
+  [1mBuild cache[0m  3.2 GB  [2m1 item[0m
+    [1;32mA[0m    3.2 GB  docker              build cache (2 unused records)
+  [1mStopped containers[0m  48.0 MB  [2m1 item[0m
+    [1;32mA[0m   48.0 MB  docker              container storefront-worker-1 (storefront-worker:dev, exited)
+  [1mDangling images[0m  1.2 GB  [2m1 item[0m
+    [1;32mA[0m    1.2 GB  docker              dangling image 9f3c1a7be2d4
+  [1mUnused images[0m  1.5 GB  [2m2 items[0m
+    [1;33mB[0m    1.1 GB  docker              image node:20
+    [1;33mB[0m  425.0 MB  docker              image postgres:15
+  [1mVolumes[0m  205.0 MB  [2m1 item[0m
+    [1;33mB[0m  205.0 MB  docker              volume old_redis
+
+[1;4;4mA[0m[1;4;4mp[0m[1;4;4mp[0m[4m [0m[1;4;4mc[0m[1;4;4ma[0m[1;4;4mc[0m[1;4;4mh[0m[1;4;4me[0m[1;4;4ms[0m  [1m5.2 GB[0m  [2m5 items[0m
+  [1mollama[0m  2.0 GB  [2m1 item[0m
+    [1;33mB[0m    2.0 GB  ollama              model llama3.2:latest[2m  via ollama rm llama3.2:latest[0m
+  [1mxcode-derived-data[0m  1.4 GB  [2m1 item[0m
+    [1;32mA[0m    1.4 GB  xcode-derived-data  ~/Library/Developer/Xcode/DerivedData/Weather-bxrjzktdwfaugpcvhzjmlzkhwqyi
+  [1mplaywright[0m  930.0 MB  [2m1 item[0m
+    [1;33mB[0m  930.0 MB  playwright          ~/Library/Caches/ms-playwright
+  [1muser-caches[0m  655.0 MB  [2m1 item[0m
+    [1;32mA[0m  655.0 MB  user-caches         ~/Library/Caches/Google
+  [1melectron-updaters[0m  214.0 MB  [2m1 item[0m
+    [1;32mA[0m  214.0 MB  electron-updaters   ~/Library/Caches/com.microsoft.VSCode.ShipIt
+
+[1;4;4mD[0m[1;4;4mo[0m[1;4;4mw[0m[1;4;4mn[0m[1;4;4ml[0m[1;4;4mo[0m[1;4;4ma[0m[1;4;4md[0m[1;4;4ms[0m  [1m120.0 MB[0m  [2m1 item[0m
+  [1mInstallers of installed apps[0m  120.0 MB  [2m1 item[0m
+    [1;33mB[0m  120.0 MB  installers          ~/Downloads/Zed-0.150.4.dmg
+  [1mAttention, never removed[0m  3.2 GB  [2m1 item[0m[2m  not counted, reclaim never removes these[0m
+         3.2 GB  old-downloads       ~/Downloads/conference-talk.mov
+                                     [33m! not touched for 1.1y; listed for you to review, reclaim never removes it[0m
+
+[1mTotal reclaimable:[0m [1m25.9 GB[0m in 25 items (A 16.2 GB, B 9.7 GB, C 24.0 MB)
+[2mTier A rebuilds itself, B costs a download or rebuild, C may be data. Nothing was removed.[0m
+
+Next: reclaim select to pick what goes, or reclaim select --preset safe.
