@@ -144,15 +144,6 @@ func query(ctx context.Context, env *scan.Env, tool string, args ...string) stri
 	return ""
 }
 
-// installed reports whether a tool is on PATH.
-func installed(env *scan.Env, tool string) bool {
-	if env.Exec == nil {
-		return false
-	}
-	_, err := env.Exec.LookPath(tool)
-	return err == nil
-}
-
 // absVar returns an environment variable when it holds an absolute path.
 func absVar(env *scan.Env, key string) string {
 	if v := env.Var(key); filepath.IsAbs(v) {

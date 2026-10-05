@@ -161,16 +161,15 @@ func TestToolReportedLocationsUseCleanCommands(t *testing.T) {
 	got := runScanners(t, scan.Env{Home: home, GOOS: "darwin", Exec: fake})
 
 	wantCommand := map[string][]string{
-		"npm-cache":       {"npm", "cache", "clean", "--force"},
-		"bun-cache":       {"bun", "pm", "cache", "rm"},
-		"yarn-cache":      {"yarn", "cache", "clean"},
-		"uv-cache":        {"uv", "cache", "clean"},
-		"pip-cache":       {"pip3", "cache", "purge"},
-		"go-modcache":     {"go", "clean", "-modcache"},
-		"go-build-cache":  {"go", "clean", "-cache"},
-		"homebrew-cache":  {"brew", "cleanup", "-s"},
-		"composer-cache":  {"composer", "clear-cache"},
-		"cocoapods-cache": {"pod", "cache", "clean", "--all"},
+		"npm-cache":      {"npm", "cache", "clean", "--force"},
+		"bun-cache":      {"bun", "pm", "cache", "rm"},
+		"yarn-cache":     {"yarn", "cache", "clean"},
+		"uv-cache":       {"uv", "cache", "clean"},
+		"pip-cache":      {"pip3", "cache", "purge"},
+		"go-modcache":    {"go", "clean", "-modcache"},
+		"go-build-cache": {"go", "clean", "-cache"},
+		"homebrew-cache": {"brew", "cleanup", "-s"},
+		"composer-cache": {"composer", "clear-cache"},
 	}
 	for name, cmd := range wantCommand {
 		require.Len(t, got[name], 1, name)

@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -221,7 +222,8 @@ func (r *runner) one(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome 
 }
 
 func (r *runner) removePath(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome {
-	if err := verifyPath(a, r.opts.Home, p.Roots); err != nil {
+	checked, err := verifyPath(a, r.opts.Home, p.Roots)
+	if err != nil {
 		return Outcome{Err: err}
 	}
 	before, err := r.opts.Walker.Size(ctx, a.Path)
@@ -231,14 +233,24 @@ func (r *runner) removePath(ctx context.Context, p *plan.Plan, a *plan.Action) O
 	if len(before.Mounts) > 0 {
 		return Outcome{Err: fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, before.Mounts[0])}
 	}
-	err = os.RemoveAll(a.Path)
+	root := containingRoot(a.Path, p.Roots)
+	err = removeInRoot(root, a.Path, checked)
 	if err != nil && errors.Is(err, fs.ErrPermission) && a.Kind == finding.KindDir {
 		// Read only directories, such as those in a Go module cache, cannot
 		// have entries removed. Make the directories inside the target
-		// writable by their owner and try once more.
-		if werr := makeDirsWritable(ctx, a.Path); werr == nil {
-			err = os.RemoveAll(a.Path)
+		// writable by their owner, check again for mounts that unreadable
+		// folders may have hidden, and try once more.
+		if werr := makeDirsWritable(ctx, root, a.Path); werr != nil {
+			return Outcome{Err: fmt.Errorf("remove %s: %w", a.Path, werr)}
 		}
+		again, serr := r.opts.Walker.Size(ctx, a.Path)
+		if serr != nil {
+			return Outcome{Err: serr}
+		}
+		if len(again.Mounts) > 0 {
+			return Outcome{Err: fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, again.Mounts[0])}
+		}
+		err = removeInRoot(root, a.Path, checked)
 	}
 	freed := before.Size
 	if _, statErr := os.Lstat(a.Path); statErr == nil {
@@ -251,21 +263,44 @@ func (r *runner) removePath(ctx context.Context, p *plan.Plan, a *plan.Action) O
 	return Outcome{Freed: freed}
 }
 
-// makeDirsWritable adds owner write and search permission to every directory
-// below root. It never follows symbolic links.
-func makeDirsWritable(ctx context.Context, root string) error {
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+// makeDirsWritable adds owner read, write and search permission to every
+// directory below target, through an os.Root at root so it cannot leave it.
+// It never follows symbolic links and refuses to enter another filesystem.
+func makeDirsWritable(ctx context.Context, root, target string) error {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("open root %s: %w", root, err)
+	}
+	defer func() { _ = r.Close() }()
+	top, err := os.Lstat(target)
+	if err != nil {
+		return err
+	}
+	dev, haveDev := fsx.DeviceOf(top)
+	return filepath.WalkDir(target, func(path string, d fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		// Entries that cannot be read are left alone; the second removal
-		// attempt reports them.
-		if walkErr == nil && d.IsDir() {
-			if info, err := d.Info(); err == nil && info.Mode().Perm()&0o300 != 0o300 {
-				return os.Chmod(path, info.Mode().Perm()|0o700)
-			}
+		// A directory is fixed before it is read, so an error here means it
+		// stays unreadable even for its owner, and removal cannot succeed.
+		if walkErr != nil || !d.IsDir() {
+			return walkErr
 		}
-		return nil
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if other, ok := fsx.DeviceOf(info); ok && haveDev && other != dev {
+			return fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", target, path)
+		}
+		if info.Mode().Perm()&0o700 == 0o700 {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		return r.Chmod(rel, info.Mode().Perm()|0o700)
 	})
 }
 
@@ -338,7 +373,7 @@ func (r *runner) dockerAction(ctx context.Context, a *plan.Action) Outcome {
 	case finding.ActionDockerRemoveContainer:
 		err = removeContainer(ctx, cli, a.Target)
 	case finding.ActionDockerRemoveImage:
-		err = removeImage(ctx, cli, a.Target)
+		err = removeImage(ctx, cli, a.Target, a.Tags)
 	case finding.ActionDockerRemoveVolume:
 		err = removeVolume(ctx, cli, a.Target)
 	case finding.ActionDockerPruneBuildCache:
@@ -380,7 +415,7 @@ func removeContainer(ctx context.Context, cli dockerx.API, id string) error {
 // removeImage removes an image that no container uses. It removes each tag
 // first and then the image id, never forcing, so the daemon refuses anything
 // still referenced.
-func removeImage(ctx context.Context, cli dockerx.API, id string) error {
+func removeImage(ctx context.Context, cli dockerx.API, id string, planned []string) error {
 	img, err := cli.ImageInspect(ctx, id)
 	if dockerx.IsNotFound(err) {
 		return errGone
@@ -397,7 +432,23 @@ func removeImage(ctx context.Context, cli dockerx.API, id string) error {
 			return fmt.Errorf("refusing image %s: container %s uses it now", id, strings.TrimPrefix(firstOr(c.Names, c.ID), "/"))
 		}
 	}
-	opts := image.RemoveOptions{PruneChildren: true}
+	if current := realTags(img.RepoTags); !slices.Equal(current, sortedTags(planned)) {
+		return fmt.Errorf("refusing image %s: its tags changed since the scan, from %v to %v", id, sortedTags(planned), current)
+	}
+	// An image with child images only loses its tags when removed, which
+	// frees nothing and leaves it untagged, so it is refused up front.
+	images, err := cli.ImageList(ctx, image.ListOptions{All: true})
+	if err != nil {
+		return fmt.Errorf("list images: %w", err)
+	}
+	for _, other := range images {
+		if other.ParentID == img.ID {
+			return fmt.Errorf("refusing image %s: image %s is built on it", id, other.ID)
+		}
+	}
+	// PruneChildren stays off so untagged parent images, which the plan
+	// does not list, are never removed along with this one.
+	opts := image.RemoveOptions{}
 	for _, tag := range img.RepoTags {
 		if tag == "" || tag == "<none>:<none>" {
 			continue
@@ -413,6 +464,19 @@ func removeImage(ctx context.Context, cli dockerx.API, id string) error {
 		return fmt.Errorf("remove image %s: %w", id, err)
 	}
 	return nil
+}
+
+// realTags returns the sorted tags of an image, without placeholders.
+func realTags(tags []string) []string {
+	out := slices.DeleteFunc(slices.Clone(tags), func(t string) bool { return t == "" || t == "<none>:<none>" })
+	slices.Sort(out)
+	return out
+}
+
+func sortedTags(tags []string) []string {
+	out := slices.Clone(tags)
+	slices.Sort(out)
+	return out
 }
 
 func removeVolume(ctx context.Context, cli dockerx.API, name string) error {

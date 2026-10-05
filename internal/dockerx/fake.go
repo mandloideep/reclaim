@@ -169,6 +169,16 @@ func (f *Fake) ImageInspect(_ context.Context, ref string, _ ...client.ImageInsp
 	return image.InspectResponse{ID: img.ID, RepoTags: slices.Clone(img.RepoTags), Size: img.Size}, nil
 }
 
+// ImageList implements API. It always lists every image.
+func (f *Fake) ImageList(context.Context, image.ListOptions) ([]image.Summary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	return slices.Clone(f.Images), nil
+}
+
 // ImageRemove implements API. Removing a tag untags; the image itself goes
 // away with its last tag or when removed by id.
 func (f *Fake) ImageRemove(_ context.Context, ref string, opts image.RemoveOptions) ([]image.DeleteResponse, error) {

@@ -124,8 +124,10 @@ func containerName(c container.Summary) string {
 }
 
 func containerFinding(ctx context.Context, cli dockerx.API, c container.Summary, u usage) finding.Finding {
+	// Only containers made by compose are tier A: compose recreates them from
+	// its file. A container made by hand may hold work in its writable layer.
 	f := finding.Finding{
-		Tier:     finding.TierA,
+		Tier:     finding.TierB,
 		Target:   c.ID,
 		Name:     fmt.Sprintf("container %s (%s, %s)", containerName(c), c.Image, c.State),
 		Size:     c.SizeRw,
@@ -136,6 +138,7 @@ func containerFinding(ctx context.Context, cli dockerx.API, c container.Summary,
 	}
 	if p := c.Labels["com.docker.compose.project"]; p != "" {
 		f.Restore = "docker compose up for project " + p
+		f.Tier = finding.TierA
 	}
 	if !u.imageExists[c.ImageID] {
 		f.Tier = finding.TierB
@@ -170,6 +173,7 @@ func imageFindings(images []*image.Summary, u usage, labels []dockerx.Label) []f
 		tags := realTags(img.RepoTags)
 		f := finding.Finding{
 			Target:   img.ID,
+			Tags:     tags,
 			Size:     size,
 			LastUsed: time.Unix(img.Created, 0),
 			Action:   finding.ActionDockerRemoveImage,

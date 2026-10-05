@@ -67,6 +67,11 @@ func dockerAction(action finding.Action, target string, size int64) plan.Action 
 	return plan.Action{ID: finding.MakeID("docker", target), Action: action, Target: target, Tier: finding.TierA, Scanner: "docker", Size: size}
 }
 
+func withTags(a plan.Action, tags ...string) plan.Action {
+	a.Tags = tags
+	return a
+}
+
 func newPlan(roots []string, actions ...plan.Action) *plan.Plan {
 	return &plan.Plan{Version: plan.Version, Created: time.Now(), Roots: roots, Actions: actions}
 }
@@ -237,7 +242,7 @@ func TestRemovePathRefusals(t *testing.T) {
 				return removeAction("/opt/homebrew", finding.KindDir), nil
 			},
 			roots:   func(env) []string { return []string{"/opt"} },
-			wantErr: "fewer than 4 components",
+			wantErr: "protected system path",
 		},
 		{
 			name: "the home directory",
@@ -269,6 +274,16 @@ func TestRemovePathRefusals(t *testing.T) {
 				return removeAction(filepath.Join(link, "node_modules"), finding.KindDir), []string{filepath.Join(actual, "node_modules", "x")}
 			},
 			wantErr: "symbolic link",
+		},
+		{
+			name: "a project folder that holds a virtual environment",
+			setup: func(t *testing.T, e env) (plan.Action, []string) {
+				p := filepath.Join(e.root, "pyapp")
+				write(t, filepath.Join(p, "pyproject.toml"), 1)
+				write(t, filepath.Join(p, "pyvenv.cfg"), 1)
+				return removeAction(p, finding.KindDir), []string{filepath.Join(p, "pyproject.toml")}
+			},
+			wantErr: "so it is a project",
 		},
 		{
 			name: "a directory that became a file",
@@ -440,6 +455,8 @@ func dockerFixture() *dockerx.Fake {
 			{ID: "sha256:multi", RepoTags: []string{"busybox:latest", "busybox:1.36"}},
 			{ID: "sha256:dangling", RepoTags: []string{"<none>:<none>"}},
 			{ID: "sha256:bystander", RepoTags: []string{"keep:me"}},
+			{ID: "sha256:base", RepoTags: []string{"base:1"}},
+			{ID: "sha256:child", RepoTags: []string{"child:1"}, ParentID: "sha256:base"},
 		},
 		Volumes: []volume.Volume{{Name: "vol-stopped"}, {Name: "vol-live"}, {Name: "vol-free"}, {Name: "vol-bystander"}},
 		BuildCache: []build.CacheRecord{
@@ -479,7 +496,7 @@ func TestDockerActions(t *testing.T) {
 		},
 		{
 			name:        "image with several tags is untagged then removed",
-			actions:     []plan.Action{dockerAction(finding.ActionDockerRemoveImage, "sha256:multi", 40)},
+			actions:     []plan.Action{withTags(dockerAction(finding.ActionDockerRemoveImage, "sha256:multi", 40), "busybox:1.36", "busybox:latest")},
 			wantStatus:  []Status{StatusDone},
 			wantRemoved: []string{"untag:busybox:latest", "image:busybox:1.36"},
 			wantFreed:   40,
@@ -490,6 +507,18 @@ func TestDockerActions(t *testing.T) {
 			wantStatus:  []Status{StatusDone},
 			wantRemoved: []string{"image:sha256:dangling"},
 			wantFreed:   5,
+		},
+		{
+			name:       "image tagged since the scan is refused",
+			actions:    []plan.Action{withTags(dockerAction(finding.ActionDockerRemoveImage, "sha256:multi", 40), "busybox:latest")},
+			wantStatus: []Status{StatusFailed},
+			wantErr:    "tags changed since the scan",
+		},
+		{
+			name:       "image other images are built on is refused before untagging",
+			actions:    []plan.Action{withTags(dockerAction(finding.ActionDockerRemoveImage, "sha256:base", 40), "base:1")},
+			wantStatus: []Status{StatusFailed},
+			wantErr:    "is built on it",
 		},
 		{
 			name:       "volume of a running container is refused",
@@ -592,6 +621,43 @@ func TestProgressIsReported(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, []int{0, 1}, seen)
+}
+
+func TestRemoveInRootRefusesReplacedTargets(t *testing.T) {
+	e := newEnv(t)
+	target := filepath.Join(e.root, "proj", "node_modules")
+	write(t, filepath.Join(target, "x"), 1)
+	checked, err := os.Lstat(target)
+	require.NoError(t, err)
+
+	// Swap the directory for a different one with the same name.
+	require.NoError(t, os.Rename(target, target+".old"))
+	write(t, filepath.Join(target, "y"), 1)
+	err = removeInRoot(e.root, target, checked)
+	require.ErrorContains(t, err, "replaced")
+	require.FileExists(t, filepath.Join(target, "y"))
+	require.FileExists(t, filepath.Join(target+".old", "x"))
+
+	// Swap a parent for a symbolic link to a look-alike tree.
+	require.NoError(t, os.RemoveAll(target))
+	require.NoError(t, os.Rename(target+".old", target))
+	checked, err = os.Lstat(target)
+	require.NoError(t, err)
+	other := filepath.Join(e.root, "other")
+	write(t, filepath.Join(other, "node_modules", "z"), 1)
+	require.NoError(t, os.Rename(filepath.Join(e.root, "proj"), filepath.Join(e.root, "proj.real")))
+	require.NoError(t, os.Symlink(other, filepath.Join(e.root, "proj")))
+	err = removeInRoot(e.root, target, checked)
+	require.ErrorContains(t, err, "changed since it was checked")
+	require.FileExists(t, filepath.Join(other, "node_modules", "z"))
+}
+
+func TestContainingRoot(t *testing.T) {
+	roots := []string{"/a", "/a/b", "/c"}
+	require.Equal(t, "/a/b", containingRoot("/a/b/x/y", roots))
+	require.Equal(t, "/a", containingRoot("/a/x", roots))
+	require.Equal(t, "", containingRoot("/d/x", roots))
+	require.Equal(t, "/a", containingRoot("/a/b", roots), "a root is held by its parent root, never by itself")
 }
 
 func TestComponentCount(t *testing.T) {

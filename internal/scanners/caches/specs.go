@@ -305,20 +305,13 @@ func mavenLocalRepository(settings, home string) string {
 
 func locateCocoaPods(_ context.Context, env *scan.Env) []location {
 	return []location{{
-		path:    firstNonEmpty(absVar(env, "CP_CACHE_DIR"), filepath.Join(env.UserCacheDir(), "CocoaPods")),
-		tier:    finding.TierB,
+		path: firstNonEmpty(absVar(env, "CP_CACHE_DIR"), filepath.Join(env.UserCacheDir(), "CocoaPods")),
+		tier: finding.TierB,
+		// CocoaPods cannot be asked where its cache is, so the folder found
+		// here is removed directly rather than trusting "pod cache clean" to
+		// clean the same one.
 		restore: "downloaded again by the next pod install",
-		command: podCommand(env),
 	}}
-}
-
-// podCommand uses "pod cache clean --all" when CocoaPods is installed and the
-// cache location is not overridden, since the command cleans the default.
-func podCommand(env *scan.Env) []string {
-	if env.Var("CP_CACHE_DIR") != "" || !installed(env, "pod") {
-		return nil
-	}
-	return []string{"pod", "cache", "clean", "--all"}
 }
 
 func locateComposer(ctx context.Context, env *scan.Env) []location {

@@ -158,6 +158,9 @@ type Finding struct {
 	Target string `json:"target"`
 	// Name is a short human readable label, such as an image tag.
 	Name string `json:"name,omitempty"`
+	// Tags are the tags of an image at scan time. Apply refuses an image
+	// whose tags changed since, so a re-tagged image is never removed.
+	Tags []string `json:"tags,omitempty"`
 	// Size is the number of bytes expected to be freed, apparent size on disk.
 	Size int64 `json:"size"`
 	// Project is the owning project root when known.

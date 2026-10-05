@@ -67,7 +67,7 @@ func unlabeledState(t *testing.T, cli *client.Client) []string {
 			out = append(out, "container:"+c.ID)
 		}
 	}
-	imgs, err := cli.ImageList(ctx, image.ListOptions{})
+	imgs, err := cli.ImageList(ctx, image.ListOptions{All: true})
 	require.NoError(t, err)
 	for _, img := range imgs {
 		if img.Labels[testLabelKey] != testLabelValue {
@@ -187,7 +187,7 @@ func TestDockerIntegration(t *testing.T) {
 		got[f.Target] = f.Tier
 	}
 	require.Equal(t, map[string]finding.Tier{
-		stopped.ID:  finding.TierA,
+		stopped.ID:  finding.TierB,
 		unusedImage: finding.TierB,
 		freeVol:     finding.TierB,
 		attachedVol: finding.TierC,

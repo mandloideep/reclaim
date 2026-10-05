@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/fsx"
 	"github.com/mandloideep/reclaim/internal/plan"
 	"github.com/mandloideep/reclaim/internal/project"
 )
@@ -41,7 +42,8 @@ func protectedHomePaths() []string {
 		"Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music", "Public", "Sites",
 		".ssh", ".gnupg", ".config", ".local", ".local/share", ".local/state", ".cache", ".docker",
 		".kube", ".aws", "Code", "Developer", "Projects", "src", "work", "go", ".cargo", ".rustup",
-		".npm", ".gradle", ".m2", ".bun", ".yarn", ".orbstack", "OrbStack",
+		".npm", ".gradle", ".m2", ".bun", ".yarn", ".orbstack", "OrbStack", "code", "projects", "dev",
+		"Library/pnpm",
 	}
 }
 
@@ -63,11 +65,11 @@ func checkProtected(p, home, projectRoot string, roots []string) error {
 	if !filepath.IsAbs(p) || filepath.Clean(p) != p {
 		return fmt.Errorf("refusing %s: not a clean absolute path", p)
 	}
-	if componentCount(p) < minComponents {
-		return fmt.Errorf("refusing %s: paths with fewer than %d components are never removed", p, minComponents)
-	}
 	if slices.Contains(protectedSystemPaths(), p) {
 		return fmt.Errorf("refusing %s: protected system path", p)
+	}
+	if componentCount(p) < minComponents {
+		return fmt.Errorf("refusing %s: paths with fewer than %d components are never removed", p, minComponents)
 	}
 	if home != "" {
 		if project.IsWithin(home, p) {
@@ -104,17 +106,25 @@ func checkProtected(p, home, projectRoot string, roots []string) error {
 // path rules above, then that no component of the path is a symbolic link,
 // that the object is still the same kind the scanner found, and that a
 // directory does not hold a git working tree.
-func verifyPath(a *plan.Action, home string, roots []string) error {
+func verifyPath(a *plan.Action, home string, roots []string) (fs.FileInfo, error) {
 	if err := checkProtected(a.Path, home, a.Project, roots); err != nil {
-		return err
+		return nil, err
 	}
 	info, err := os.Lstat(a.Path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return errGone
+		return nil, errGone
 	}
 	if err != nil {
-		return fmt.Errorf("inspect %s: %w", a.Path, err)
+		return nil, fmt.Errorf("inspect %s: %w", a.Path, err)
 	}
+	if err := checkObject(a, info); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+// checkObject applies the checks that depend on what is on disk now.
+func checkObject(a *plan.Action, info fs.FileInfo) error {
 	resolved, err := filepath.EvalSymlinks(a.Path)
 	if err != nil {
 		return fmt.Errorf("resolve %s: %w", a.Path, err)
@@ -131,9 +141,61 @@ func verifyPath(a *plan.Action, home string, roots []string) error {
 		return fmt.Errorf("refusing %s: it was a file at scan time and is not one now", a.Path)
 	}
 	if info.IsDir() {
-		if _, err := os.Lstat(filepath.Join(a.Path, ".git")); err == nil {
-			return fmt.Errorf("refusing %s: it contains a .git entry, so it is a working tree", a.Path)
+		for _, name := range project.ManifestNames() {
+			if _, err := os.Lstat(filepath.Join(a.Path, name)); err == nil {
+				if name == ".git" {
+					return fmt.Errorf("refusing %s: it contains a .git entry, so it is a working tree", a.Path)
+				}
+				return fmt.Errorf("refusing %s: it contains %s, so it is a project", a.Path, name)
+			}
 		}
 	}
+	parent, err := os.Lstat(filepath.Dir(a.Path))
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", filepath.Dir(a.Path), err)
+	}
+	dev, ok := fsx.DeviceOf(info)
+	parentDev, parentOK := fsx.DeviceOf(parent)
+	if ok && parentOK && dev != parentDev {
+		return fmt.Errorf("refusing %s: it is a mount point", a.Path)
+	}
 	return nil
+}
+
+// containingRoot returns the deepest root that holds path.
+func containingRoot(path string, roots []string) string {
+	best := ""
+	for _, r := range roots {
+		if project.IsWithin(path, r) && path != r && len(r) > len(best) {
+			best = r
+		}
+	}
+	return best
+}
+
+// removeInRoot removes path through an os.Root opened at root, after checking
+// once more, immediately before acting, that no component of the path became
+// a symbolic link and that the object is the one verified earlier. Removal
+// through the root cannot escape it even if the path changes underneath.
+func removeInRoot(root, path string, checked fs.FileInfo) error {
+	if resolved, err := filepath.EvalSymlinks(path); err != nil || resolved != path {
+		return fmt.Errorf("refusing %s: the path changed since it was checked", path)
+	}
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("open root %s: %w", root, err)
+	}
+	defer func() { _ = r.Close() }()
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("refusing %s: %w", path, err)
+	}
+	info, err := r.Lstat(rel)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", path, err)
+	}
+	if !os.SameFile(info, checked) {
+		return fmt.Errorf("refusing %s: it was replaced since it was checked", path)
+	}
+	return r.RemoveAll(rel)
 }

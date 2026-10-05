@@ -32,6 +32,7 @@ func newFake() *dockerx.Fake {
 				Labels:  map[string]string{"reclaim.test": "1", "com.docker.compose.project": "shop"},
 				Mounts:  []container.MountPoint{{Type: "volume", Name: "vol-stopped"}, {Type: "bind", Source: "/host"}}},
 			{ID: "c-created", Names: []string{"/fresh"}, Image: "gone:1", ImageID: "sha256:gone", State: container.StateCreated, SizeRw: 10},
+			{ID: "c-manual", Names: []string{"/scratch"}, Image: "mine:dev", ImageID: "sha256:local", State: container.StateExited, SizeRw: 20},
 		},
 		FinishedAt: map[string]string{"c-exited": "2026-09-01T10:00:00.123456789Z"},
 		Images: []image.Summary{
@@ -42,6 +43,7 @@ func newFake() *dockerx.Fake {
 			{ID: "sha256:dangling00000000", RepoTags: []string{"<none>:<none>"}, Size: 500, SharedSize: 100, Created: 1700000000},
 			{ID: "sha256:unused", RepoTags: []string{"busybox:latest", "busybox:1.36"}, RepoDigests: []string{"busybox@sha256:abc"}, Size: 4000, SharedSize: -1, Labels: testLabel},
 			{ID: "sha256:local", RepoTags: []string{"mine:dev"}, Size: 300},
+			{ID: "sha256:local2", RepoTags: []string{"mine:old"}, Size: 300},
 		},
 		Volumes: []volume.Volume{
 			{Name: "vol-db", UsageData: &volume.UsageData{Size: 9000, RefCount: 1}},
@@ -82,7 +84,8 @@ func TestScanFindsOnlyUnusedObjects(t *testing.T) {
 		"c-created":               {finding.TierB, finding.ActionDockerRemoveContainer, 10},
 		"sha256:dangling00000000": {finding.TierA, finding.ActionDockerRemoveImage, 400},
 		"sha256:unused":           {finding.TierB, finding.ActionDockerRemoveImage, 4000},
-		"sha256:local":            {finding.TierB, finding.ActionDockerRemoveImage, 300},
+		"c-manual":                {finding.TierB, finding.ActionDockerRemoveContainer, 20},
+		"sha256:local2":           {finding.TierB, finding.ActionDockerRemoveImage, 300},
 		"vol-stopped":             {finding.TierC, finding.ActionDockerRemoveVolume, 3000},
 		"vol-free":                {finding.TierB, finding.ActionDockerRemoveVolume, 2000},
 		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef": {finding.TierB, finding.ActionDockerRemoveVolume, 0},
@@ -107,7 +110,9 @@ func TestScanFindsOnlyUnusedObjects(t *testing.T) {
 	require.Contains(t, got["c-created"].Warning, "image no longer exists")
 	require.Equal(t, "docker pull busybox:latest", got["sha256:unused"].Restore)
 	require.Contains(t, got["sha256:unused"].Name, "busybox:1.36")
-	require.Contains(t, got["sha256:local"].Restore, "built locally")
+	require.Contains(t, got["sha256:local2"].Restore, "built locally")
+	require.Equal(t, []string{"busybox:latest", "busybox:1.36"}, got["sha256:unused"].Tags)
+	require.Empty(t, got["sha256:dangling00000000"].Tags)
 	require.Contains(t, got["vol-stopped"].Warning, "old")
 	require.Contains(t, got["vol-free"].Warning, "not inspected")
 	require.Contains(t, got["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"].Name, "anonymous")

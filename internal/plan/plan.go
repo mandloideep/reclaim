@@ -58,6 +58,8 @@ type Action struct {
 	Target string `json:"target"`
 	// Name is a human readable label.
 	Name string `json:"name,omitempty"`
+	// Tags are the image tags at scan time, for DockerRemoveImage.
+	Tags []string `json:"tags,omitempty"`
 	// Size is the size measured at scan time.
 	Size int64 `json:"size"`
 	// Tier is the finding tier.
@@ -101,6 +103,7 @@ func FromFinding(f *finding.Finding) Action {
 		Kind:      f.Kind,
 		Target:    f.Target,
 		Name:      f.Name,
+		Tags:      slices.Clone(f.Tags),
 		Size:      f.Size,
 		Tier:      f.Tier,
 		Scanner:   f.Scanner,
@@ -312,7 +315,6 @@ func AllowedCommand(argv []string) bool {
 		{"go", "clean", "-modcache"},
 		{"go", "clean", "-cache"},
 		{"brew", "cleanup", "-s"},
-		{"pod", "cache", "clean", "--all"},
 		{"composer", "clear-cache"},
 	}
 	return slices.ContainsFunc(allowed, func(a []string) bool { return slices.Equal(a, argv) })

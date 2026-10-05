@@ -39,6 +39,8 @@ type API interface {
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
 	// ImageInspect returns the details of one image.
 	ImageInspect(ctx context.Context, imageID string, inspectOpts ...client.ImageInspectOption) (image.InspectResponse, error)
+	// ImageList lists images.
+	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
 	// ImageRemove removes an image reference or an image.
 	ImageRemove(ctx context.Context, imageID string, options image.RemoveOptions) ([]image.DeleteResponse, error)
 	// VolumeInspect returns the details of one volume.
