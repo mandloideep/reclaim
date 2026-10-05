@@ -505,20 +505,29 @@ func ollamaAction(models, model string) plan.Action {
 }
 
 // TestOllamaRemove checks that ollama rm runs only for a model whose
-// manifest is still in the scanned folder and only against this machine, and
+// manifest is still in the scanned folder, only against this machine and
+// only while the system wide service holds no model of the same name, and
 // that it frees what the command removed and nothing else.
 func TestOllamaRemove(t *testing.T) {
 	e := newEnv(t)
 	models := filepath.Join(e.home, ".ollama", "models")
-	manifest := filepath.Join(models, "manifests", "registry.ollama.ai", "library", "llama3", "latest")
+	rel := filepath.Join("manifests", "registry.ollama.ai", "library", "llama3", "latest")
+	manifest := filepath.Join(models, rel)
+	system := filepath.Join(t.TempDir(), "ollama", ".ollama", "models")
 	tests := []struct {
 		name     string
 		host     string
 		manifest bool
-		want     Status
-		wantErr  string
+		// system is the state of the system wide models folder: "" for none,
+		// "other" with another model, "same" with this model, "unreadable".
+		system  string
+		want    Status
+		wantErr string
 	}{
 		{name: "local", manifest: true, want: StatusDone},
+		{name: "system folder with other models", manifest: true, system: "other", want: StatusDone},
+		{name: "system folder with the same model", manifest: true, system: "same", want: StatusFailed, wantErr: "has a model of the same name"},
+		{name: "unreadable system folder", manifest: true, system: "unreadable", want: StatusFailed, wantErr: "cannot check the system Ollama models"},
 		{name: "loopback host", host: "http://127.0.0.1:11434", manifest: true, want: StatusDone},
 		{name: "localhost", host: "localhost:11434", manifest: true, want: StatusDone},
 		{name: "remote host", host: "gpu-box.lan:11434", manifest: true, want: StatusFailed, wantErr: "not this machine"},
@@ -527,6 +536,21 @@ func TestOllamaRemove(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.NoError(t, os.RemoveAll(models))
+			_ = os.Chmod(filepath.Dir(system), 0o755)
+			require.NoError(t, os.RemoveAll(system))
+			switch tt.system {
+			case "other":
+				write(t, filepath.Join(system, "manifests", "registry.ollama.ai", "library", "mistral", "latest"), 10)
+			case "same":
+				write(t, filepath.Join(system, rel), 10)
+			case "unreadable":
+				if os.Geteuid() == 0 {
+					t.Skip("root reads every folder")
+				}
+				write(t, filepath.Join(system, rel), 10)
+				require.NoError(t, os.Chmod(filepath.Dir(system), 0o000))
+				t.Cleanup(func() { _ = os.Chmod(filepath.Dir(system), 0o755) })
+			}
 			write(t, filepath.Join(models, "blobs", "sha256-1"), 500)
 			write(t, filepath.Join(models, "blobs", "sha256-2"), 70)
 			if tt.manifest {
@@ -547,7 +571,11 @@ func TestOllamaRemove(t *testing.T) {
 				}
 				return ""
 			}
-			sum, _, err := run(t, e, newPlan(nil, ollamaAction(models, "llama3:latest")), func(o *Options) { o.Exec = fake; o.Getenv = env })
+			sum, _, err := run(t, e, newPlan(nil, ollamaAction(models, "llama3:latest")), func(o *Options) {
+				o.Exec = fake
+				o.Getenv = env
+				o.OllamaSystemModels = system
+			})
 			require.Equal(t, tt.want, sum.Outcomes[0].Status)
 			if tt.want != StatusDone {
 				require.Empty(t, fake.Ran())
@@ -561,8 +589,28 @@ func TestOllamaRemove(t *testing.T) {
 			require.Equal(t, int64(510), sum.Freed, "the manifest and the blob only this model used")
 			require.Equal(t, [][]string{{"ollama", "rm", "llama3:latest"}}, fake.Ran())
 			require.True(t, exists(filepath.Join(models, "blobs", "sha256-2")))
+			if tt.system == "other" {
+				require.True(t, exists(filepath.Join(system, "manifests", "registry.ollama.ai", "library", "mistral", "latest")))
+			}
 		})
 	}
+}
+
+// TestOllamaSystemModelsAreManual checks that a model of the system wide
+// service is printed for the user and never run, even when its manifest is
+// there.
+func TestOllamaSystemModelsAreManual(t *testing.T) {
+	e := newEnv(t)
+	system := filepath.Join(e.home, "system", "models")
+	write(t, filepath.Join(system, "manifests", "registry.ollama.ai", "library", "llama3", "latest"), 10)
+	a := ollamaAction(system, "llama3:latest")
+	a.NeedsSudo = true
+	fake := &execx.Fake{Tools: map[string]string{"ollama": "/usr/local/bin/ollama"}}
+	sum, _, err := run(t, e, newPlan(nil, a), func(o *Options) { o.Exec = fake; o.OllamaSystemModels = system })
+	require.NoError(t, err)
+	require.Equal(t, StatusManual, sum.Outcomes[0].Status)
+	require.Empty(t, fake.Ran())
+	require.True(t, exists(filepath.Join(system, "manifests", "registry.ollama.ai", "library", "llama3", "latest")))
 }
 
 func TestIsLocalHost(t *testing.T) {

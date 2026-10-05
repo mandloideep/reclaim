@@ -463,7 +463,8 @@ func TestOllama(t *testing.T) {
 	manifest(t, filepath.Join(m, "hf.co", "org", "model", "q4"), map[string]int64{"sha256:w3": 2_000_000_000})
 	manifest(t, filepath.Join(m, "registry.ollama.ai", "library", "-bad", "x"), map[string]int64{"sha256:w4": 5})
 
-	env := testEnv(home, "linux", nil)
+	// macOS has no system wide service, so only the user's folder is read.
+	env := testEnv(home, "darwin", nil)
 	res := scan.Run(context.Background(), []scan.Scanner{scannerNamed(t, "ollama")}, env, 1)
 	require.Len(t, res.Warnings, 1, "a name ollama rm could misread is skipped with a warning")
 	byName := map[string]finding.Finding{}
@@ -486,6 +487,98 @@ func TestOllama(t *testing.T) {
 		require.True(t, ok)
 		require.FileExists(t, filepath.Join(models, "manifests", filepath.FromSlash(rel)))
 	}
+}
+
+func TestOllamaFolders(t *testing.T) {
+	home := fakeHome(t)
+	user := filepath.Join(home, ".ollama", "models")
+	tests := []struct {
+		name string
+		goos string
+		vars map[string]string
+		want []ollamaFolder
+	}{
+		{name: "macOS", goos: "darwin", want: []ollamaFolder{{dir: user}}},
+		{name: "Linux", goos: "linux", want: []ollamaFolder{{dir: user}, {dir: plan.OllamaSystemModels, system: true}}},
+		{name: "Linux with OLLAMA_MODELS", goos: "linux", vars: map[string]string{"OLLAMA_MODELS": "/srv/models"},
+			want: []ollamaFolder{{dir: "/srv/models"}, {dir: plan.OllamaSystemModels, system: true}}},
+		{name: "OLLAMA_MODELS names the system folder", goos: "linux", vars: map[string]string{"OLLAMA_MODELS": plan.OllamaSystemModels},
+			want: []ollamaFolder{{dir: plan.OllamaSystemModels}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := testEnv(home, tt.goos, nil)
+			env.Getenv = func(k string) string { return tt.vars[k] }
+			require.Equal(t, tt.want, ollamaFolders(&env))
+		})
+	}
+}
+
+// TestOllamaSystemFolder scans a user folder and a system wide folder:
+// system models are printed for the user to run, a model in both folders is
+// offered only from the system folder, and an unreadable system folder keeps
+// the user's models from being offered, because ollama rm could reach the
+// system service instead.
+func TestOllamaSystemFolder(t *testing.T) {
+	home := fakeHome(t)
+	user := filepath.Join(home, ".ollama", "models")
+	system := filepath.Join(filepath.Dir(filepath.Dir(home)), "usr", "share", "ollama", ".ollama", "models")
+	lib := func(dir, model, tag string) string {
+		return filepath.Join(dir, "manifests", "registry.ollama.ai", "library", model, tag)
+	}
+	manifest(t, lib(user, "mine", "latest"), map[string]int64{"sha256:u1": 3_000})
+	manifest(t, lib(user, "both", "latest"), map[string]int64{"sha256:u2": 5_000})
+	manifest(t, lib(system, "both", "latest"), map[string]int64{"sha256:s2": 6_000})
+	manifest(t, lib(system, "shared", "7b"), map[string]int64{"sha256:s1": 9_000})
+	folders := []ollamaFolder{{dir: user}, {dir: system, system: true}}
+
+	diag := scan.NewDiagnostics()
+	env := testEnv(home, "linux", nil)
+	env.Diag = diag
+	got, err := scanOllamaFolders(context.Background(), &env, folders)
+	require.NoError(t, err)
+	byKey := map[string]finding.Finding{}
+	for _, f := range got {
+		byKey[f.Path+" "+f.Name] = f
+		require.True(t, plan.AllowedCommand(f.Command))
+	}
+	require.Len(t, byKey, 3)
+	mine := byKey[user+" model mine:latest"]
+	require.False(t, mine.NeedsSudo, "a model only in the user's folder is removed by apply")
+	require.Equal(t, []string{"ollama", "rm", "mine:latest"}, mine.Command)
+	for _, key := range []string{system + " model both:latest", system + " model shared:7b"} {
+		f := byKey[key]
+		require.True(t, f.NeedsSudo, key)
+		require.Equal(t, finding.TierB, f.Tier)
+		require.Contains(t, f.Warning, "system wide Ollama service")
+	}
+	require.NotContains(t, byKey, user+" model both:latest", "ollama rm cannot choose which copy goes")
+	require.Len(t, diag.Notes(), 1)
+	require.Contains(t, diag.Notes()[0], "only the copy in "+system+" is offered")
+	require.Empty(t, diag.Warnings())
+
+	// Every finding can go into a plan: the ids stay unique.
+	r := &finding.Report{Version: finding.ReportVersion, Created: now, Roots: []string{home}, Findings: got}
+	_, err = plan.New(r, got, "host", now)
+	require.NoError(t, err)
+
+	t.Run("an unreadable system folder", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads every folder")
+		}
+		parent := filepath.Dir(system)
+		require.NoError(t, os.Chmod(parent, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+		diag := scan.NewDiagnostics()
+		env.Diag = diag
+		got, err := scanOllamaFolders(context.Background(), &env, folders)
+		require.NoError(t, err)
+		require.Empty(t, got, "the user's models could share a name with an unseen system model")
+		require.Len(t, diag.Notes(), 2)
+		require.Contains(t, diag.Notes()[0], "cannot be read without root")
+		require.Contains(t, diag.Notes()[1], "are not offered")
+		require.Empty(t, diag.Warnings())
+	})
 }
 
 func scannerNamed(t *testing.T, name string) *Scanner {

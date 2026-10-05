@@ -84,15 +84,16 @@ func (a *app) applyCommand(cmd *cobra.Command, path string, f applyFlags) error 
 	a.sayf("\n")
 	total := len(pl.Actions)
 	sum, runErr := apply.Run(cmd.Context(), pl, apply.Options{
-		Home:      a.home,
-		Walker:    fsx.NewWalker(0),
-		Exec:      a.exec,
-		Getenv:    a.getenv,
-		Docker:    a.docker,
-		Log:       logFile,
-		PlanPath:  path,
-		KeepGoing: f.keepGoing,
-		Now:       a.now,
+		Home:               a.home,
+		Walker:             fsx.NewWalker(0),
+		Exec:               a.exec,
+		Getenv:             a.getenv,
+		Docker:             a.docker,
+		OllamaSystemModels: a.ollamaSystemModels(),
+		Log:                logFile,
+		PlanPath:           path,
+		KeepGoing:          f.keepGoing,
+		Now:                a.now,
 		Progress: func(i int, o apply.Outcome) {
 			a.printOutcome(i, total, o)
 		},
@@ -112,6 +113,15 @@ func (a *app) applyCommand(cmd *cobra.Command, path string, f applyFlags) error 
 	}
 	a.sayf("\n%s %s. Log: %s\n", p.Bold("Freed"), p.Bold(units.FormatSize(sum.Freed)), logPath)
 	return runErr
+}
+
+// ollamaSystemModels is the models folder of the system wide Ollama service,
+// which only the Linux install script sets up.
+func (a *app) ollamaSystemModels() string {
+	if a.goos == "linux" {
+		return plan.OllamaSystemModels
+	}
+	return ""
 }
 
 func (a *app) printOutcome(i, total int, o apply.Outcome) {
