@@ -50,6 +50,7 @@ The only file it writes is its own copy of the report, `last-report.json` in the
 `--depth` limits how many levels below each root the project walk descends, and 0 means no limit.
 `--docker-label` may be repeated, and every label must match.
 The report records its roots: the scan roots, plus the home directory when package cache or Docker scanners ran, because caches live there.
+Nested roots are kept, so apply still refuses to remove `~/Code` itself when `~` is also a root.
 
 ### select
 
@@ -74,11 +75,13 @@ Before removing, `apply` re-checks that the path still exists, is still the same
 A plan older than 24 hours is refused unless `--stale-ok` is given, because the disk may have changed.
 The age is measured from the scan the plan was built from, not from when the plan was written.
 
-Re-verification of a filesystem target means: the path is clean and absolute, has at least four components, is not on the denylist, is not inside a `.git` directory, is not the home directory, a scan root, the owning project root or an ancestor of any of them, lies inside a recorded root, has no symbolic link anywhere in it, is still the kind of object the scanner found, does not hold a `.git` entry, and has no other filesystem mounted inside it.
+Re-verification of a filesystem target means: the path is clean and absolute, has at least four components, is not on the denylist, is not inside a `.git` directory, is not the home directory, a scan root, the owning project root or an ancestor of any of them, lies inside a recorded root, has no symbolic link anywhere in it, is still the kind of object the scanner found, does not hold a `.git` entry or a project manifest, is not itself a mount point, and has no other filesystem mounted inside it.
+Measuring the target takes time, so right before removing it apply checks once more that no component of the path became a symbolic link and that the object is the same file it verified, then removes it through an `os.Root` opened at the recorded root, which cannot escape that root.
 A target that no longer exists is reported as already gone and is not an error.
-When a removal fails on read only directories, as in a Go module cache, apply adds owner write permission to the directories inside the target and tries once more.
+When a removal fails on read only directories, as in a Go module cache, apply adds owner permissions to the directories inside the target, refusing to enter another filesystem, measures again for mounts that unreadable folders hid, and tries once more.
 Docker removals never force: a container must be stopped, an image must not be used by any container, and a volume must not be used by a running container.
-Images are removed tag by tag and then by id, so the daemon refuses anything still referenced.
+Images are removed tag by tag and then by id, without pruning untagged parents, so the daemon refuses anything still referenced and nothing outside the plan goes with them.
+The plan records each image's tags at scan time, and an image whose tags changed since, or that other images are built on, is refused before any tag is removed.
 Bytes freed are measured before and after for filesystem and command actions, reported by the daemon for the build cache, and estimated from the scan for other Docker objects.
 The log is JSON lines: one entry when the run starts, one per action with its timestamp, status, bytes freed and any error or command output, and one when it ends.
 The default log is a new file in the reclaim folder under the user cache directory.
@@ -93,7 +96,8 @@ It prints the children of the folder sorted by size, like `du` with one level of
 Reclaimable entries found at any depth are listed in a second section with their full paths, so the user sees both the shape of the folder and the exact candidates.
 `here` findings can be piped into `select` through `--out`, exactly like `scan`.
 In phase 1, `here` runs the project scanners only, since package caches and Docker live outside project folders.
-It walks the folder once, recording the size of every directory, and the scanners take artifact sizes from that walk instead of walking them again.
+It measures the folder in one walk that records the size of every directory, and the scanners take artifact sizes from that walk instead of measuring them again.
+Project discovery still reads the folders outside artifacts a second time, which is the cheap part of the tree.
 `--json` prints `{"version": 1, "path", "size", "children", "findings", "warnings", "notes"}`, where each child has `name`, `path`, `dir`, `size` and nested `children` down to `--depth`.
 
 ## Architecture
@@ -172,7 +176,8 @@ It does not cross filesystem boundaries.
 It does not follow symlinks.
 It skips paths it cannot read and records them as warnings.
 Hard links are deduplicated within one measurement, so a pnpm `node_modules` that hard links into the store still shows its full size, which is what removing it alone would not free; the pnpm findings say so.
-All walks in a run share one bound on concurrent directory reads, by default the number of CPUs between 4 and 8, because more parallel readers add kernel contention on APFS instead of speed.
+All size walks in a run share one bound on concurrent directory reads, by default the number of CPUs between 4 and 8, because more parallel readers add kernel contention on APFS instead of speed.
+Project discovery has its own bound of the same size; the project scanners only start measuring once discovery has finished, so the two overlap only with the package cache and Docker scanners.
 
 ### Tiers
 
@@ -201,7 +206,10 @@ Last activity is the newest of the last git commit date and the newest source fi
 Projects inside artifact folders, for example a `package.json` inside `node_modules`, are not projects.
 
 All project scanners share one concurrent walk per scan.
-The walk never enters `.git`, never follows symbolic links, never crosses into another filesystem and never treats a directory holding a `.git` entry as an artifact, so a `dist` folder checked out as a git worktree is safe.
+The walk never enters `.git`, never follows symbolic links and never crosses into another filesystem.
+It never treats a directory holding a `.git` entry or a project manifest such as `package.json` or `pyproject.toml` as an artifact, so a `dist` folder checked out as a git worktree, or a project that ran `python -m venv .` in its own root, is safe.
+A root that is an artifact folder or lies inside one, such as `~/Code/web/node_modules/left-pad`, is not walked, and the report says why.
+In a git working tree, an artifact that git does not ignore, or that holds tracked files, is tier C whatever its rule says, because it may be committed source such as electron-builder's `build` resources; this needs `git`, and without it the rule's tier stands.
 A finding belongs to the nearest enclosing git working tree, so the packages of a monorepo group under the repository.
 Outside git, the nearest directory with a marker owns its contents.
 When a scan root lies inside a project, the walk looks for that project in the root's ancestors, stopping below the home directory so a dotfiles repository in `~` does not swallow every project.
@@ -218,7 +226,7 @@ Uses the Docker Engine API through the official client, honoring `DOCKER_HOST` a
 It uses `docker system df` style data plus `ContainerList(all)`, `ImageList`, `VolumeList` and `BuildCachePrune` dry-run data.
 Findings:
 
-- Stopped or created containers: tier A if their image still exists, with action `DockerRemoveContainer`.
+- Stopped or created containers, with action `DockerRemoveContainer`: tier A when compose created them and their image still exists, as the tiers section says, and tier B otherwise, because a container made by hand may hold work in its writable layer.
 - Dangling images: tier A.
 - Images with no containers: tier B.
 - Volumes with no containers: tier B, with a warning that volume contents are not inspected.
@@ -240,6 +248,7 @@ One finding per cache, with the native clean command as the action where one exi
 Covered: npm `_cacache` and `_npx`, pnpm store and cache, bun install cache, yarn cache, uv cache, pip cache, Go module cache and build cache, cargo registry and git caches, Homebrew cache with `brew cleanup -s`, swiftpm cache, gradle caches, maven repository, CocoaPods cache, composer cache.
 The scanner locates each cache by asking the tool when it is installed, for example `npm config get cache`, and falls back to the documented environment variables and the default location.
 The native clean command is used only when the location came from the tool itself, so the command acts on the directory that was measured.
+CocoaPods cannot be asked where its cache is, so its cache is removed with `RemovePath` instead of `pod cache clean`.
 Apply runs only commands from a fixed allowlist of exactly these argument lists, so a hand edited plan cannot run anything else.
 Tools are queried from `/` with a timeout, with corepack downloads and update checks disabled.
 
