@@ -30,17 +30,19 @@ reclaim scan [path...]   [--json] [--md] [--min-size 50MB] [--tier A,B] [--categ
                          [--docker-label key=value]
 reclaim select           [--report report.json] [--preset safe|aggressive] [--out plan.json]
 reclaim apply plan.json  [--yes] [--log apply.log] [--keep-going] [--stale-ok]
-reclaim here [path]      [--depth 2] [--json] [--out report.json]
-reclaim scanners         # list registered scanners and what they look for
+reclaim here [path]      [--depth 2] [--json] [--md] [--out report.json]
+reclaim scanners         # list registered scanners, what they look for and whether the config disables them
 reclaim version
 ```
 
+Every command accepts `--config path` to read another configuration file and `--verbose` for debug logs.
+
 ### scan
 
-With no path, `scan` uses the configured roots.
-The default roots on macOS are `~/Code`, `~/Developer`, `~/Projects`, `~/src`, `~/work`, `~/Downloads`, whichever exist, plus the well known cache locations each scanner knows about.
-With one or more paths, `scan` restricts the project scanners to those paths and skips the global cache scanners unless `--all` is given.
-The report groups findings by category, then by project, sorted by size descending.
+With no path, `scan` uses the roots from the configuration file.
+Without a configuration, the default roots are `~/Code`, `~/Developer`, `~/Projects`, `~/src`, `~/work`, `~/Downloads`, whichever exist, plus the well known cache locations each scanner knows about.
+With one or more paths, `scan` restricts the project scanners to those paths and skips the package cache, Docker, app cache and Downloads scanners unless `--all` is given.
+The report groups findings by category, then by project, Docker object kind or scanner, sorted by size descending.
 `--json` writes the full report, `--md` writes a Markdown summary, and `--out` saves the JSON report for `select` to consume.
 A scan never modifies anything.
 The only file it writes is its own copy of the report, `last-report.json` in the reclaim folder under the user cache directory, which `select` reads by default.
@@ -49,8 +51,10 @@ The only file it writes is its own copy of the report, `last-report.json` in the
 `--category` accepts a category such as `docker`, an ecosystem such as `node` or `python`, or a scanner name such as `node_modules`, and an unknown value is an error.
 `--depth` limits how many levels below each root the project walk descends, and 0 means no limit.
 `--docker-label` may be repeated, and every label must match.
-The report records its roots: the scan roots, plus the home directory when package cache or Docker scanners ran, because caches live there.
+The report records its roots: the scan roots, plus the home directory when any scanner outside the project category ran, because caches live there.
 Nested roots are kept, so apply still refuses to remove `~/Code` itself when `~` is also a root.
+The report also records its scope: the command that wrote it, its arguments with every flag that was set, the resolved path arguments and the walked roots.
+`scan` and `here` both save the most recent report as `last-report.json`, whatever they covered, because running `here` and then `select` is a supported flow; the scope is what lets `select` say which kind of report it is reading.
 
 ### select
 
@@ -61,8 +65,14 @@ It writes a plan file.
 The checklist must handle thousands of findings without the user scrolling through them one by one.
 See "Handling long lists".
 
-Until the checklist lands in phase 2, `select` without `--preset` prints a numbered list and reads a selection such as `1,4-9,12` from standard input.
+Before the list or the checklist, `select` prints one provenance line: the command that produced the report, how long ago and when, how many findings it holds, how many more are listed for attention only, and their reclaimable total.
+When the report came from `here` or from a scan given paths, the line says that it covers only those folders, not the whole machine, and suggests `reclaim scan`.
+A report written before scopes existed is described as coming from an older reclaim.
+
+The checklist opens only when standard input and standard output are both terminals and `--preset` is not given.
+Otherwise `select` prints a numbered list, grouped exactly like the scan table, and reads a selection such as `1,4-9,12` from standard input, so scripts and tests keep working.
 Tier C items are selected only when their number is listed on its own; a range that covers them skips them and says so.
+Findings listed for attention only are printed without a number, so they can never be selected, and building a plan refuses them as well.
 
 ### apply
 
@@ -86,6 +96,19 @@ Bytes freed are measured before and after for filesystem and command actions, re
 The log is JSON lines: one entry when the run starts, one per action with its timestamp, status, bytes freed and any error or command output, and one when it ends.
 The default log is a new file in the reclaim folder under the user cache directory.
 A plan made on another host is applied with a warning, because host names on macOS change with the network.
+A plan action with the `None` action, which marks a finding listed for attention only, fails validation, so a hand edited plan cannot apply one, and apply refuses it again on its own.
+
+`RunCommand` actions are limited to a fixed list.
+The package cache clean commands are exact argument lists.
+Removal commands that name their target, `ollama rm <model>`, `xcrun simctl delete <device>` and `xcrun simctl runtime delete <runtime>`, take exactly one argument that must match a strict pattern: a UUID for the simulator commands and a model name that cannot start with a dash for Ollama.
+For a clean command that came from a tool's own location query, apply asks the tool again right before running it, with the same fixed query, and refuses when the answer, with symbolic links resolved, is not the directory recorded in the plan.
+A plan action for such a command without a path is refused too.
+If the tool now reports the recorded directory and it no longer exists, the action is reported as already gone.
+Plan validation ties the argument of a removal command to the action's target, which the id covers: the Ollama target is `ollama:<model>`, a simulator's path ends in its UDID, and a runtime's target is `simulator-runtime:<identifier>`, so a hand edit cannot point the command at something else.
+Right before running them, apply checks those targets again.
+`ollama rm` runs only while the model's manifest is still in the models folder the plan records, and only when `OLLAMA_HOST` is unset or names this machine, so a same named model on another server is never removed.
+`xcrun simctl delete` runs only while `xcrun simctl list` still reports the simulator as unavailable, so a simulator whose runtime came back is kept.
+A target that no longer exists is reported as already gone.
 
 ### here
 
@@ -95,10 +118,12 @@ It prints the children of the folder sorted by size, like `du` with one level of
 `--depth` increases how deep the breakdown goes.
 Reclaimable entries found at any depth are listed in a second section with their full paths, so the user sees both the shape of the folder and the exact candidates.
 `here` findings can be piped into `select` through `--out`, exactly like `scan`.
-In phase 1, `here` runs the project scanners only, since package caches and Docker live outside project folders.
+`here` runs the project scanners only, since package caches, Docker and app caches live outside project folders.
+The configuration's `exclude` paths and disabled scanners apply to it as they do to `scan`.
 It measures the folder in one walk that records the size of every directory, and the scanners take artifact sizes from that walk instead of measuring them again.
 Project discovery still reads the folders outside artifacts a second time, which is the cheap part of the tree.
 `--json` prints `{"version": 1, "path", "size", "children", "findings", "warnings", "notes"}`, where each child has `name`, `path`, `dir`, `size` and nested `children` down to `--depth`.
+`--md` prints the same breakdown and findings as Markdown tables.
 
 ## Architecture
 
@@ -113,12 +138,12 @@ internal/dockerx       Thin wrapper over the Docker Engine API client
 internal/fsx           Fast concurrent directory size calculation, symlink and mount boundary handling
 internal/project       Project detection (markers, type, last activity)
 internal/ui            Table rendering, Markdown rendering, interactive checklist
-internal/config        Config file loading and default roots
+internal/config        Config file loading
 ```
 
 Scanners are registered in an explicit list in `internal/scanners/all.go`.
 Hidden registration via `init` makes the set of scanners harder to see.
-Scanners are grouped by family in `internal/scanners/projects`, `internal/scanners/caches` and `internal/scanners/docker` instead of one package per scanner.
+Scanners are grouped by family in `internal/scanners/projects`, `internal/scanners/caches`, `internal/scanners/docker`, `internal/scanners/appcache` and `internal/scanners/downloads` instead of one package per scanner.
 Every rule is still its own scanner with its own name, but the project scanners share one walk of the roots and the cache scanners share their location helpers, so a package per scanner would only add boilerplate.
 
 ### Scanner interface
@@ -138,12 +163,15 @@ type Scanner interface {
 }
 ```
 
-`Env` carries the roots, the home directory, the OS, an environment variable reader, a command runner for asking tools where their caches live, a Docker client that may be nil, the Docker label filter, the size walker, the shared project walk, sizes already measured in the same run, a logger and a diagnostics sink for warnings and notes.
+`Env` carries the roots, the home directory, the OS, the time the scan started, the folders holding installed applications, an environment variable reader, a command runner for asking tools where their caches live, a Docker client that may be nil, the Docker label filter, the size walker, the shared project walk, sizes already measured in the same run, a logger and a diagnostics sink for warnings and notes.
 Everything a scanner needs comes from `Env` so tests can substitute fakes.
 There is no general filesystem abstraction.
 The walker needs device ids, inodes and link counts, which an in-memory filesystem would have to fake, so scanner tests build real fixtures in temp directories instead.
 Scanners run concurrently with a bounded worker count.
 A scanner failing, for example because Docker is not running, produces a warning in the report and does not fail the scan.
+
+A scanner that reports every entry of a shared folder, such as the one for `~/Library/Caches`, implements the optional `CatchAll` interface.
+The runner drops each catch-all finding whose path contains, equals or lies inside the path of a finding from any other scanner, so the same bytes are never offered twice and the specific scanner, which knows the right tier and restore hint, wins.
 
 ### Finding
 
@@ -161,7 +189,7 @@ type Finding struct {
     Project     string    // owning project root when known
     LastUsed    time.Time // best effort: project last commit, container finished time, file mtime
     Restore     string    // how to get it back, such as "npm install" or "docker pull"
-    Action      Action    // what apply does: RemovePath, DockerRemoveImage, RunCommand
+    Action      Action    // what apply does: RemovePath, RunCommand, a Docker action, or None
     Command     []string  // for RunCommand actions, the exact argv
     NeedsSudo   bool
     Warning     string    // shown in the checklist for tier C findings
@@ -169,6 +197,12 @@ type Finding struct {
 ```
 
 The JSON keys are the snake case field names, such as `last_used` and `needs_sudo`, and a report carries `"version": 1`.
+
+The `None` action marks a finding that is shown but never applied: a large old file in Downloads listed for the user's attention.
+Such findings are tier C, carry a warning that says reclaim never removes them, are excluded from every reclaimable total and from the per tier totals, appear in their own group, cannot be ticked in the checklist, get no number in the numbered list, are never picked by a preset, and are refused when building or validating a plan.
+
+A report carries an optional `scope` object with `command`, `args`, `paths` and `roots`, described under `scan`.
+Reports without one remain valid.
 
 Sizes are measured with a concurrent walker in `internal/fsx`.
 It counts apparent file size and hard links once.
@@ -182,7 +216,7 @@ Project discovery has its own bound of the same size; the project scanners only 
 ### Tiers
 
 Tier A regenerates itself the next time the project builds or installs.
-Examples: `node_modules`, `.venv`, Rust `target`, Go build caches, `.next`, `dist` when a build config exists, `__pycache__`, dangling Docker images, Docker build cache, stopped containers that were created from compose, Electron updater caches.
+Examples: `node_modules`, `.venv`, Rust `target`, Go build caches, `.next`, `dist` when a build config exists, `__pycache__`, dangling Docker images, Docker build cache, stopped containers that were created from compose, Electron updater caches, app cache folders, Xcode DerivedData.
 Tier A findings are preselected in the checklist.
 
 Tier B can be re-downloaded or rebuilt but costs real time or bandwidth.
@@ -190,7 +224,7 @@ Examples: package manager stores such as the npm cache, pnpm store, Go module ca
 Tier B findings are shown and never preselected.
 
 Tier C is data.
-Examples: Docker volumes attached to a stopped container, browser profiles, large media in a project, archives in Downloads that have an extracted sibling.
+Examples: Docker volumes attached to a stopped container, browser profiles, large media in a project, archives in Downloads that have an extracted sibling, Codex worktrees with uncommitted changes.
 Tier C findings carry a warning, are never preselected, and cannot be selected through a group toggle.
 The user must tick each one individually.
 
@@ -241,6 +275,8 @@ A stopped container whose image no longer exists is tier B, because it cannot be
 `--docker-label key=value` limits Docker findings to objects with that label.
 The build cache is skipped while a label filter is active, because cache records carry no labels.
 If OrbStack is detected, the report notes that OrbStack returns host space automatically after removal.
+The scan table, the Markdown summary, the numbered list and the checklist group Docker findings by kind, in this order: build cache, stopped containers, dangling images, unused images, volumes.
+Each group shows its subtotal and count, like project groups do.
 
 ### Package cache scanners
 
@@ -251,34 +287,69 @@ The native clean command is used only when the location came from the tool itsel
 CocoaPods cannot be asked where its cache is, so its cache is removed with `RemovePath` instead of `pod cache clean`.
 Apply runs only commands from a fixed allowlist of exactly these argument lists, so a hand edited plan cannot run anything else.
 Tools are queried from `/` with a timeout, with corepack downloads and update checks disabled.
+The allowlist pairs every clean command with the query that located its cache, and apply runs that query again before the command, as described under `apply`.
 
 ### App cache scanners
 
-- `~/Library/Caches/*` entries above the size threshold, tier A, excluding a small denylist of apps known to store data there.
-- Electron updater leftovers: `*.ShipIt`, `*-updater` folders in `~/Library/Caches`, tier A.
-- Playwright and Puppeteer browser downloads, tier B.
-- Xcode `DerivedData`, tier A.
-Simulator devices in `~/Library/Developer/CoreSimulator/Devices` for unavailable runtimes, tier B.
-- Simulator runtimes under `/Library/Developer/CoreSimulator`, tier B, `NeedsSudo`, with the `xcrun simctl runtime delete` command.
-- Ollama models, tier B, one finding per model with `ollama rm` as the action.
-- Agent tool leftovers: Codex worktrees and sessions, Claude VM bundles, tier B.
+All of them are in category `app-cache` and are read only.
+Scanners for macOS only things return nothing on other systems.
+
+- `user-caches`: every entry of the per user cache folder, `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` or `~/.cache` elsewhere, that is a real directory of at least 1 MB, with the warning to quit the app first.
+Entries of `~/Library/Caches`, a folder apps are told to treat as disposable, are tier A.
+Entries of `~/.cache` on Linux are tier B, because apps use that folder less strictly, so they are never preselected.
+The cache folder is scanned only when it lies strictly inside the home directory, so a cache variable that names the home directory or another folder does not turn its contents into cache findings; the scan warns instead.
+Every finding is a direct child of the cache folder, never the folder itself, which apply protects anyway.
+It skips entries other scanners report at their default locations (package caches, browser downloads, updater leftovers, and reclaim's own folder, which holds the last report and the apply logs), and a denylist of entries known to hold data or managed by the system: every `com.apple.*` and `com.docker.*` entry, CloudKit, Family, GameKit, PassKit and GeoServices data, Spotify's offline storage, Hugging Face and Torch models, Poetry virtual environments, Evolution mail and OrbStack.
+It is a catch-all scanner, so a cache another scanner reports, even after being moved into the cache folder, is offered only once.
+- `electron-updaters`: `*.ShipIt` and `*-updater` folders in the cache folder, tier A.
+- `playwright`: the `ms-playwright` browser folder, or `PLAYWRIGHT_BROWSERS_PATH`, and `ms-playwright-go`, tier B, one finding per folder.
+Playwright MCP keeps persistent browser profiles with logins in `ms-playwright-mcp` and sometimes in `ms-playwright` itself, as `mcp-*` folders; such folders are tier C with a warning naming the profiles.
+- `puppeteer`: `~/.cache/puppeteer` or `PUPPETEER_CACHE_DIR`, tier B.
+A browser folder named by `PLAYWRIGHT_BROWSERS_PATH` or `PUPPETEER_CACHE_DIR` is offered only when it lies strictly inside the home directory, is neither the cache folder nor holds it, and holds at least one entry that looks like a downloaded browser.
+- `xcode-derived-data`: each folder in `~/Library/Developer/Xcode/DerivedData`, tier A.
+- `simulator-devices`: simulators that `xcrun simctl list -j devices` reports unavailable, usually because their runtime is gone, tier B, removed with `xcrun simctl delete <udid>` so CoreSimulator's own records stay consistent.
+- `simulator-runtimes`: deletable runtimes from `xcrun simctl runtime list -j`, tier B, `NeedsSudo`, with the `xcrun simctl runtime delete <identifier>` command for the user to run.
+Without Xcode there is no `simctl`, and both simulator scanners report nothing.
+- `ollama`: one finding per model, read from the manifests in `~/.ollama/models` or `OLLAMA_MODELS`, so the server need not run for a scan; tier B with `ollama rm <model>` as the action.
+A model's size counts only the blobs no other model uses, because shared blobs are freed only when every model using them is removed; the warning says how much is shared and that `ollama rm` needs Ollama running.
+- `codex-worktrees`: each task folder in `~/.codex/worktrees` or `$CODEX_HOME/worktrees`, tier B with a reminder to run `git worktree prune`.
+A folder holding a worktree with uncommitted changes, or with commits that no branch, remote or tag holds, such as commits on a detached HEAD, or one git cannot report on, or any worktree when git is missing, is tier C.
+The warning says that ignored files such as `.env` are lost too.
+- `codex-sessions`: Codex conversation logs, one finding per month folder in `sessions` whose newest file is older than 30 days, because resuming a conversation appends to its old log without changing the folder's time, and the `archived_sessions` folder, tier B.
+- `claude-vm`: the `*.bundle` folders in `~/Library/Application Support/Claude/vm_bundles`, and Claude Code VM versions in `claude-code-vm` other than the one its `.sdk-version` names, tier B.
 
 ### Downloads scanner
 
-- Installer files: `.dmg`, `.pkg`, `.iso`, `.zip` and `.app.tar.*` whose application name matches an app in `/Applications`, tier B.
-- Archive with an extracted sibling, detected by matching the archive stem to a sibling directory, tier C on the archive with a warning naming the sibling.
-- Any file above a large threshold not touched in a long time, listed under an "attention" section but with no action, so the user sees it without the tool offering to delete it.
+Three scanners in category `downloads` look at the files directly inside `~/Downloads`.
+They never descend into folders there and skip hidden files and symbolic links.
+
+- `installers`: `.dmg`, `.pkg`, `.iso`, `.zip` and `.app.tar.*` files whose name matches an application in the applications folders, `/Applications` and `~/Applications` on macOS, including apps one folder deep such as `/Applications/DaVinci Resolve/DaVinci Resolve.app`, tier B.
+The installer name must start with the app name on a word boundary, ignoring case, spaces and punctuation, so `DaVinci_Resolve_21.1_Mac.zip` matches `DaVinci Resolve.app` and `zen.macos-universal.dmg` matches `Zen.app`, but `Zenith-2.dmg` does not.
+Every word after the app name must be a version or name a platform or release channel, such as `4.41.105`, `macOS`, `universal` or `arm64`, so `Notion Export.zip` or `Signal backup.dmg`, which may be the only copy of data, are not installers.
+A zip must also hold an app bundle, a disk image or a package at its top level, read from its central directory without extracting anything.
+- `extracted-archives`: archives (`.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.zst`, `.7z`, `.rar`) with a folder of the same name without the extension next to them, tier C on the archive with a warning naming that folder.
+This rule wins over the installer rule, because the archive may be the only untouched copy.
+- `old-downloads`: any other file of at least 250 MB that has been neither modified nor read for 90 days, using the later of the modification and access times, listed under an "attention" group with the `None` action, so the user sees it without the tool offering to delete it.
 
 ## Handling long lists
 
-The checklist is a tree, not a flat list.
+The checklist is a tree, not a flat list, built with bubbletea and bubbles.
 Top level nodes are categories.
-Under a category, project findings are grouped by project, and package caches are one row each.
-Every node shows its aggregate size and count.
-Toggling a group toggles its tier A and tier B children and never its tier C children.
-Keys: space toggles, enter expands, `/` filters by text, `s` cycles sort, `t` filters by tier, `a` selects all tier A, `w` writes the plan and exits, `q` quits without writing.
-The footer always shows the selected count and total size.
-The plan file is JSON and the checklist tells the user where it was written, so editing it by hand is always an option.
+Under a category, project findings are grouped by project, Docker findings by object kind, and app cache and Downloads findings by scanner; package caches are one row each.
+The table, the Markdown summary and the numbered list use the same grouping.
+Every node shows its aggregate size, its count and how many of its findings are selected, over the findings the current filters show.
+Tier A findings are preselected.
+Toggling a group or category toggles its visible tier A and tier B children and never its tier C children, and says how many tier C items it left alone.
+Tier C findings are ticked one at a time, and their rows show their warning.
+Findings listed for attention only show their size and warning but cannot be ticked, and their group says it is not counted.
+Keys: space toggles, enter expands and collapses (right and left also expand and collapse), `/` filters by text, `s` cycles the sort between size, name and oldest first, `t` cycles the tier filter between all, A, B and C, `a` selects every visible tier A finding, `w` writes the plan and exits, `q` quits without writing, and esc clears the text filter.
+The text filter matches a finding's name, path, scanner, project and group title, so typing a project path shows all its findings; while any filter is active, every group is shown open.
+Categories start open and groups start closed.
+The header shows the provenance line, wrapped to the window so its end, which says when a report covers only some folders, stays visible.
+Two lines under the list show the full warning, or else the path, of the finding under the cursor, which a narrow window cuts off in its row.
+The footer always shows the selected count and total size and the plan path that `w` will write.
+Only the rows that fit in the window are rendered, so the checklist stays responsive with thousands of findings.
+The plan file is JSON and `select` tells the user where it was written, so editing it by hand is always an option.
 For users who never want a screen, `--preset` and `--json` piped through `jq` give the same result.
 
 ## Plan file
@@ -318,7 +389,9 @@ Only `apply` deletes, only from a plan, only after confirmation.
 
 ## Configuration
 
-Optional file at `~/.config/reclaim/config.toml`.
+Optional file at `~/.config/reclaim/config.toml`, or `$XDG_CONFIG_HOME/reclaim/config.toml` when that variable holds an absolute path, read through `internal/config` with BurntSushi toml.
+`--config` reads another file.
+A missing file means the defaults, except that a file named with `--config` must exist.
 
 ```toml
 roots = ["~/Code", "~/Downloads"]
@@ -330,13 +403,25 @@ stale = "60d"
 disable = ["ollama"]
 ```
 
-Flags override the config file.
+Every key is optional, and an unknown key is an error that names it, so a typo never silently changes what a scan covers.
+Paths start with `~/` or are absolute, and symbolic links in them are resolved.
+
+- `roots` replaces the default scan roots; a root that does not exist is skipped with a warning.
+- `exclude` lists paths the project walk never enters, and drops every finding whose path is one of them, lies under one, or contains one, since removing it would remove the excluded path too, whichever scanner found it.
+An exclude that does not exist gets a warning, because it protects nothing.
+- `min_size` and `stale` are the defaults for `--min-size` and `--stale`.
+- `[scanners] disable` takes scanner names, categories or ecosystems, like `--category`; an unknown one is an error.
+Disabled scanners do not run, and `reclaim scanners` marks them disabled.
+
+Flags override the config file: `--min-size` and `--stale` replace the file's values, paths given to `scan` replace its roots, and `--category` runs exactly the scanners it selects, disabled or not.
 
 ## Output formats
 
 The terminal table uses lipgloss for layout, human readable sizes, and colors only when stdout is a terminal.
 `--json` is stable and versioned.
 `--md` is for pasting into an issue or a document.
+It has a heading per category and per group with their subtotals, a table of findings per group, the totals, warnings and notes, and never colors.
+Text in table cells is escaped, including pipes in paths.
 
 ## Testing
 
@@ -347,16 +432,19 @@ Fixtures build a fake home with projects, artifact folders and caches, then asse
 They create their own fixtures: a `busybox` image, a stopped container, an unused volume and a small build, all labeled `reclaim.test=1`.
 They assert that the scanner finds exactly those fixtures when filtered by the label and that `apply` removes them.
 They never touch anything without the label.
-The fixture images are built from `LABEL` only Dockerfiles on top of `busybox`, so the build leaves no unlabeled intermediate images, and the `busybox` base image is never removed.
+The fixture images are built from Dockerfiles with a single `LABEL` instruction on top of `busybox` that sets the test label too, so the build has one step and leaves no unlabeled intermediate images, and the `busybox` base image is never removed.
+Build time labels passed through the API are not used, because the classic builder adds a step for them whose intermediate image carries no label.
 The build cache prune is covered by unit tests against a fake client only, because a real prune cannot be limited to labeled records.
 Without `RECLAIM_DOCKER_TESTS=1` the tests skip, and the scanner and the Docker executors are unit tested against an in-memory fake of the client interface in `internal/dockerx`.
 - An end-to-end test runs `scan` on a fixture tree, writes a plan with `--preset safe`, runs `apply --yes`, and asserts that only the expected paths are gone.
-- CI runs `go test -race` on macOS and Linux and `golangci-lint`.
+A second one scans a whole fake machine, with projects, package and app caches, installed apps and a Downloads folder, applies `--preset aggressive`, and asserts that only the tier A and B paths are gone while the archive with an extracted copy and the attention file remain.
+- The checklist is tested by feeding key messages to its `Update` method and asserting on the selection and on `View`.
+- CI runs `go test -race` on macOS and Linux and `golangci-lint`, and a separate job on `ubuntu-latest` runs the Docker integration test against the runner's daemon with `RECLAIM_DOCKER_TESTS=1`, failing if the test skips.
 
 ## Phases
 
-Phase 1 delivers `scan`, `here`, `select --preset`, `apply`, the project scanners, the package cache scanners, the Docker scanner, JSON and table output, and the test suite.
-Phase 2 delivers the interactive checklist, the app cache scanners, the Downloads scanner, Markdown output and the config file.
+Phase 1 delivered `scan`, `here`, `select --preset`, `apply`, the project scanners, the package cache scanners, the Docker scanner, JSON and table output, and the test suite.
+Phase 2 delivered the interactive checklist, the app cache scanners, the Downloads scanner, Markdown output, the config file, report provenance, Docker grouping, the location check before clean commands and the Docker integration test in CI.
 Phase 3 delivers GoReleaser, a Homebrew tap, shell completion and a README with screenshots.
 
 Each phase is a pull request or a short series of pull requests.

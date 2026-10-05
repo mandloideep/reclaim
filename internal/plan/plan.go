@@ -118,7 +118,13 @@ func FromFinding(f *finding.Finding) Action {
 
 // New builds a plan from selected findings of a report. Actions are ordered
 // so containers go before the images and volumes they may hold, then by size.
-func New(r *finding.Report, selected []finding.Finding, host string, now time.Time) *Plan {
+// Findings listed for attention only cannot be applied and are refused.
+func New(r *finding.Report, selected []finding.Finding, host string, now time.Time) (*Plan, error) {
+	for i := range selected {
+		if !selected[i].Actionable() {
+			return nil, fmt.Errorf("%s is listed for attention only and cannot be put in a plan", selected[i].DisplayName())
+		}
+	}
 	p := &Plan{
 		Version: Version,
 		Created: now.UTC(),
@@ -144,7 +150,7 @@ func New(r *finding.Report, selected []finding.Finding, host string, now time.Ti
 		}
 		return cmp.Compare(b.Size, a.Size)
 	})
-	return p
+	return p, nil
 }
 
 // Preset returns the tiers a named preset selects: "safe" selects tier A and
@@ -160,11 +166,12 @@ func Preset(name string) ([]finding.Tier, error) {
 	}
 }
 
-// SelectTiers returns the findings in the given tiers, never tier C.
+// SelectTiers returns the findings in the given tiers, never tier C and never
+// a finding listed for attention only.
 func SelectTiers(fs []finding.Finding, tiers []finding.Tier) []finding.Finding {
 	var out []finding.Finding
 	for _, f := range fs {
-		if f.Tier != finding.TierC && slices.Contains(tiers, f.Tier) {
+		if f.Tier != finding.TierC && f.Actionable() && slices.Contains(tiers, f.Tier) {
 			out = append(out, f)
 		}
 	}
@@ -263,6 +270,9 @@ func (p *Plan) Validate() error {
 }
 
 func (a *Action) validate() error {
+	if a.Action == finding.ActionNone {
+		return errors.New("the finding is listed for attention only and cannot be applied")
+	}
 	if !a.Action.Valid() {
 		return fmt.Errorf("unknown action %q", a.Action)
 	}
@@ -290,8 +300,12 @@ func (a *Action) validate() error {
 			return errors.New("RemovePath must not carry a command")
 		}
 	case finding.ActionRunCommand:
-		if !AllowedCommand(a.Command) {
+		c, ok := lookupCommand(a.Command)
+		if !ok {
 			return fmt.Errorf("command %q is not one of the clean commands reclaim knows", strings.Join(a.Command, " "))
+		}
+		if c.target != nil && !c.target(a.Command[len(a.Command)-1], a.Path, a.Target) {
+			return fmt.Errorf("command %q does not act on the target %s, the plan was edited inconsistently", strings.Join(a.Command, " "), a.Target)
 		}
 	default:
 		if a.Path != "" || len(a.Command) > 0 {
@@ -299,25 +313,6 @@ func (a *Action) validate() error {
 		}
 	}
 	return nil
-}
-
-// AllowedCommand reports whether argv is exactly one of the clean commands
-// that package cache scanners emit. Apply refuses every other command, so a
-// plan file cannot be used to run arbitrary programs.
-func AllowedCommand(argv []string) bool {
-	allowed := [][]string{
-		{"npm", "cache", "clean", "--force"},
-		{"yarn", "cache", "clean"},
-		{"bun", "pm", "cache", "rm"},
-		{"uv", "cache", "clean"},
-		{"pip3", "cache", "purge"},
-		{"pip", "cache", "purge"},
-		{"go", "clean", "-modcache"},
-		{"go", "clean", "-cache"},
-		{"brew", "cleanup", "-s"},
-		{"composer", "clear-cache"},
-	}
-	return slices.ContainsFunc(allowed, func(a []string) bool { return slices.Equal(a, argv) })
 }
 
 // CheckAge refuses a plan whose scan is older than MaxAge unless staleOK is

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -393,8 +394,9 @@ func TestRunCommand(t *testing.T) {
 	cache := filepath.Join(e.home, ".npm", "_cacache")
 	write(t, filepath.Join(cache, "a"), 400)
 	fake := &execx.Fake{
-		Tools: map[string]string{"npm": "/usr/bin/npm"},
-		OnRun: func([]string) error { return os.Remove(filepath.Join(cache, "a")) },
+		Tools:   map[string]string{"npm": "/usr/bin/npm"},
+		Outputs: map[string]string{"npm config get cache": filepath.Dir(cache)},
+		OnRun:   func([]string) error { return os.Remove(filepath.Join(cache, "a")) },
 	}
 	sum, log, err := run(t, e, newPlan([]string{e.root, e.home}, commandAction(cache, "npm", "cache", "clean", "--force")),
 		func(o *Options) { o.Exec = fake })
@@ -412,7 +414,8 @@ func TestRunCommand(t *testing.T) {
 		require.Empty(t, fake.Ran())
 	})
 	t.Run("command fails", func(t *testing.T) {
-		fake := &execx.Fake{Tools: map[string]string{"npm": "/usr/bin/npm"}, RunErr: errors.New("exit status 1")}
+		fake := &execx.Fake{Tools: map[string]string{"npm": "/usr/bin/npm"}, RunErr: errors.New("exit status 1"),
+			Outputs: map[string]string{"npm config get cache": filepath.Dir(cache)}}
 		sum, _, err := run(t, e, newPlan(nil, commandAction(cache, "npm", "cache", "clean", "--force")), func(o *Options) { o.Exec = fake })
 		require.Error(t, err)
 		require.Equal(t, StatusFailed, sum.Outcomes[0].Status)
@@ -427,6 +430,219 @@ func TestRunCommand(t *testing.T) {
 		require.ErrorContains(t, sum.Outcomes[0].Err, "not an allowed clean command")
 		require.Empty(t, fake.Ran())
 	})
+}
+
+// TestRunCommandAsksAgainWhereTheCacheIs checks that apply asks the tool for
+// its cache location right before running its clean command and refuses
+// when the answer is not the directory the plan was made for.
+func TestRunCommandAsksAgainWhereTheCacheIs(t *testing.T) {
+	e := newEnv(t)
+	cache := filepath.Join(e.home, ".npm", "_cacache")
+	write(t, filepath.Join(cache, "a"), 400)
+	moved := filepath.Join(e.home, "elsewhere", "npm")
+	write(t, filepath.Join(moved, "_cacache", "b"), 10)
+	link := filepath.Join(e.home, "npm-link")
+	require.NoError(t, os.Symlink(filepath.Dir(cache), link))
+
+	tests := []struct {
+		name     string
+		answer   string
+		queryErr bool
+		action   func() plan.Action
+		want     Status
+		wantErr  string
+	}{
+		{name: "same place", answer: filepath.Dir(cache), want: StatusDone},
+		{name: "same place through a symbolic link", answer: link, want: StatusDone},
+		{name: "same place after notices", answer: "npm notice: new version\n" + filepath.Dir(cache), want: StatusDone},
+		{name: "moved", answer: moved, want: StatusFailed, wantErr: "now reports " + filepath.Join(moved, "_cacache")},
+		{name: "moved somewhere missing", answer: filepath.Join(e.home, "nowhere"), want: StatusFailed, wantErr: "now reports"},
+		{name: "no answer", answer: "not a path", want: StatusFailed, wantErr: "did not report a cache directory"},
+		{name: "query fails", queryErr: true, want: StatusFailed, wantErr: "could not ask npm"},
+		{name: "plan without a path", answer: filepath.Dir(cache), action: func() plan.Action {
+			a := commandAction(cache, "npm", "cache", "clean", "--force")
+			a.Path = ""
+			return a
+		}, want: StatusFailed, wantErr: "does not record the directory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &execx.Fake{Tools: map[string]string{"npm": "/usr/bin/npm"}, Outputs: map[string]string{}}
+			if !tt.queryErr {
+				fake.Outputs["npm config get cache"] = tt.answer
+			}
+			a := commandAction(cache, "npm", "cache", "clean", "--force")
+			if tt.action != nil {
+				a = tt.action()
+			}
+			sum, _, err := run(t, e, newPlan(nil, a), func(o *Options) { o.Exec = fake })
+			require.Equal(t, tt.want, sum.Outcomes[0].Status)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				require.ErrorContains(t, sum.Outcomes[0].Err, tt.wantErr)
+				require.Empty(t, fake.Ran(), "the clean command never runs when the cache moved")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, [][]string{{"npm", "cache", "clean", "--force"}}, fake.Ran())
+		})
+	}
+
+	t.Run("the cache is gone", func(t *testing.T) {
+		gone := filepath.Join(e.home, ".npm2", "_cacache")
+		fake := &execx.Fake{Tools: map[string]string{"npm": "/usr/bin/npm"}, Outputs: map[string]string{"npm config get cache": filepath.Dir(gone)}}
+		sum, _, err := run(t, e, newPlan(nil, commandAction(gone, "npm", "cache", "clean", "--force")), func(o *Options) { o.Exec = fake })
+		require.NoError(t, err)
+		require.Equal(t, StatusGone, sum.Outcomes[0].Status)
+		require.Empty(t, fake.Ran())
+	})
+
+}
+
+func ollamaAction(models, model string) plan.Action {
+	return plan.Action{ID: finding.MakeID("ollama", plan.OllamaTarget(model)), Action: finding.ActionRunCommand, Path: models,
+		Target: plan.OllamaTarget(model), Tier: finding.TierB, Scanner: "ollama", Command: []string{"ollama", "rm", model}}
+}
+
+// TestOllamaRemove checks that ollama rm runs only for a model whose
+// manifest is still in the scanned folder and only against this machine, and
+// that it frees what the command removed and nothing else.
+func TestOllamaRemove(t *testing.T) {
+	e := newEnv(t)
+	models := filepath.Join(e.home, ".ollama", "models")
+	manifest := filepath.Join(models, "manifests", "registry.ollama.ai", "library", "llama3", "latest")
+	tests := []struct {
+		name     string
+		host     string
+		manifest bool
+		want     Status
+		wantErr  string
+	}{
+		{name: "local", manifest: true, want: StatusDone},
+		{name: "loopback host", host: "http://127.0.0.1:11434", manifest: true, want: StatusDone},
+		{name: "localhost", host: "localhost:11434", manifest: true, want: StatusDone},
+		{name: "remote host", host: "gpu-box.lan:11434", manifest: true, want: StatusFailed, wantErr: "not this machine"},
+		{name: "model already gone", want: StatusGone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, os.RemoveAll(models))
+			write(t, filepath.Join(models, "blobs", "sha256-1"), 500)
+			write(t, filepath.Join(models, "blobs", "sha256-2"), 70)
+			if tt.manifest {
+				write(t, manifest, 10)
+			}
+			fake := &execx.Fake{
+				Tools: map[string]string{"ollama": "/usr/local/bin/ollama"},
+				OnRun: func([]string) error {
+					if err := os.Remove(manifest); err != nil {
+						return err
+					}
+					return os.Remove(filepath.Join(models, "blobs", "sha256-1"))
+				},
+			}
+			env := func(k string) string {
+				if k == "OLLAMA_HOST" {
+					return tt.host
+				}
+				return ""
+			}
+			sum, _, err := run(t, e, newPlan(nil, ollamaAction(models, "llama3:latest")), func(o *Options) { o.Exec = fake; o.Getenv = env })
+			require.Equal(t, tt.want, sum.Outcomes[0].Status)
+			if tt.want != StatusDone {
+				require.Empty(t, fake.Ran())
+				if tt.wantErr != "" {
+					require.Error(t, err)
+					require.ErrorContains(t, sum.Outcomes[0].Err, tt.wantErr)
+				}
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, int64(510), sum.Freed, "the manifest and the blob only this model used")
+			require.Equal(t, [][]string{{"ollama", "rm", "llama3:latest"}}, fake.Ran())
+			require.True(t, exists(filepath.Join(models, "blobs", "sha256-2")))
+		})
+	}
+}
+
+func TestIsLocalHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"": true, "localhost": true, "127.0.0.1": true, "127.0.0.1:11434": true, "[::1]:11434": true, "0.0.0.0": true,
+		"http://localhost:11434": true, "https://10.0.0.5:11434": false, "example.com": false, "192.168.1.9:11434": false,
+	} {
+		require.Equal(t, want, isLocalHost(host), host)
+	}
+}
+
+// TestSimulatorDelete checks that xcrun simctl delete runs only for a
+// simulator that is still listed as unavailable, and that only its folder
+// goes.
+func TestSimulatorDelete(t *testing.T) {
+	e := newEnv(t)
+	udid := "11111111-2222-4333-8444-555555555555"
+	devices := filepath.Join(e.home, "Library", "Developer", "CoreSimulator", "Devices")
+	dir := filepath.Join(devices, udid)
+	other := filepath.Join(devices, "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE")
+	list := func(available bool) string {
+		return `{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-16-4":[{"udid":"` + udid + `","isAvailable":` +
+			strconv.FormatBool(available) + `}]}}`
+	}
+	tests := []struct {
+		name    string
+		list    string
+		want    Status
+		wantErr string
+	}{
+		{name: "unavailable", list: list(false), want: StatusDone},
+		{name: "available again", list: list(true), want: StatusFailed, wantErr: "available again"},
+		{name: "no longer listed", list: `{"devices":{}}`, want: StatusGone},
+		{name: "list fails", want: StatusFailed, wantErr: "could not list simulators"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			write(t, filepath.Join(dir, "data", "x"), 700)
+			write(t, filepath.Join(other, "data", "x"), 900)
+			fake := &execx.Fake{
+				Tools:   map[string]string{"xcrun": "/usr/bin/xcrun"},
+				Outputs: map[string]string{},
+				OnRun:   func([]string) error { return os.RemoveAll(dir) },
+			}
+			if tt.list != "" {
+				fake.Outputs["xcrun simctl list -j devices"] = tt.list
+			}
+			a := plan.Action{ID: finding.MakeID("simulator-devices", dir), Action: finding.ActionRunCommand, Path: dir, Target: dir,
+				Tier: finding.TierB, Scanner: "simulator-devices", Command: []string{"xcrun", "simctl", "delete", udid}}
+			sum, _, err := run(t, e, newPlan(nil, a), func(o *Options) { o.Exec = fake })
+			require.Equal(t, tt.want, sum.Outcomes[0].Status)
+			require.True(t, exists(filepath.Join(other, "data", "x")), "other simulators survive")
+			if tt.want != StatusDone {
+				require.Empty(t, fake.Ran())
+				require.True(t, exists(dir))
+				if tt.wantErr != "" {
+					require.Error(t, err)
+					require.ErrorContains(t, sum.Outcomes[0].Err, tt.wantErr)
+				}
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, int64(700), sum.Freed)
+			require.False(t, exists(dir))
+		})
+	}
+}
+
+func TestAttentionFindingsAreNeverApplied(t *testing.T) {
+	e := newEnv(t)
+	target := filepath.Join(e.root, "Downloads", "old.mov")
+	write(t, target, 100)
+	a := removeAction(target, finding.KindFile)
+	a.Action = finding.ActionNone
+	// Plan validation refuses it; apply refuses it on its own as well.
+	sum, err := Run(context.Background(), newPlan([]string{e.root}, a), Options{Home: e.home, Exec: &execx.Fake{}, Walker: fsx.NewWalker(1)})
+	require.Error(t, err)
+	require.Equal(t, StatusFailed, sum.Outcomes[0].Status)
+	require.ErrorContains(t, sum.Outcomes[0].Err, "cannot be applied")
+	require.True(t, exists(target))
 }
 
 func TestNeedsSudoIsNeverExecuted(t *testing.T) {

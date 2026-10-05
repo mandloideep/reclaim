@@ -68,6 +68,37 @@ func TestRunCollectsAndNormalizes(t *testing.T) {
 	require.Contains(t, res.Warnings[0].Message, "invalid finding")
 }
 
+type catchAllScanner struct{ fakeScanner }
+
+func (catchAllScanner) CatchAll() bool { return true }
+
+func TestRunDropsCatchAllOverlaps(t *testing.T) {
+	rm := func(path string) finding.Finding {
+		return finding.Finding{Path: path, Tier: finding.TierA, Action: finding.ActionRemovePath, Size: 1}
+	}
+	scanners := []Scanner{
+		&fakeScanner{name: "npm-cache", category: finding.CategoryPackageCache, scan: returns(rm("/h/.cache/npm/_cacache"))},
+		&fakeScanner{name: "playwright", category: finding.CategoryAppCache, scan: returns(rm("/h/.cache/ms-playwright"))},
+		&catchAllScanner{fakeScanner{name: "user-caches", category: finding.CategoryAppCache, scan: returns(
+			rm("/h/.cache/npm"),           // contains a specific finding
+			rm("/h/.cache/ms-playwright"), // the same path
+			rm("/h/.cache/thumbnails"),    // only the catch-all knows it
+			rm("/h/.cache/npm-other"),     // shares a prefix, not a path
+		)}},
+	}
+	res := Run(context.Background(), scanners, Env{}, 3)
+	got := make([]string, 0, len(res.Findings))
+	for _, f := range res.Findings {
+		got = append(got, f.Scanner+" "+f.Path)
+	}
+	require.ElementsMatch(t, []string{
+		"npm-cache /h/.cache/npm/_cacache",
+		"playwright /h/.cache/ms-playwright",
+		"user-caches /h/.cache/thumbnails",
+		"user-caches /h/.cache/npm-other",
+	}, got)
+}
+
 func TestRunTurnsFailuresIntoWarnings(t *testing.T) {
 	scanners := []Scanner{
 		&fakeScanner{name: "broken", scan: func(context.Context, Env) ([]finding.Finding, error) {
@@ -180,9 +211,9 @@ func TestSelect(t *testing.T) {
 func TestFilter(t *testing.T) {
 	now := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
 	fs := []finding.Finding{
-		{ID: "small", Tier: finding.TierA, Size: 5, Category: finding.CategoryProject},
+		{ID: "small", Tier: finding.TierA, Size: 5, Category: finding.CategoryProject, Path: "/c/app/x"},
 		{ID: "fresh", Tier: finding.TierA, Size: 100, Category: finding.CategoryProject, LastUsed: now.Add(-24 * time.Hour)},
-		{ID: "stale", Tier: finding.TierA, Size: 100, Category: finding.CategoryProject, LastUsed: now.Add(-200 * 24 * time.Hour)},
+		{ID: "stale", Tier: finding.TierA, Size: 100, Category: finding.CategoryProject, LastUsed: now.Add(-200 * 24 * time.Hour), Path: "/c/archive/old/node_modules"},
 		{ID: "cache", Tier: finding.TierB, Size: 100, Category: finding.CategoryPackageCache, LastUsed: now},
 		{ID: "data", Tier: finding.TierC, Size: 100, Category: finding.CategoryDocker},
 	}
@@ -201,6 +232,9 @@ func TestFilter(t *testing.T) {
 		{name: "none", filter: Filter{}, want: []string{"small", "fresh", "stale", "cache", "data"}},
 		{name: "min size", filter: Filter{MinSize: 10}, want: []string{"fresh", "stale", "cache", "data"}},
 		{name: "tiers", filter: Filter{Tiers: []finding.Tier{finding.TierB, finding.TierC}}, want: []string{"cache", "data"}},
+		{name: "exclude", filter: Filter{Exclude: []string{"/c/archive", "/c/ap"}}, want: []string{"small", "fresh", "cache", "data"}},
+		{name: "exclude a finding itself", filter: Filter{Exclude: []string{"/c/app/x"}}, want: []string{"fresh", "stale", "cache", "data"}},
+		{name: "exclude inside a finding", filter: Filter{Exclude: []string{"/c/archive/old/node_modules/keep"}}, want: []string{"small", "fresh", "cache", "data"}},
 		{name: "stale only affects projects", filter: Filter{Stale: 90 * 24 * time.Hour, Now: now, MinSize: 10}, want: []string{"stale", "cache", "data"}},
 	}
 	for _, tt := range tests {
