@@ -234,6 +234,7 @@ func TestFilter(t *testing.T) {
 		{name: "tiers", filter: Filter{Tiers: []finding.Tier{finding.TierB, finding.TierC}}, want: []string{"cache", "data"}},
 		{name: "exclude", filter: Filter{Exclude: []string{"/c/archive", "/c/ap"}}, want: []string{"small", "fresh", "cache", "data"}},
 		{name: "exclude a finding itself", filter: Filter{Exclude: []string{"/c/app/x"}}, want: []string{"fresh", "stale", "cache", "data"}},
+		{name: "exclude inside a finding", filter: Filter{Exclude: []string{"/c/archive/old/node_modules/keep"}}, want: []string{"small", "fresh", "cache", "data"}},
 		{name: "stale only affects projects", filter: Filter{Stale: 90 * 24 * time.Hour, Now: now, MinSize: 10}, want: []string{"stale", "cache", "data"}},
 	}
 	for _, tt := range tests {

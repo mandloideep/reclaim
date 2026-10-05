@@ -83,6 +83,9 @@ type Options struct {
 	Walker *fsx.Walker
 	// Exec runs clean commands.
 	Exec execx.Runner
+	// Getenv reads the environment the commands run in, such as
+	// OLLAMA_HOST. Nil reads nothing.
+	Getenv func(string) string
 	// Docker returns a Docker client. It is called at most once, and only when
 	// the plan has Docker actions.
 	Docker func() (dockerx.API, error)
@@ -320,6 +323,9 @@ func (r *runner) runCommand(ctx context.Context, a *plan.Action) Outcome {
 		return Outcome{Err: err}
 	}
 	if err := r.relocate(ctx, a); err != nil {
+		return Outcome{Err: err}
+	}
+	if err := r.verifyArgument(ctx, a); err != nil {
 		return Outcome{Err: err}
 	}
 	var before int64

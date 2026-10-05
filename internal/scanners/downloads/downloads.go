@@ -7,6 +7,7 @@
 package downloads
 
 import (
+	"archive/zip"
 	"context"
 	"errors"
 	"io/fs"
@@ -134,7 +135,7 @@ func (s *Scanner) Scan(ctx context.Context, env scan.Env) ([]finding.Finding, er
 			LastUsed: lastTouched(info),
 			Action:   finding.ActionRemovePath,
 		}
-		switch classify(e.Name(), dirs, apps, f.Size, now.Sub(f.LastUsed)) {
+		switch classify(dir, e.Name(), dirs, apps, f.Size, now.Sub(f.LastUsed)) {
 		case kindArchive:
 			if s.s.kind != kindArchive {
 				continue
@@ -146,7 +147,7 @@ func (s *Scanner) Scan(ctx context.Context, env scan.Env) ([]finding.Finding, er
 			if s.s.kind != kindInstaller {
 				continue
 			}
-			app, _ := matchApp(installerStem(e.Name()), apps)
+			app, _ := installerApp(dir, e.Name(), apps)
 			f.Tier = finding.TierB
 			f.Restore = "download it again from the vendor; " + app.name + " is installed"
 		case kindAttention:
@@ -167,14 +168,12 @@ func (s *Scanner) Scan(ctx context.Context, env scan.Env) ([]finding.Finding, er
 // classify decides what one file in Downloads is. An archive with an
 // extracted sibling wins over an installer, because the archive may be the
 // only untouched copy of what was extracted.
-func classify(name string, dirs map[string]bool, apps []installedApp, size int64, age time.Duration) kind {
+func classify(dir, name string, dirs map[string]bool, apps []installedApp, size int64, age time.Duration) kind {
 	if stem := archiveStem(name); stem != "" && dirs[stem] {
 		return kindArchive
 	}
-	if stem := installerStem(name); stem != "" && apps != nil {
-		if _, ok := matchApp(stem, apps); ok {
-			return kindInstaller
-		}
+	if _, ok := installerApp(dir, name, apps); ok {
+		return kindInstaller
 	}
 	if size >= attentionSize && age >= attentionAge {
 		return kindAttention
@@ -266,12 +265,64 @@ func installedApps(env *scan.Env) []installedApp {
 	return apps
 }
 
+// installerApp reports whether a file in dir is an installer of an installed
+// app, and which app. Its name must start with the app's name, and every
+// word after it must look like a version or a platform, as in
+// "Slack-4.41.105-macOS.dmg"; "Notion Export.zip" or "Signal backup.dmg"
+// may be the only copy of data and are not installers. A zip must also hold
+// an app, a disk image or a package at its top level, which is read from its
+// central directory without extracting anything.
+func installerApp(dir, name string, apps []installedApp) (installedApp, bool) {
+	stem := installerStem(name)
+	if stem == "" || len(apps) == 0 {
+		return installedApp{}, false
+	}
+	app, rest, ok := matchApp(stem, apps)
+	if !ok || slices.ContainsFunc(rest, func(w string) bool { return !installerWord(w) }) {
+		return installedApp{}, false
+	}
+	if strings.HasSuffix(strings.ToLower(name), ".zip") && !zipHoldsInstaller(filepath.Join(dir, name)) {
+		return installedApp{}, false
+	}
+	return app, true
+}
+
+// installerWord reports whether a word of an installer name after the app
+// name is a version number or names a platform or a release channel.
+func installerWord(w string) bool {
+	if strings.ContainsFunc(w, unicode.IsDigit) {
+		return true
+	}
+	return slices.Contains([]string{
+		"mac", "macos", "osx", "darwin", "universal", "arm", "aarch", "x64", "amd64", "intel", "apple", "silicon",
+		"installer", "install", "setup", "release", "stable", "latest", "beta", "alpha", "app", "v", "full", "dmg", "pkg",
+	}, w)
+}
+
+// zipHoldsInstaller reports whether a zip archive has an app bundle, a disk
+// image or a package at its top level.
+func zipHoldsInstaller(path string) bool {
+	r, err := zip.OpenReader(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = r.Close() }()
+	for _, f := range r.File {
+		top, _, _ := strings.Cut(strings.TrimPrefix(f.Name, "./"), "/")
+		lower := strings.ToLower(top)
+		if strings.HasSuffix(lower, ".app") || strings.HasSuffix(lower, ".dmg") || strings.HasSuffix(lower, ".pkg") {
+			return true
+		}
+	}
+	return false
+}
+
 // matchApp finds the app an installer belongs to. The installer name must
 // start with the app name on a word boundary, ignoring case, spaces and
 // punctuation: "DaVinci_Resolve_21.1_Mac" belongs to "DaVinci Resolve.app",
 // "zen.macos-universal" to "Zen.app", but "Zenith" does not belong to Zen.
-// The longest matching app name wins.
-func matchApp(stem string, apps []installedApp) (installedApp, bool) {
+// The longest matching app name wins. rest holds the words after the app name.
+func matchApp(stem string, apps []installedApp) (app installedApp, rest []string, ok bool) {
 	// The stem's word prefixes joined without separators: "davinci",
 	// "davinciresolve", "davinciresolve21" and so on.
 	ws := words(stem)
@@ -281,14 +332,16 @@ func matchApp(stem string, apps []installedApp) (installedApp, bool) {
 		b.WriteString(w)
 		prefixes = append(prefixes, b.String())
 	}
-	var best installedApp
-	found := false
-	for _, app := range apps {
-		if slices.Contains(prefixes, app.joined) && (!found || len(app.joined) > len(best.joined)) {
-			best, found = app, true
+	used := 0
+	for _, a := range apps {
+		if i := slices.Index(prefixes, a.joined); i >= 0 && (!ok || len(a.joined) > len(app.joined)) {
+			app, used, ok = a, i+1, true
 		}
 	}
-	return best, found
+	if !ok {
+		return installedApp{}, nil, false
+	}
+	return app, ws[used:], true
 }
 
 // words splits s into lower case runs of letters and digits.

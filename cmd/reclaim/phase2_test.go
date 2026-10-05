@@ -77,7 +77,7 @@ func TestEndToEndAggressivePreset(t *testing.T) {
 		got[filepath.ToSlash(rel)] = f.Scanner + " " + string(f.Tier) + " " + string(f.Action)
 	}
 	for rel, want := range map[string]string{
-		".cache/thumbnails":                 "user-caches A RemovePath",
+		".cache/thumbnails":                 "user-caches B RemovePath",
 		".cache/some-app-updater":           "electron-updaters A RemovePath",
 		".cache/ms-playwright":              "playwright B RemovePath",
 		".npm/_cacache":                     "npm-cache B RemovePath",
@@ -183,6 +183,7 @@ disable = ["python-venv"]
 	require.NoError(t, json.Unmarshal(out.Bytes(), &r))
 	require.Equal(t, []string{code, other}, r.Scope.Roots, "a missing root is skipped")
 	require.Contains(t, a.stderr.(interface{ String() string }).String(), "config root skipped")
+	require.NotContains(t, a.stderr.(interface{ String() string }).String(), "excludes nothing")
 	var paths []string
 	for _, f := range r.Findings {
 		if f.Category == finding.CategoryProject {
@@ -201,10 +202,10 @@ disable = ["python-venv"]
 	require.NoError(t, json.Unmarshal(out.Bytes(), &r))
 	require.Empty(t, r.Findings)
 	out.Reset()
-	require.NoError(t, execute(a, "scan", code, "--json", "--category", "python-venv"))
+	require.NoError(t, execute(a, "scan", code, "--json", "--category", "python"))
 	require.NoError(t, json.Unmarshal(out.Bytes(), &r))
-	require.Len(t, r.Findings, 1, "naming a disabled scanner runs it")
-	require.Equal(t, "python-venv", r.Findings[0].Scanner)
+	require.Len(t, r.Findings, 2, "selecting the ecosystem of a disabled scanner runs it")
+	require.Contains(t, []string{r.Findings[0].Scanner, r.Findings[1].Scanner}, "python-venv")
 
 	// here honors the exclusions and the disabled scanners too.
 	out.Reset()
@@ -236,7 +237,12 @@ disable = ["python-venv"]
 	out.Reset()
 	require.NoError(t, execute(a, "scanners", "--config", other2))
 	require.Contains(t, out.String(), "Disabled in "+other2)
+	require.ErrorContains(t, execute(a, "scanners", "--config", filepath.Join(t.TempDir(), "typo.toml")), "--config", "a file named on the command line must exist")
 	a.configPath = filepath.Join(a.home, ".config", "reclaim", "config.toml")
+
+	writeConfig(t, a, "exclude = [\"~/Code/nope\"]\n")
+	require.NoError(t, execute(a, "scan", code, "--json"))
+	require.Contains(t, a.stderr.(interface{ String() string }).String(), "config exclude "+filepath.Join(code, "nope")+" does not exist")
 
 	writeConfig(t, a, "[scanners]\ndisable = [\"nope\"]\n")
 	require.ErrorContains(t, execute(a, "scan"), `config [scanners] disable: unknown category, ecosystem or scanner "nope"`)

@@ -65,7 +65,7 @@ It writes a plan file.
 The checklist must handle thousands of findings without the user scrolling through them one by one.
 See "Handling long lists".
 
-Before the list or the checklist, `select` prints one provenance line: the command that produced the report, how long ago and when, how many findings it holds and their reclaimable total.
+Before the list or the checklist, `select` prints one provenance line: the command that produced the report, how long ago and when, how many findings it holds, how many more are listed for attention only, and their reclaimable total.
 When the report came from `here` or from a scan given paths, the line says that it covers only those folders, not the whole machine, and suggests `reclaim scan`.
 A report written before scopes existed is described as coming from an older reclaim.
 
@@ -104,6 +104,11 @@ Removal commands that name their target, `ollama rm <model>`, `xcrun simctl dele
 For a clean command that came from a tool's own location query, apply asks the tool again right before running it, with the same fixed query, and refuses when the answer, with symbolic links resolved, is not the directory recorded in the plan.
 A plan action for such a command without a path is refused too.
 If the tool now reports the recorded directory and it no longer exists, the action is reported as already gone.
+Plan validation ties the argument of a removal command to the action's target, which the id covers: the Ollama target is `ollama:<model>`, a simulator's path ends in its UDID, and a runtime's target is `simulator-runtime:<identifier>`, so a hand edit cannot point the command at something else.
+Right before running them, apply checks those targets again.
+`ollama rm` runs only while the model's manifest is still in the models folder the plan records, and only when `OLLAMA_HOST` is unset or names this machine, so a same named model on another server is never removed.
+`xcrun simctl delete` runs only while `xcrun simctl list` still reports the simulator as unavailable, so a simulator whose runtime came back is kept.
+A target that no longer exists is reported as already gone.
 
 ### here
 
@@ -289,7 +294,10 @@ The allowlist pairs every clean command with the query that located its cache, a
 All of them are in category `app-cache` and are read only.
 Scanners for macOS only things return nothing on other systems.
 
-- `user-caches`: every entry of the per user cache folder, `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` or `~/.cache` elsewhere, that is a real directory of at least 1 MB, tier A, with the warning to quit the app first.
+- `user-caches`: every entry of the per user cache folder, `~/Library/Caches` on macOS and `$XDG_CACHE_HOME` or `~/.cache` elsewhere, that is a real directory of at least 1 MB, with the warning to quit the app first.
+Entries of `~/Library/Caches`, a folder apps are told to treat as disposable, are tier A.
+Entries of `~/.cache` on Linux are tier B, because apps use that folder less strictly, so they are never preselected.
+The cache folder is scanned only when it lies strictly inside the home directory, so a cache variable that names the home directory or another folder does not turn its contents into cache findings; the scan warns instead.
 Every finding is a direct child of the cache folder, never the folder itself, which apply protects anyway.
 It skips entries other scanners report at their default locations (package caches, browser downloads, updater leftovers, and reclaim's own folder, which holds the last report and the apply logs), and a denylist of entries known to hold data or managed by the system: every `com.apple.*` and `com.docker.*` entry, CloudKit, Family, GameKit, PassKit and GeoServices data, Spotify's offline storage, Hugging Face and Torch models, Poetry virtual environments, Evolution mail and OrbStack.
 It is a catch-all scanner, so a cache another scanner reports, even after being moved into the cache folder, is offered only once.
@@ -297,6 +305,7 @@ It is a catch-all scanner, so a cache another scanner reports, even after being 
 - `playwright`: the `ms-playwright` browser folder, or `PLAYWRIGHT_BROWSERS_PATH`, and `ms-playwright-go`, tier B, one finding per folder.
 Playwright MCP keeps persistent browser profiles with logins in `ms-playwright-mcp` and sometimes in `ms-playwright` itself, as `mcp-*` folders; such folders are tier C with a warning naming the profiles.
 - `puppeteer`: `~/.cache/puppeteer` or `PUPPETEER_CACHE_DIR`, tier B.
+A browser folder named by `PLAYWRIGHT_BROWSERS_PATH` or `PUPPETEER_CACHE_DIR` is offered only when it lies strictly inside the home directory, is neither the cache folder nor holds it, and holds at least one entry that looks like a downloaded browser.
 - `xcode-derived-data`: each folder in `~/Library/Developer/Xcode/DerivedData`, tier A.
 - `simulator-devices`: simulators that `xcrun simctl list -j devices` reports unavailable, usually because their runtime is gone, tier B, removed with `xcrun simctl delete <udid>` so CoreSimulator's own records stay consistent.
 - `simulator-runtimes`: deletable runtimes from `xcrun simctl runtime list -j`, tier B, `NeedsSudo`, with the `xcrun simctl runtime delete <identifier>` command for the user to run.
@@ -304,8 +313,9 @@ Without Xcode there is no `simctl`, and both simulator scanners report nothing.
 - `ollama`: one finding per model, read from the manifests in `~/.ollama/models` or `OLLAMA_MODELS`, so the server need not run for a scan; tier B with `ollama rm <model>` as the action.
 A model's size counts only the blobs no other model uses, because shared blobs are freed only when every model using them is removed; the warning says how much is shared and that `ollama rm` needs Ollama running.
 - `codex-worktrees`: each task folder in `~/.codex/worktrees` or `$CODEX_HOME/worktrees`, tier B with a reminder to run `git worktree prune`.
-A folder holding a worktree with uncommitted changes, or one git cannot report on, or any worktree when git is missing, is tier C.
-- `codex-sessions`: Codex conversation logs, one finding per month folder in `sessions` not touched for 30 days, and the `archived_sessions` folder, tier B.
+A folder holding a worktree with uncommitted changes, or with commits that no branch, remote or tag holds, such as commits on a detached HEAD, or one git cannot report on, or any worktree when git is missing, is tier C.
+The warning says that ignored files such as `.env` are lost too.
+- `codex-sessions`: Codex conversation logs, one finding per month folder in `sessions` whose newest file is older than 30 days, because resuming a conversation appends to its old log without changing the folder's time, and the `archived_sessions` folder, tier B.
 - `claude-vm`: the `*.bundle` folders in `~/Library/Application Support/Claude/vm_bundles`, and Claude Code VM versions in `claude-code-vm` other than the one its `.sdk-version` names, tier B.
 
 ### Downloads scanner
@@ -315,6 +325,8 @@ They never descend into folders there and skip hidden files and symbolic links.
 
 - `installers`: `.dmg`, `.pkg`, `.iso`, `.zip` and `.app.tar.*` files whose name matches an application in the applications folders, `/Applications` and `~/Applications` on macOS, including apps one folder deep such as `/Applications/DaVinci Resolve/DaVinci Resolve.app`, tier B.
 The installer name must start with the app name on a word boundary, ignoring case, spaces and punctuation, so `DaVinci_Resolve_21.1_Mac.zip` matches `DaVinci Resolve.app` and `zen.macos-universal.dmg` matches `Zen.app`, but `Zenith-2.dmg` does not.
+Every word after the app name must be a version or name a platform or release channel, such as `4.41.105`, `macOS`, `universal` or `arm64`, so `Notion Export.zip` or `Signal backup.dmg`, which may be the only copy of data, are not installers.
+A zip must also hold an app bundle, a disk image or a package at its top level, read from its central directory without extracting anything.
 - `extracted-archives`: archives (`.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tbz2`, `.tar.xz`, `.txz`, `.tar.zst`, `.7z`, `.rar`) with a folder of the same name without the extension next to them, tier C on the archive with a warning naming that folder.
 This rule wins over the installer rule, because the archive may be the only untouched copy.
 - `old-downloads`: any other file of at least 250 MB that has been neither modified nor read for 90 days, using the later of the modification and access times, listed under an "attention" group with the `None` action, so the user sees it without the tool offering to delete it.
@@ -333,7 +345,8 @@ Findings listed for attention only show their size and warning but cannot be tic
 Keys: space toggles, enter expands and collapses (right and left also expand and collapse), `/` filters by text, `s` cycles the sort between size, name and oldest first, `t` cycles the tier filter between all, A, B and C, `a` selects every visible tier A finding, `w` writes the plan and exits, `q` quits without writing, and esc clears the text filter.
 The text filter matches a finding's name, path, scanner, project and group title, so typing a project path shows all its findings; while any filter is active, every group is shown open.
 Categories start open and groups start closed.
-The header shows the provenance line.
+The header shows the provenance line, wrapped to the window so its end, which says when a report covers only some folders, stays visible.
+Two lines under the list show the full warning, or else the path, of the finding under the cursor, which a narrow window cuts off in its row.
 The footer always shows the selected count and total size and the plan path that `w` will write.
 Only the rows that fit in the window are rendered, so the checklist stays responsive with thousands of findings.
 The plan file is JSON and `select` tells the user where it was written, so editing it by hand is always an option.
@@ -378,7 +391,7 @@ Only `apply` deletes, only from a plan, only after confirmation.
 
 Optional file at `~/.config/reclaim/config.toml`, or `$XDG_CONFIG_HOME/reclaim/config.toml` when that variable holds an absolute path, read through `internal/config` with BurntSushi toml.
 `--config` reads another file.
-A missing file means the defaults.
+A missing file means the defaults, except that a file named with `--config` must exist.
 
 ```toml
 roots = ["~/Code", "~/Downloads"]
@@ -394,12 +407,13 @@ Every key is optional, and an unknown key is an error that names it, so a typo n
 Paths start with `~/` or are absolute, and symbolic links in them are resolved.
 
 - `roots` replaces the default scan roots; a root that does not exist is skipped with a warning.
-- `exclude` lists paths the project walk never enters, and drops every finding whose path is or lies under one of them, whichever scanner found it.
+- `exclude` lists paths the project walk never enters, and drops every finding whose path is one of them, lies under one, or contains one, since removing it would remove the excluded path too, whichever scanner found it.
+An exclude that does not exist gets a warning, because it protects nothing.
 - `min_size` and `stale` are the defaults for `--min-size` and `--stale`.
 - `[scanners] disable` takes scanner names, categories or ecosystems, like `--category`; an unknown one is an error.
 Disabled scanners do not run, and `reclaim scanners` marks them disabled.
 
-Flags override the config file: `--min-size` and `--stale` replace the file's values, paths given to `scan` replace its roots, and naming a disabled scanner in `--category` runs it.
+Flags override the config file: `--min-size` and `--stale` replace the file's values, paths given to `scan` replace its roots, and `--category` runs exactly the scanners it selects, disabled or not.
 
 ## Output formats
 

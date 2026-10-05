@@ -166,7 +166,7 @@ func TestProvenance(t *testing.T) {
 	r.Scope = &finding.Scope{Command: "scan", Roots: []string{"/Users/me/Code"}}
 	line := p.Provenance(r)
 	require.True(t, strings.HasPrefix(line, "Report from reclaim scan, 2h ago ("), line)
-	require.Contains(t, line, "12 findings, 6.5 GB reclaimable.")
+	require.Contains(t, line, "11 findings and 1 for attention only, 6.5 GB reclaimable.")
 	require.NotContains(t, line, "covers only")
 
 	r.Scope = &finding.Scope{Command: "here", Args: []string{"."}, Paths: []string{"/Users/me/Code/app"}}

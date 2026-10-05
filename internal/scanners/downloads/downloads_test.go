@@ -1,6 +1,7 @@
 package downloads
 
 import (
+	"archive/zip"
 	"context"
 	"os"
 	"path/filepath"
@@ -31,15 +32,32 @@ func put(t *testing.T, path string, size int64) {
 	require.NoError(t, f.Close())
 }
 
+// zipFile writes a real zip archive holding the named entries.
+func zipFile(t *testing.T, path string, names ...string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	w := zip.NewWriter(f)
+	for _, n := range names {
+		e, err := w.Create(n)
+		require.NoError(t, err)
+		_, err = e.Write([]byte("content"))
+		require.NoError(t, err)
+	}
+	require.NoError(t, w.Close())
+	require.NoError(t, f.Close())
+}
+
 func age(t *testing.T, path string, d time.Duration) {
 	t.Helper()
 	ts := now.Add(-d)
 	require.NoError(t, os.Chtimes(path, ts, ts))
 }
 
-func TestMatchApp(t *testing.T) {
+func TestInstallerNames(t *testing.T) {
 	apps := []installedApp{}
-	for _, name := range []string{"Zen.app", "DaVinci Resolve.app", "FileZilla.app", "Google Chrome.app", "1Password.app", "Go.app", "Notion.app", "Notion Calendar.app"} {
+	for _, name := range []string{"Zen.app", "DaVinci Resolve.app", "FileZilla.app", "Google Chrome.app", "1Password.app", "Go.app", "Notion.app", "Notion Calendar.app", "Signal.app"} {
 		joined := strings.Join(words(name[:len(name)-4]), "")
 		if len(joined) >= 3 {
 			apps = append(apps, installedApp{name: name, joined: joined})
@@ -50,8 +68,11 @@ func TestMatchApp(t *testing.T) {
 		want string
 	}{
 		{file: "zen.macos-universal.dmg", want: "Zen.app"},
-		{file: "DaVinci_Resolve_21.1_Mac.zip", want: "DaVinci Resolve.app"},
+		{file: "Zen.dmg", want: "Zen.app"},
 		{file: "FileZilla_3.69.6_macos-arm64.app.tar.bz2", want: "FileZilla.app"},
+		{file: "Signal backup.dmg"},
+		{file: "Notion Export.pkg"},
+		{file: "Google Chrome profile.iso"},
 		{file: "googlechrome.dmg", want: "Google Chrome.app"},
 		{file: "1Password-8.10.pkg", want: "1Password.app"},
 		{file: "Notion-Calendar-1.2.dmg", want: "Notion Calendar.app"},
@@ -63,10 +84,9 @@ func TestMatchApp(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
-			stem := installerStem(tt.file)
-			app, ok := matchApp(stem, apps)
+			app, ok := installerApp(t.TempDir(), tt.file, apps)
 			if tt.want == "" {
-				require.False(t, ok && stem != "", "matched %s", app.name)
+				require.False(t, ok, "matched %s", app.name)
 				return
 			}
 			require.True(t, ok)
@@ -99,7 +119,12 @@ func fixture(t *testing.T) (home, dl string, env scan.Env) {
 	}
 	put(t, filepath.Join(dl, "zen.macos-universal.dmg"), 200_000_000)
 	put(t, filepath.Join(dl, "Slack-4.41.105-macOS.dmg"), 150_000_000)
-	put(t, filepath.Join(dl, "DaVinci_Resolve_21.1_Mac.zip"), 400_000_000)
+	zipFile(t, filepath.Join(dl, "DaVinci_Resolve_21.1_Mac.zip"), "DaVinci_Resolve_21.1_Mac.dmg")
+	// Zips named after an app that hold no app, disk image or package may be
+	// the only copy of an export, so they are never installers.
+	zipFile(t, filepath.Join(dl, "Zen-2.0-mac.zip"), "notes/todo.md")
+	zipFile(t, filepath.Join(dl, "Slack export Jan 2024.zip"), "general/2024-01-02.json")
+	put(t, filepath.Join(dl, "Zen backup.dmg"), 20_000_000)
 	put(t, filepath.Join(dl, "Unknown-1.0.dmg"), 300_000_000)
 	put(t, filepath.Join(dl, "project-1.2.tar.gz"), 30_000_000)
 	put(t, filepath.Join(dl, "project-1.2", "README"), 10)
@@ -228,8 +253,8 @@ func TestApplyRemovesOnlyTheSelectedDownloads(t *testing.T) {
 	_, err = apply.Run(context.Background(), p, apply.Options{Home: home, Walker: fsx.NewWalker(1), Exec: &execx.Fake{}})
 	require.NoError(t, err)
 	require.Equal(t, []string{
-		".hidden-old.iso", "Slack-old", "Slack-old.zip", "Unknown-1.0.dmg", "nested", "project-1.2",
-		"recent.mov", "small-old.pdf", "talk.mov",
+		".hidden-old.iso", "Slack export Jan 2024.zip", "Slack-old", "Slack-old.zip", "Unknown-1.0.dmg", "Zen backup.dmg",
+		"Zen-2.0-mac.zip", "nested", "project-1.2", "recent.mov", "small-old.pdf", "talk.mov",
 	}, entries())
 	require.FileExists(t, filepath.Join(dl, "project-1.2", "README"))
 }

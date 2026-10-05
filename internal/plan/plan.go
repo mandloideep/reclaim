@@ -300,8 +300,12 @@ func (a *Action) validate() error {
 			return errors.New("RemovePath must not carry a command")
 		}
 	case finding.ActionRunCommand:
-		if !AllowedCommand(a.Command) {
+		c, ok := lookupCommand(a.Command)
+		if !ok {
 			return fmt.Errorf("command %q is not one of the clean commands reclaim knows", strings.Join(a.Command, " "))
+		}
+		if c.target != nil && !c.target(a.Command[len(a.Command)-1], a.Path, a.Target) {
+			return fmt.Errorf("command %q does not act on the target %s, the plan was edited inconsistently", strings.Join(a.Command, " "), a.Target)
 		}
 	default:
 		if a.Path != "" || len(a.Command) > 0 {

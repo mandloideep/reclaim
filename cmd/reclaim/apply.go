@@ -87,6 +87,7 @@ func (a *app) applyCommand(cmd *cobra.Command, path string, f applyFlags) error 
 		Home:      a.home,
 		Walker:    fsx.NewWalker(0),
 		Exec:      a.exec,
+		Getenv:    a.getenv,
 		Docker:    a.docker,
 		Log:       logFile,
 		PlanPath:  path,

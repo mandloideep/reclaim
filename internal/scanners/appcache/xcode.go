@@ -148,7 +148,7 @@ func scanSimulatorRuntimes(ctx context.Context, env *scan.Env) ([]finding.Findin
 		}
 		f := finding.Finding{
 			Tier:      finding.TierB,
-			Target:    "simulator-runtime:" + rt.Identifier,
+			Target:    plan.SimulatorRuntimeTarget(rt.Identifier),
 			Name:      fmt.Sprintf("%s simulator runtime (%s)", label, rt.Build),
 			Size:      rt.SizeBytes,
 			Restore:   "downloaded again from Xcode > Settings > Components",

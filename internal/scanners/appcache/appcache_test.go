@@ -3,6 +3,7 @@ package appcache
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -123,6 +124,7 @@ func TestCacheFolderLinux(t *testing.T) {
 
 	got := run(t, testEnv(home, "linux", nil))
 	require.Equal(t, []string{filepath.Join(c, "thumbnails")}, paths(got["user-caches"]))
+	require.Equal(t, finding.TierB, got["user-caches"][0].Tier, "~/.cache entries are never preselected")
 	require.Equal(t, []string{filepath.Join(c, "electron-app-updater")}, paths(got["electron-updaters"]))
 	require.Equal(t, []string{filepath.Join(c, "ms-playwright")}, paths(got["playwright"]))
 	require.Equal(t, []string{filepath.Join(c, "puppeteer")}, paths(got["puppeteer"]))
@@ -153,6 +155,55 @@ func TestCatchAllGivesWayToSpecificScanners(t *testing.T) {
 	got := run(t, env, extra...)
 	require.Equal(t, []string{filepath.Join(c, "custom-npm", "_cacache")}, paths(got["npm-cache"]))
 	require.Equal(t, []string{filepath.Join(c, "other")}, paths(got["user-caches"]))
+}
+
+// TestCacheVariablesThatPointTooWide checks that a cache variable naming the
+// home directory, or a browser variable naming the cache folder, does not
+// turn ordinary folders into cache findings.
+func TestCacheVariablesThatPointTooWide(t *testing.T) {
+	home := fakeHome(t)
+	put(t, filepath.Join(home, "Videos", "film.mkv"), 5_000_000)
+	put(t, filepath.Join(home, ".password-store", "x"), 2_000_000)
+	put(t, filepath.Join(home, ".cache", "chromium-1234", "x"), 2_000_000)
+	put(t, filepath.Join(home, "pw", "chromium-1234", "chrome"), 2_000_000)
+	put(t, filepath.Join(home, "notbrowsers", "photos", "x"), 2_000_000)
+
+	scanWith := func(vars map[string]string) scan.Result {
+		env := testEnv(home, "linux", nil)
+		env.Getenv = func(k string) string { return vars[k] }
+		ss := make([]scan.Scanner, 0, len(Scanners()))
+		for _, s := range Scanners() {
+			ss = append(ss, s)
+		}
+		return scan.Run(context.Background(), ss, env, 4)
+	}
+	for _, vars := range []map[string]string{
+		{"XDG_CACHE_HOME": home},
+		{"XDG_CACHE_HOME": filepath.Dir(home)},
+		{"XDG_CACHE_HOME": "/var/tmp"},
+		{"PLAYWRIGHT_BROWSERS_PATH": home},
+		{"PLAYWRIGHT_BROWSERS_PATH": filepath.Join(home, ".cache")},
+		{"PLAYWRIGHT_BROWSERS_PATH": filepath.Join(home, "notbrowsers")},
+		{"PUPPETEER_CACHE_DIR": home},
+		{"PUPPETEER_CACHE_DIR": filepath.Join(home, "notbrowsers")},
+	} {
+		res := scanWith(vars)
+		for _, f := range res.Findings {
+			require.NotEqual(t, home, f.Path, vars)
+			require.NotContains(t, []string{filepath.Join(home, "Videos"), filepath.Join(home, ".password-store"), filepath.Join(home, ".cache"), filepath.Join(home, "notbrowsers")}, f.Path, vars)
+		}
+	}
+	res := scanWith(map[string]string{"XDG_CACHE_HOME": home})
+	require.NotEmpty(t, res.Warnings, "the skipped cache folder is reported")
+
+	res = scanWith(map[string]string{"PLAYWRIGHT_BROWSERS_PATH": filepath.Join(home, "pw")})
+	var pw []string
+	for _, f := range res.Findings {
+		if f.Scanner == "playwright" {
+			pw = append(pw, f.Path)
+		}
+	}
+	require.Equal(t, []string{filepath.Join(home, "pw")}, pw, "a browser folder of its own is offered")
 }
 
 func TestPlaywrightProfilesMakeItTierC(t *testing.T) {
@@ -296,6 +347,10 @@ func TestOllama(t *testing.T) {
 	require.Equal(t, int64(2_000_000_100), byName["model hf.co/org/model:q4"].Size)
 	for _, f := range res.Findings {
 		require.True(t, plan.AllowedCommand(f.Command), f.Command)
+		// Apply finds the manifest again from the name alone.
+		rel, ok := plan.OllamaManifest(f.Command[2])
+		require.True(t, ok)
+		require.FileExists(t, filepath.Join(models, "manifests", filepath.FromSlash(rel)))
 	}
 }
 
@@ -313,7 +368,7 @@ func scannerNamed(t *testing.T, name string) *Scanner {
 func TestCodexWorktrees(t *testing.T) {
 	home := fakeHome(t)
 	w := filepath.Join(home, ".codex", "worktrees")
-	for _, task := range []string{"clean", "dirty", "broken"} {
+	for _, task := range []string{"clean", "dirty", "broken", "detached"} {
 		put(t, filepath.Join(w, task, "repo", ".git"), 40)
 		put(t, filepath.Join(w, task, "repo", "main.go"), 1000)
 	}
@@ -321,8 +376,11 @@ func TestCodexWorktrees(t *testing.T) {
 	fake := &execx.Fake{
 		Tools: map[string]string{"git": "/usr/bin/git"},
 		Outputs: map[string]string{
-			"git -C " + filepath.Join(w, "clean", "repo") + " status --porcelain": "",
-			"git -C " + filepath.Join(w, "dirty", "repo") + " status --porcelain": " M main.go",
+			"git -C " + filepath.Join(w, "clean", "repo") + " status --porcelain":                                      "",
+			"git -C " + filepath.Join(w, "clean", "repo") + " rev-list -n 1 HEAD --not --branches --remotes --tags":    "",
+			"git -C " + filepath.Join(w, "dirty", "repo") + " status --porcelain":                                      " M main.go",
+			"git -C " + filepath.Join(w, "detached", "repo") + " status --porcelain":                                   "",
+			"git -C " + filepath.Join(w, "detached", "repo") + " rev-list -n 1 HEAD --not --branches --remotes --tags": "abc123",
 		},
 	}
 	got := run(t, testEnv(home, "darwin", fake))["codex-worktrees"]
@@ -333,8 +391,9 @@ func TestCodexWorktrees(t *testing.T) {
 		warnings[filepath.Base(f.Path)] = f.Warning
 	}
 	require.Equal(t, map[string]finding.Tier{
-		"clean": finding.TierB, "dirty": finding.TierC, "broken": finding.TierC, "empty-leftover": finding.TierB,
+		"clean": finding.TierB, "dirty": finding.TierC, "broken": finding.TierC, "detached": finding.TierC, "empty-leftover": finding.TierB,
 	}, tiers)
+	require.Contains(t, warnings["detached"], "commits that no branch")
 	require.Contains(t, warnings["dirty"], "repo has uncommitted changes")
 	require.Contains(t, warnings["broken"], "could not report")
 	require.Contains(t, warnings["clean"], "git worktree prune")
@@ -353,16 +412,31 @@ func TestCodexSessions(t *testing.T) {
 	put(t, filepath.Join(s, "2026", "07", "01", "rollout-a.jsonl"), 800)
 	put(t, filepath.Join(s, "2026", "10", "01", "rollout-b.jsonl"), 900)
 	put(t, filepath.Join(home, ".codex", "archived_sessions", "rollout-c.jsonl"), 100)
-	old := now.Add(-60 * 24 * time.Hour)
-	require.NoError(t, os.Chtimes(filepath.Join(s, "2026", "07"), old, old))
-	recent := now.Add(-2 * 24 * time.Hour)
-	require.NoError(t, os.Chtimes(filepath.Join(s, "2026", "10"), recent, recent))
+	put(t, filepath.Join(s, "2026", "08", "03", "rollout-resumed.jsonl"), 700)
+	ageTree(t, s, 60*24*time.Hour)
+	ageTree(t, filepath.Join(s, "2026", "10"), 2*24*time.Hour)
+	// A conversation resumed last week was appended to, but its folders
+	// kept their old times.
+	recent := now.Add(-7 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(filepath.Join(s, "2026", "08", "03", "rollout-resumed.jsonl"), recent, recent))
 
 	got := run(t, testEnv(home, "linux", nil))["codex-sessions"]
 	require.Equal(t, []string{filepath.Join(home, ".codex", "archived_sessions"), filepath.Join(s, "2026", "07")}, paths(got))
 	for _, f := range got {
 		require.Equal(t, finding.TierB, f.Tier)
 	}
+}
+
+// ageTree sets the times of dir and everything below it to d before now.
+func ageTree(t *testing.T, dir string, d time.Duration) {
+	t.Helper()
+	ts := now.Add(-d)
+	require.NoError(t, filepath.WalkDir(dir, func(p string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chtimes(p, ts, ts)
+	}))
 }
 
 func TestClaudeVM(t *testing.T) {
@@ -382,9 +456,11 @@ func TestClaudeVM(t *testing.T) {
 	}, paths(got))
 }
 
-// TestApplyRemovesOnlyAppCacheTargets runs apply on every RemovePath finding
-// of the macOS fixture and checks that exactly those folders are gone: the
-// cache folder itself, the entries left out and everything else survive.
+// TestApplyRemovesOnlyAppCacheTargets scans a macOS fixture with every
+// kind of app cache finding that apply acts on, applies all of them, tier C
+// included, and checks that exactly those targets are gone: the cache folder
+// itself, the entries left out, dirty worktrees, other simulators and
+// everything else survive.
 func TestApplyRemovesOnlyAppCacheTargets(t *testing.T) {
 	home := fakeHome(t)
 	c := filepath.Join(home, "Library", "Caches")
@@ -393,31 +469,81 @@ func TestApplyRemovesOnlyAppCacheTargets(t *testing.T) {
 	put(t, filepath.Join(c, "Slack.ShipIt", "update.zip"), 2_000_000)
 	put(t, filepath.Join(c, "com.apple.Safari", "keep"), 2_000_000)
 	put(t, filepath.Join(c, "Homebrew", "keep"), 2_000_000)
+	put(t, filepath.Join(c, "ms-playwright", "chromium-1234", "chrome"), 2_000_000)
+	put(t, filepath.Join(c, "ms-playwright", "mcp-chrome-abc", "Cookies"), 1000)
 	put(t, filepath.Join(home, "Library", "Developer", "Xcode", "DerivedData", "App-abc", "Build", "x"), 500)
 	put(t, filepath.Join(home, "Library", "Developer", "Xcode", "Archives", "keep"), 500)
 	put(t, filepath.Join(home, ".codex", "sessions", "2026", "07", "01", "a.jsonl"), 800)
 	put(t, filepath.Join(home, ".codex", "config.toml"), 10)
-	old := now.Add(-60 * 24 * time.Hour)
-	require.NoError(t, os.Chtimes(filepath.Join(home, ".codex", "sessions", "2026", "07"), old, old))
+	ageTree(t, filepath.Join(home, ".codex", "sessions"), 60*24*time.Hour)
+	w := filepath.Join(home, ".codex", "worktrees")
+	put(t, filepath.Join(w, "clean", "repo", ".git"), 40)
+	put(t, filepath.Join(w, "clean", "repo", "main.go"), 1000)
+	put(t, filepath.Join(w, "dirty", "repo", ".git"), 40)
+	put(t, filepath.Join(w, "dirty", "repo", "main.go"), 1000)
+	support := filepath.Join(home, "Library", "Application Support", "Claude")
+	put(t, filepath.Join(support, "vm_bundles", "claudevm.bundle", "rootfs.img"), 5000)
+	put(t, filepath.Join(support, "config.json"), 10)
+	devices := filepath.Join(home, "Library", "Developer", "CoreSimulator", "Devices")
+	gone := "11111111-2222-4333-8444-555555555555"
+	ok := "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"
+	put(t, filepath.Join(devices, gone, "data", "x"), 700)
+	put(t, filepath.Join(devices, ok, "data", "x"), 900)
+	put(t, filepath.Join(devices, "device_set.plist"), 10)
+	list := `{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-16-4":[{"udid":"` + gone + `","name":"iPhone 14","isAvailable":false}],` +
+		`"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid":"` + ok + `","name":"iPhone 16","isAvailable":true}]}}`
+	fake := &execx.Fake{
+		Tools: map[string]string{"git": "/usr/bin/git", "xcrun": "/usr/bin/xcrun"},
+		Outputs: map[string]string{
+			"git -C " + filepath.Join(w, "clean", "repo") + " status --porcelain":                                   "",
+			"git -C " + filepath.Join(w, "clean", "repo") + " rev-list -n 1 HEAD --not --branches --remotes --tags": "",
+			"git -C " + filepath.Join(w, "dirty", "repo") + " status --porcelain":                                   " M main.go",
+			"xcrun simctl list -j devices": list,
+		},
+		// xcrun simctl delete removes the device's folder, as CoreSimulator does.
+		OnRun: func(argv []string) error {
+			if len(argv) == 4 && argv[2] == "delete" {
+				return os.RemoveAll(filepath.Join(devices, argv[3]))
+			}
+			return fmt.Errorf("unexpected command %v", argv)
+		},
+	}
 
-	got := run(t, testEnv(home, "darwin", nil))
+	got := run(t, testEnv(home, "darwin", fake))
 	r := &finding.Report{Version: finding.ReportVersion, Created: now, Roots: []string{home}}
 	for _, fs := range got {
 		r.Findings = append(r.Findings, fs...)
 	}
 	targets := make([]string, 0, len(r.Findings))
+	tiers := map[string]finding.Tier{}
 	for _, f := range r.Findings {
-		require.Equal(t, finding.ActionRemovePath, f.Action)
 		targets = append(targets, f.Path)
+		rel, err := filepath.Rel(home, f.Path)
+		require.NoError(t, err)
+		tiers[filepath.ToSlash(rel)] = f.Tier
 	}
+	require.Equal(t, map[string]finding.Tier{
+		"Library/Caches/Google":                                         finding.TierA,
+		"Library/Caches/Slack.ShipIt":                                   finding.TierA,
+		"Library/Caches/ms-playwright":                                  finding.TierC,
+		"Library/Developer/Xcode/DerivedData/App-abc":                   finding.TierA,
+		".codex/sessions/2026/07":                                       finding.TierB,
+		".codex/worktrees/clean":                                        finding.TierB,
+		".codex/worktrees/dirty":                                        finding.TierC,
+		"Library/Application Support/Claude/vm_bundles/claudevm.bundle": finding.TierB,
+		"Library/Developer/CoreSimulator/Devices/" + gone:               finding.TierB,
+	}, tiers)
 	p, err := plan.New(r, r.Findings, "host", now)
 	require.NoError(t, err)
 	require.NoError(t, p.Validate())
 
 	before := tree(t, home)
-	sum, err := apply.Run(context.Background(), p, apply.Options{Home: home, Walker: fsx.NewWalker(2), Exec: &execx.Fake{}, Now: func() time.Time { return now }})
+	sum, err := apply.Run(context.Background(), p, apply.Options{Home: home, Walker: fsx.NewWalker(2), Exec: fake, Now: func() time.Time { return now }})
 	require.NoError(t, err)
-	require.Len(t, sum.Outcomes, 4)
+	require.Len(t, sum.Outcomes, len(tiers))
+	for _, o := range sum.Outcomes {
+		require.Equal(t, apply.StatusDone, o.Status, o.Action.Label())
+	}
 	var want []string
 	for _, rel := range before {
 		if !slices.ContainsFunc(targets, func(t string) bool { return rel == t || strings.HasPrefix(rel, t+"/") }) {
@@ -427,6 +553,9 @@ func TestApplyRemovesOnlyAppCacheTargets(t *testing.T) {
 	require.Equal(t, want, tree(t, home))
 	require.DirExists(t, c)
 	require.DirExists(t, filepath.Join(c, "Google.bak"))
+	require.DirExists(t, filepath.Join(devices, ok))
+	require.FileExists(t, filepath.Join(support, "config.json"))
+	require.Equal(t, [][]string{{"xcrun", "simctl", "delete", gone}}, fake.Ran())
 }
 
 func tree(t *testing.T, root string) []string {

@@ -3,6 +3,7 @@ package appcache
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,8 +36,8 @@ func scanCodexWorktrees(ctx context.Context, env *scan.Env) ([]finding.Finding, 
 		ent := entry{
 			path:    task,
 			tier:    finding.TierB,
-			restore: "Codex creates a new worktree for the next task; commits stay in the main repository",
-			warning: "git worktrees Codex made for a task; run git worktree prune in their main repository afterwards",
+			restore: "Codex creates a new worktree for the next task; commits on branches stay in the main repository",
+			warning: "git worktrees Codex made for a task; ignored files in them, such as .env, are lost; run git worktree prune in their main repository afterwards",
 		}
 		if reason := dirtyWorktree(ctx, env, task); reason != "" {
 			ent.tier = finding.TierC
@@ -74,6 +75,15 @@ func dirtyWorktree(ctx context.Context, env *scan.Env, task string) string {
 		if strings.TrimSpace(status) != "" {
 			return e.Name() + " has uncommitted changes, which are lost"
 		}
+		// Commits made on a detached HEAD live only in the worktree's own
+		// history and become unreachable once it is removed and pruned.
+		loose, err := env.Exec.Output(ctx, "git", "-C", repo, "rev-list", "-n", "1", "HEAD", "--not", "--branches", "--remotes", "--tags")
+		if err != nil {
+			return "git could not report whether " + e.Name() + " has commits outside its branches"
+		}
+		if strings.TrimSpace(loose) != "" {
+			return e.Name() + " has commits that no branch, remote or tag holds, which are lost"
+		}
 	}
 	return ""
 }
@@ -95,8 +105,9 @@ func scanCodexSessions(ctx context.Context, env *scan.Env) ([]finding.Finding, e
 	for _, y := range subdirs(env, sessions) {
 		for _, m := range subdirs(env, filepath.Join(sessions, y.Name())) {
 			path := filepath.Join(sessions, y.Name(), m.Name())
-			info, err := os.Lstat(path)
-			if err != nil || now.Sub(info.ModTime()) < sessionMinAge {
+			// Codex appends to the log of a resumed conversation, which does
+			// not change the folder's own time, so the newest file decides.
+			if now.Sub(newestModTime(ctx, path)) < sessionMinAge {
 				continue
 			}
 			entries = append(entries, entry{path: path, tier: finding.TierB, name: "codex sessions " + y.Name() + "-" + m.Name(),
@@ -106,6 +117,33 @@ func scanCodexSessions(ctx context.Context, env *scan.Env) ([]finding.Finding, e
 	entries = append(entries, entry{path: filepath.Join(home, "archived_sessions"), tier: finding.TierB,
 		name: "codex archived sessions", restore: restore, warning: warning})
 	return collect(ctx, env, entries)
+}
+
+// newestModTime returns the latest modification time of dir and everything
+// below it. An unreadable entry counts as modified now, so it is never
+// treated as old.
+func newestModTime(ctx context.Context, dir string) time.Time {
+	var newest time.Time
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return ierr
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return nil
+	})
+	if err != nil {
+		return time.Now()
+	}
+	return newest
 }
 
 // scanClaudeVM reports the virtual machine bundles of the Claude desktop app

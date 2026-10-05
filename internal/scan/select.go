@@ -61,8 +61,9 @@ type Filter struct {
 	Stale time.Duration
 	// Now is the reference time for Stale.
 	Now time.Time
-	// Exclude drops findings whose path is one of these clean absolute paths
-	// or lies below one.
+	// Exclude drops findings whose path is one of these clean absolute paths,
+	// lies below one, or contains one, since removing such a finding would
+	// remove the excluded path with it.
 	Exclude []string
 }
 
@@ -73,7 +74,7 @@ func (f Filter) Apply(in []finding.Finding) []finding.Finding {
 		if x.Size < f.MinSize {
 			continue
 		}
-		if x.Path != "" && slices.ContainsFunc(f.Exclude, func(ex string) bool { return isWithin(x.Path, ex) }) {
+		if x.Path != "" && slices.ContainsFunc(f.Exclude, func(ex string) bool { return isWithin(x.Path, ex) || isWithin(ex, x.Path) }) {
 			continue
 		}
 		if len(f.Tiers) > 0 && !slices.Contains(f.Tiers, x.Tier) {

@@ -1,8 +1,10 @@
 package plan
 
 import (
+	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // cleanCommand is one command apply may run.
@@ -18,6 +20,10 @@ type cleanCommand struct {
 	locate []string
 	// sub is joined to the answer of locate to get the cleaned directory.
 	sub string
+	// target, for commands with an argument, reports whether the argument
+	// names the plan action's target, so a hand edit cannot point the
+	// command at something other than what its id covers.
+	target func(arg, path, target string) bool
 }
 
 var (
@@ -42,11 +48,51 @@ func cleanCommands() []cleanCommand {
 		{argv: []string{"go", "clean", "-cache"}, locate: []string{"go", "env", "GOCACHE"}},
 		{argv: []string{"brew", "cleanup", "-s"}, locate: []string{"brew", "--cache"}},
 		{argv: []string{"composer", "clear-cache"}, locate: []string{"composer", "config", "--global", "cache-dir"}},
-		{argv: []string{"xcrun", "simctl", "delete"}, arg: uuidArg},
-		{argv: []string{"xcrun", "simctl", "runtime", "delete"}, arg: uuidArg},
-		{argv: []string{"ollama", "rm"}, arg: modelArg},
+		{argv: []string{"xcrun", "simctl", "delete"}, arg: uuidArg, target: func(arg, path, target string) bool {
+			return path != "" && target == path && filepath.Base(path) == arg
+		}},
+		{argv: []string{"xcrun", "simctl", "runtime", "delete"}, arg: uuidArg, target: func(arg, _, target string) bool {
+			return target == SimulatorRuntimeTarget(arg)
+		}},
+		{argv: []string{"ollama", "rm"}, arg: modelArg, target: func(arg, path, target string) bool {
+			return path != "" && target == OllamaTarget(arg)
+		}},
 	}
 }
+
+// OllamaTarget is the target of the finding for an Ollama model.
+func OllamaTarget(model string) string { return "ollama:" + model }
+
+// OllamaManifest returns the path of a model's manifest relative to the
+// manifests folder, the inverse of how Ollama names models: "llama3:latest"
+// is "registry.ollama.ai/library/llama3/latest", "me/tuned:v1" is
+// "registry.ollama.ai/me/tuned/v1" and "hf.co/org/model:q4" is
+// "hf.co/org/model/q4".
+func OllamaManifest(model string) (string, bool) {
+	name, tag, ok := strings.Cut(model, ":")
+	if !ok || tag == "" || strings.Contains(tag, "/") || !modelArg.MatchString(model) {
+		return "", false
+	}
+	parts := strings.Split(name, "/")
+	switch len(parts) {
+	case 1:
+		parts = []string{"registry.ollama.ai", "library", parts[0]}
+	case 2:
+		parts = []string{"registry.ollama.ai", parts[0], parts[1]}
+	case 3:
+	default:
+		return "", false
+	}
+	for _, p := range parts {
+		if p == "" || p == "." || p == ".." {
+			return "", false
+		}
+	}
+	return strings.Join(append(parts, tag), "/"), true
+}
+
+// SimulatorRuntimeTarget is the target of the finding for a simulator runtime.
+func SimulatorRuntimeTarget(id string) string { return "simulator-runtime:" + id }
 
 func (c cleanCommand) matches(argv []string) bool {
 	if c.arg == nil {

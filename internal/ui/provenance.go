@@ -21,8 +21,11 @@ func (p *Printer) Provenance(r *finding.Report) string {
 	if !r.Created.IsZero() {
 		when = p.age(r.Created) + " (" + r.Created.Local().Format("2006-01-02 15:04") + ")"
 	}
-	line := fmt.Sprintf("Report from %s, %s: %s, %s reclaimable.", what, when,
-		plural(len(r.Findings), "finding", "findings"), units.FormatSize(r.TotalSize()))
+	count := plural(actionable(r.Findings), "finding", "findings")
+	if n := len(r.Findings) - actionable(r.Findings); n > 0 {
+		count += fmt.Sprintf(" and %d for attention only", n)
+	}
+	line := fmt.Sprintf("Report from %s, %s: %s, %s reclaimable.", what, when, count, units.FormatSize(r.TotalSize()))
 	if r.Scope.Partial() {
 		paths := make([]string, len(r.Scope.Paths))
 		for i, path := range r.Scope.Paths {

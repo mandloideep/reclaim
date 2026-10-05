@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -496,22 +497,138 @@ func TestRunCommandAsksAgainWhereTheCacheIs(t *testing.T) {
 		require.Empty(t, fake.Ran())
 	})
 
-	t.Run("removal commands with an argument run without a location query", func(t *testing.T) {
-		models := filepath.Join(e.home, ".ollama", "models")
-		write(t, filepath.Join(models, "blobs", "sha256-1"), 500)
-		write(t, filepath.Join(models, "blobs", "sha256-2"), 70)
-		fake := &execx.Fake{
-			Tools: map[string]string{"ollama": "/usr/local/bin/ollama"},
-			OnRun: func([]string) error { return os.Remove(filepath.Join(models, "blobs", "sha256-1")) },
-		}
-		a := plan.Action{ID: finding.MakeID("ollama", "ollama:llama3:latest"), Action: finding.ActionRunCommand, Path: models,
-			Target: "ollama:llama3:latest", Tier: finding.TierB, Scanner: "ollama", Command: []string{"ollama", "rm", "llama3:latest"}}
-		sum, _, err := run(t, e, newPlan(nil, a), func(o *Options) { o.Exec = fake })
-		require.NoError(t, err)
-		require.Equal(t, int64(500), sum.Freed)
-		require.Equal(t, [][]string{{"ollama", "rm", "llama3:latest"}}, fake.Ran())
-		require.True(t, exists(filepath.Join(models, "blobs", "sha256-2")))
-	})
+}
+
+func ollamaAction(models, model string) plan.Action {
+	return plan.Action{ID: finding.MakeID("ollama", plan.OllamaTarget(model)), Action: finding.ActionRunCommand, Path: models,
+		Target: plan.OllamaTarget(model), Tier: finding.TierB, Scanner: "ollama", Command: []string{"ollama", "rm", model}}
+}
+
+// TestOllamaRemove checks that ollama rm runs only for a model whose
+// manifest is still in the scanned folder and only against this machine, and
+// that it frees what the command removed and nothing else.
+func TestOllamaRemove(t *testing.T) {
+	e := newEnv(t)
+	models := filepath.Join(e.home, ".ollama", "models")
+	manifest := filepath.Join(models, "manifests", "registry.ollama.ai", "library", "llama3", "latest")
+	tests := []struct {
+		name     string
+		host     string
+		manifest bool
+		want     Status
+		wantErr  string
+	}{
+		{name: "local", manifest: true, want: StatusDone},
+		{name: "loopback host", host: "http://127.0.0.1:11434", manifest: true, want: StatusDone},
+		{name: "localhost", host: "localhost:11434", manifest: true, want: StatusDone},
+		{name: "remote host", host: "gpu-box.lan:11434", manifest: true, want: StatusFailed, wantErr: "not this machine"},
+		{name: "model already gone", want: StatusGone},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, os.RemoveAll(models))
+			write(t, filepath.Join(models, "blobs", "sha256-1"), 500)
+			write(t, filepath.Join(models, "blobs", "sha256-2"), 70)
+			if tt.manifest {
+				write(t, manifest, 10)
+			}
+			fake := &execx.Fake{
+				Tools: map[string]string{"ollama": "/usr/local/bin/ollama"},
+				OnRun: func([]string) error {
+					if err := os.Remove(manifest); err != nil {
+						return err
+					}
+					return os.Remove(filepath.Join(models, "blobs", "sha256-1"))
+				},
+			}
+			env := func(k string) string {
+				if k == "OLLAMA_HOST" {
+					return tt.host
+				}
+				return ""
+			}
+			sum, _, err := run(t, e, newPlan(nil, ollamaAction(models, "llama3:latest")), func(o *Options) { o.Exec = fake; o.Getenv = env })
+			require.Equal(t, tt.want, sum.Outcomes[0].Status)
+			if tt.want != StatusDone {
+				require.Empty(t, fake.Ran())
+				if tt.wantErr != "" {
+					require.Error(t, err)
+					require.ErrorContains(t, sum.Outcomes[0].Err, tt.wantErr)
+				}
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, int64(510), sum.Freed, "the manifest and the blob only this model used")
+			require.Equal(t, [][]string{{"ollama", "rm", "llama3:latest"}}, fake.Ran())
+			require.True(t, exists(filepath.Join(models, "blobs", "sha256-2")))
+		})
+	}
+}
+
+func TestIsLocalHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"": true, "localhost": true, "127.0.0.1": true, "127.0.0.1:11434": true, "[::1]:11434": true, "0.0.0.0": true,
+		"http://localhost:11434": true, "https://10.0.0.5:11434": false, "example.com": false, "192.168.1.9:11434": false,
+	} {
+		require.Equal(t, want, isLocalHost(host), host)
+	}
+}
+
+// TestSimulatorDelete checks that xcrun simctl delete runs only for a
+// simulator that is still listed as unavailable, and that only its folder
+// goes.
+func TestSimulatorDelete(t *testing.T) {
+	e := newEnv(t)
+	udid := "11111111-2222-4333-8444-555555555555"
+	devices := filepath.Join(e.home, "Library", "Developer", "CoreSimulator", "Devices")
+	dir := filepath.Join(devices, udid)
+	other := filepath.Join(devices, "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE")
+	list := func(available bool) string {
+		return `{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-16-4":[{"udid":"` + udid + `","isAvailable":` +
+			strconv.FormatBool(available) + `}]}}`
+	}
+	tests := []struct {
+		name    string
+		list    string
+		want    Status
+		wantErr string
+	}{
+		{name: "unavailable", list: list(false), want: StatusDone},
+		{name: "available again", list: list(true), want: StatusFailed, wantErr: "available again"},
+		{name: "no longer listed", list: `{"devices":{}}`, want: StatusGone},
+		{name: "list fails", want: StatusFailed, wantErr: "could not list simulators"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			write(t, filepath.Join(dir, "data", "x"), 700)
+			write(t, filepath.Join(other, "data", "x"), 900)
+			fake := &execx.Fake{
+				Tools:   map[string]string{"xcrun": "/usr/bin/xcrun"},
+				Outputs: map[string]string{},
+				OnRun:   func([]string) error { return os.RemoveAll(dir) },
+			}
+			if tt.list != "" {
+				fake.Outputs["xcrun simctl list -j devices"] = tt.list
+			}
+			a := plan.Action{ID: finding.MakeID("simulator-devices", dir), Action: finding.ActionRunCommand, Path: dir, Target: dir,
+				Tier: finding.TierB, Scanner: "simulator-devices", Command: []string{"xcrun", "simctl", "delete", udid}}
+			sum, _, err := run(t, e, newPlan(nil, a), func(o *Options) { o.Exec = fake })
+			require.Equal(t, tt.want, sum.Outcomes[0].Status)
+			require.True(t, exists(filepath.Join(other, "data", "x")), "other simulators survive")
+			if tt.want != StatusDone {
+				require.Empty(t, fake.Ran())
+				require.True(t, exists(dir))
+				if tt.wantErr != "" {
+					require.Error(t, err)
+					require.ErrorContains(t, sum.Outcomes[0].Err, tt.wantErr)
+				}
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, int64(700), sum.Freed)
+			require.False(t, exists(dir))
+		})
+	}
 }
 
 func TestAttentionFindingsAreNeverApplied(t *testing.T) {

@@ -245,6 +245,56 @@ func TestAllowedCommand(t *testing.T) {
 	}
 }
 
+func TestCommandArgumentsMatchTheTarget(t *testing.T) {
+	cmd := func(scanner, path, target string, argv ...string) Action {
+		return Action{ID: finding.MakeID(scanner, target), Scanner: scanner, Tier: finding.TierB, Action: finding.ActionRunCommand,
+			Path: path, Target: target, Command: argv}
+	}
+	dev := "/Users/me/Library/Developer/CoreSimulator/Devices/11111111-2222-4333-8444-555555555555"
+	models := "/Users/me/.ollama/models"
+	tests := []struct {
+		name    string
+		action  Action
+		wantErr bool
+	}{
+		{name: "ollama", action: cmd("ollama", models, OllamaTarget("llama3:latest"), "ollama", "rm", "llama3:latest")},
+		{name: "ollama edited to another model", action: cmd("ollama", models, OllamaTarget("llama3:latest"), "ollama", "rm", "mistral:latest"), wantErr: true},
+		{name: "ollama without its folder", action: cmd("ollama", "", OllamaTarget("llama3:latest"), "ollama", "rm", "llama3:latest"), wantErr: true},
+		{name: "simulator", action: cmd("simulator-devices", dev, dev, "xcrun", "simctl", "delete", "11111111-2222-4333-8444-555555555555")},
+		{name: "simulator edited to another device", action: cmd("simulator-devices", dev, dev, "xcrun", "simctl", "delete", "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE"), wantErr: true},
+		{name: "runtime", action: cmd("simulator-runtimes", "", SimulatorRuntimeTarget("0F0F0F0F-1111-4222-8333-444444444444"),
+			"xcrun", "simctl", "runtime", "delete", "0F0F0F0F-1111-4222-8333-444444444444")},
+		{name: "runtime edited", action: cmd("simulator-runtimes", "", SimulatorRuntimeTarget("0F0F0F0F-1111-4222-8333-444444444444"),
+			"xcrun", "simctl", "runtime", "delete", "0F0F0F0F-1111-4222-8333-555555555555"), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Plan{Version: Version, Created: time.Now(), Actions: []Action{tt.action}}
+			if tt.wantErr {
+				require.ErrorContains(t, p.Validate(), "does not act on the target")
+				return
+			}
+			require.NoError(t, p.Validate())
+		})
+	}
+}
+
+func TestOllamaManifest(t *testing.T) {
+	for model, want := range map[string]string{
+		"llama3:latest":      "registry.ollama.ai/library/llama3/latest",
+		"me/tuned:v1":        "registry.ollama.ai/me/tuned/v1",
+		"hf.co/org/model:q4": "hf.co/org/model/q4",
+		"llama3":             "",
+		"a/b/c/d:x":          "",
+		"../x:y":             "",
+		"x:a/b":              "",
+	} {
+		got, ok := OllamaManifest(model)
+		require.Equal(t, want != "", ok, model)
+		require.Equal(t, want, got, model)
+	}
+}
+
 func TestLocateQuery(t *testing.T) {
 	q, sub, ok := LocateQuery([]string{"npm", "cache", "clean", "--force"})
 	require.True(t, ok)

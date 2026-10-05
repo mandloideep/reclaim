@@ -34,7 +34,10 @@ func newRootCmd(a *app) *cobra.Command {
 	root.SetOut(a.stdout)
 	root.SetErr(a.stderr)
 	root.PersistentFlags().BoolVarP(&a.verbose, "verbose", "v", false, "print debug logs to stderr")
-	root.PersistentFlags().StringVar(&a.configPath, "config", a.configPath, "configuration file to read; a missing file means defaults")
+	root.PersistentFlags().StringVar(&a.configPath, "config", a.configPath, "configuration file to read instead of ~/.config/reclaim/config.toml")
+	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+		a.configRequired = cmd.Flags().Changed("config")
+	}
 	root.AddCommand(
 		newScanCmd(a),
 		newHereCmd(a),

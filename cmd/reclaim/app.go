@@ -41,6 +41,9 @@ type app struct {
 	host       string
 	stateDir   string
 	configPath string
+	// configRequired is set when --config names the file, which must then
+	// exist.
+	configRequired bool
 	// applications are the folders holding installed apps, for the
 	// Downloads installer scanner.
 	applications []string
@@ -194,12 +197,29 @@ func (a *app) loadConfig() (*config.Config, error) {
 	if a.configPath == "" {
 		return &config.Config{}, nil
 	}
-	return config.Load(a.configPath, a.home)
+	if a.configRequired {
+		if _, err := os.Stat(a.configPath); err != nil {
+			return nil, fmt.Errorf("--config: %w", err)
+		}
+	}
+	cfg, err := config.Load(a.configPath, a.home)
+	if err != nil {
+		return nil, err
+	}
+	// An exclude that names nothing protects nothing, which is worth
+	// knowing before trusting it.
+	for _, ex := range cfg.Exclude {
+		if _, err := os.Lstat(ex); err != nil {
+			a.warnf("config exclude %s does not exist, so it excludes nothing", ex)
+		}
+	}
+	return cfg, nil
 }
 
 // enabledScanners applies the configuration's disabled scanners and the
-// --category selectors. Disabled scanners do not run, unless a selector
-// names one of them exactly, because flags override the configuration.
+// --category selectors. Without selectors, every scanner the configuration
+// does not disable runs. With selectors, exactly the scanners they select
+// run, disabled or not, because flags override the configuration.
 func enabledScanners(all []scan.Scanner, categories, disable []string) ([]scan.Scanner, error) {
 	var disabled []scan.Scanner
 	if len(disable) > 0 {
@@ -208,13 +228,15 @@ func enabledScanners(all []scan.Scanner, categories, disable []string) ([]scan.S
 			return nil, fmt.Errorf("config [scanners] disable: %w", err)
 		}
 	}
-	selected, err := scan.Select(all, categories)
-	if err != nil {
-		return nil, fmt.Errorf("--category: %w", err)
+	if len(categories) > 0 {
+		selected, err := scan.Select(all, categories)
+		if err != nil {
+			return nil, fmt.Errorf("--category: %w", err)
+		}
+		return selected, nil
 	}
-	return slices.DeleteFunc(slices.Clone(selected), func(s scan.Scanner) bool {
-		isDisabled := slices.ContainsFunc(disabled, func(d scan.Scanner) bool { return d.Name() == s.Name() })
-		return isDisabled && !slices.Contains(categories, s.Name())
+	return slices.DeleteFunc(slices.Clone(all), func(s scan.Scanner) bool {
+		return slices.ContainsFunc(disabled, func(d scan.Scanner) bool { return d.Name() == s.Name() })
 	}), nil
 }
 

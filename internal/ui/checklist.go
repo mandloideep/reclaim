@@ -556,7 +556,51 @@ func (m *Checklist) sorted(nodes []*node) []*node {
 
 // listHeight is the number of tree rows that fit between header and footer.
 func (m *Checklist) listHeight() int {
-	return max(m.height-7, 1)
+	return max(m.height-len(m.provenanceLines())-7, 1)
+}
+
+// maxProvenanceLines and detailLines bound the wrapped header and the
+// detail area under the list, so the list keeps most of the screen.
+const (
+	maxProvenanceLines = 4
+	detailLines        = 2
+)
+
+// wrap breaks s into lines of at most width columns, keeping at most n.
+func wrap(s string, width, n int) []string {
+	if s == "" {
+		return nil
+	}
+	text := lipgloss.NewStyle().Width(max(width, 20)).Render(s)
+	var out []string
+	for l := range strings.SplitSeq(text, "\n") {
+		out = append(out, strings.TrimRight(l, " "))
+	}
+	if len(out) > n {
+		out = out[:n]
+		out[n-1] += "..."
+	}
+	return out
+}
+
+// provenanceLines is the provenance line wrapped to the window, so its end,
+// which says when a report covers only some folders, is always visible.
+func (m *Checklist) provenanceLines() []string {
+	return wrap(m.opts.Provenance, m.width, maxProvenanceLines)
+}
+
+// detailText describes the row under the cursor in full: the warning of a
+// finding, which a narrow window cuts off in the row, or else its path.
+func (m *Checklist) detailText() []string {
+	n := m.current()
+	if n == nil || n.leaf < 0 {
+		return nil
+	}
+	f := &m.findings[n.leaf]
+	if f.Warning != "" {
+		return wrap("! "+f.Warning, m.width, detailLines)
+	}
+	return wrap(shortener(m.opts.Home)(f.DisplayName()), m.width, detailLines)
 }
 
 func (m *Checklist) scroll() {
@@ -577,7 +621,10 @@ func (m *Checklist) View() string {
 		b.WriteString(lipgloss.NewStyle().MaxWidth(m.width).Render(s))
 		b.WriteByte('\n')
 	}
-	line(m.styles.header.Render("reclaim select") + "  " + m.styles.dim.Render(m.opts.Provenance))
+	line(m.styles.header.Render("reclaim select"))
+	for _, l := range m.provenanceLines() {
+		line(m.styles.dim.Render(l))
+	}
 	line(m.filterLine())
 	h := m.listHeight()
 	end := min(m.offset+h, len(m.rows))
@@ -591,8 +638,15 @@ func (m *Checklist) View() string {
 	for i := end - m.offset; i < h; i++ {
 		b.WriteByte('\n')
 	}
+	detail := m.detailText()
+	for i := range detailLines {
+		if i < len(detail) {
+			line(m.styles.warn.Render(detail[i]))
+		} else {
+			line("")
+		}
+	}
 	n, size := m.SelectedSize()
-	line("")
 	line(m.styles.bold.Render(fmt.Sprintf("Selected: %s, %s", plural(n, "item", "items"), units.FormatSize(size))) +
 		"   w writes " + m.opts.PlanPath + "   q quits without writing")
 	line(m.styles.dim.Render("space toggle  enter expand  / filter  s sort  t tier  a select tier A  arrows move"))

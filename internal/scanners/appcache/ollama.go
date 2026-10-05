@@ -105,7 +105,7 @@ func scanOllama(ctx context.Context, env *scan.Env) ([]finding.Finding, error) {
 		out = append(out, finding.Finding{
 			Tier:     finding.TierB,
 			Path:     dir,
-			Target:   "ollama:" + m.name,
+			Target:   plan.OllamaTarget(m.name),
 			Name:     "model " + m.name,
 			Size:     own,
 			LastUsed: m.modTime,

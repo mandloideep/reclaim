@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mandloideep/reclaim/internal/finding"
@@ -81,7 +82,7 @@ func TestChecklistStartsWithTierASelected(t *testing.T) {
 	view := m.View()
 	require.NotContains(t, view, "\x1b[", "no colors without a terminal")
 	for _, want := range []string{
-		"reclaim select  Report from reclaim scan, 2h ago",
+		"reclaim select\nReport from reclaim scan, 2h ago",
 		"sort: size  tier: all",
 		"> [-] ▾ Project artifacts  2.9 GB  3 items, 2 selected",
 		"  [x] ▸ ~/Code/app  2.9 GB  1 item, 1 selected",
@@ -228,6 +229,28 @@ func TestChecklistSortAndExpand(t *testing.T) {
 	require.Contains(t, m.View(), "~/Code/app")
 	press(t, m, "left")
 	require.NotContains(t, m.View(), "~/Code/app")
+}
+
+// TestChecklistNarrowWindow checks that a narrow window still shows the end
+// of the provenance line, which says when a report covers only some folders,
+// and the whole warning of the finding under the cursor.
+func TestChecklistNarrowWindow(t *testing.T) {
+	prov := "Report from reclaim here ~/Code/web, 5m ago (2026-10-05 11:55): 3 findings, 3.2 GB reclaimable. It covers only ~/Code/web, not the whole machine; run reclaim scan for everything."
+	m := NewChecklist(report(), ChecklistOptions{Home: "/Users/me", PlanPath: "plan.json", Provenance: prov, Now: now})
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	view := m.View()
+	require.LessOrEqual(t, strings.Count(view, "\n")+1, 24)
+	require.Contains(t, strings.Join(strings.Fields(view), " "), "It covers only ~/Code/web, not the whole machine; run reclaim scan for everything.")
+	for l := range strings.SplitSeq(view, "\n") {
+		require.LessOrEqual(t, lipgloss.Width(l), 60, l)
+	}
+
+	moveTo(t, m, "Attention")
+	press(t, m, "enter", "down")
+	require.Contains(t, m.View(), "! not touched for 6mo")
+	moveTo(t, m, "~/Code/lib")
+	press(t, m, "enter", "down")
+	require.Contains(t, strings.Join(strings.Fields(m.View()), " "), "! may be the only copy")
 }
 
 func TestChecklistWriteAndQuit(t *testing.T) {
