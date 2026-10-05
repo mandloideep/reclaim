@@ -73,7 +73,7 @@ func TestDiscoverFindsProjectsAndPrunesArtifacts(t *testing.T) {
 	// A folder that is not a project.
 	touch(t, filepath.Join(root, "notes", "todo.txt"), old)
 
-	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{})
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{Home: filepath.Dir(root)})
 	require.NoError(t, err)
 	require.Equal(t, []string{filepath.Join(root, "web", "node_modules")}, artifactPaths(ix))
 	require.Equal(t, []string{filepath.Join(root, "ios"), filepath.Join(root, "svc"), filepath.Join(root, "web")}, projectRoots(ix))
@@ -97,7 +97,7 @@ func TestDiscoverGitOwnsNestedManifests(t *testing.T) {
 	mkdir(t, filepath.Join(repo, "vendor", "lib", ".git"))
 	mkdir(t, filepath.Join(repo, "vendor", "lib", "node_modules"))
 
-	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{})
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{Home: filepath.Dir(root)})
 	require.NoError(t, err)
 	require.Len(t, ix.Artifacts, 2)
 	require.Equal(t, repo, ix.Artifacts[0].Project.Root)
@@ -111,7 +111,7 @@ func TestDiscoverNearestMarkerWithoutGit(t *testing.T) {
 	touch(t, filepath.Join(root, "app", "server", "go.mod"), time.Time{})
 	mkdir(t, filepath.Join(root, "app", "server", "bin"))
 
-	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("bin")}, Options{})
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("bin")}, Options{Home: filepath.Dir(root)})
 	require.NoError(t, err)
 	require.Len(t, ix.Artifacts, 1)
 	require.Equal(t, filepath.Join(root, "app", "server"), ix.Artifacts[0].Project.Root)
@@ -136,6 +136,7 @@ func TestDiscoverLastActivityUsesNewestOfCommitAndFiles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ix, err := Discover(context.Background(), []string{root}, nil, Options{
+				Home: filepath.Dir(root),
 				CommitTime: func(_ context.Context, r string) (time.Time, error) {
 					require.Equal(t, repo, r)
 					return tt.commit, nil
@@ -156,7 +157,7 @@ func TestDiscoverDoesNotFollowSymlinksOrEnterGit(t *testing.T) {
 	require.NoError(t, os.Symlink(outside, filepath.Join(root, "link")))
 	mkdir(t, filepath.Join(root, "repo", ".git", "node_modules"))
 
-	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{})
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{Home: filepath.Dir(root)})
 	require.NoError(t, err)
 	require.Empty(t, ix.Artifacts)
 }
@@ -166,7 +167,7 @@ func TestDiscoverNeverMatchesWorkingTrees(t *testing.T) {
 	touch(t, filepath.Join(root, "site", "package.json"), time.Time{})
 	touch(t, filepath.Join(root, "site", "dist", ".git"), time.Time{})
 
-	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("dist")}, Options{})
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("dist")}, Options{Home: filepath.Dir(root)})
 	require.NoError(t, err)
 	require.Empty(t, ix.Artifacts)
 }
@@ -174,9 +175,45 @@ func TestDiscoverNeverMatchesWorkingTrees(t *testing.T) {
 func TestDiscoverNeverMatchesRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "node_modules")
 	mkdir(t, filepath.Join(root, "pkg"))
-	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{})
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{Home: filepath.Dir(root)})
 	require.NoError(t, err)
 	require.Empty(t, ix.Artifacts)
+	require.Equal(t, map[string]string{root: root}, ix.InsideArtifact)
+}
+
+func TestDiscoverRootInsideArtifact(t *testing.T) {
+	home := t.TempDir()
+	modules := filepath.Join(home, "Code", "web", "node_modules")
+	pkg := filepath.Join(modules, "left-pad")
+	touch(t, filepath.Join(home, "Code", "web", "package.json"), time.Time{})
+	touch(t, filepath.Join(pkg, "package.json"), time.Time{})
+	mkdir(t, filepath.Join(pkg, "dist"))
+	mkdir(t, filepath.Join(pkg, "node_modules", "x"))
+
+	ix, err := Discover(context.Background(), []string{pkg}, []Matcher{nameMatcher("node_modules"), nameMatcher("dist")}, Options{Home: home})
+	require.NoError(t, err)
+	require.Empty(t, ix.Artifacts, "nothing inside node_modules is offered on its own")
+	require.Empty(t, ix.Projects)
+	require.Equal(t, map[string]string{pkg: modules}, ix.InsideArtifact)
+}
+
+func TestDiscoverNeverMatchesProjects(t *testing.T) {
+	root := t.TempDir()
+	// "python -m venv ." inside a project puts pyvenv.cfg in the project root.
+	touch(t, filepath.Join(root, "app", "pyproject.toml"), time.Time{})
+	touch(t, filepath.Join(root, "app", "pyvenv.cfg"), time.Time{})
+	touch(t, filepath.Join(root, "app", "main.py"), time.Time{})
+	// A build folder that is itself a package.
+	touch(t, filepath.Join(root, "lib", "package.json"), time.Time{})
+	touch(t, filepath.Join(root, "lib", "build", "package.json"), time.Time{})
+	// Generated folders may hold suffix markers and still match.
+	touch(t, filepath.Join(root, "ios", "Podfile"), time.Time{})
+	mkdir(t, filepath.Join(root, "ios", "Pods", "Pods.xcodeproj"))
+
+	venv := funcMatcher{name: "venv", fn: func(d *Dir) bool { return d.HasFile("pyvenv.cfg") }}
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{venv, nameMatcher("build"), nameMatcher("Pods")}, Options{Home: filepath.Dir(root)})
+	require.NoError(t, err)
+	require.Equal(t, []string{filepath.Join(root, "ios", "Pods")}, artifactPaths(ix))
 }
 
 func TestDiscoverDepth(t *testing.T) {
@@ -184,7 +221,7 @@ func TestDiscoverDepth(t *testing.T) {
 	mkdir(t, filepath.Join(root, "a", "target"))
 	mkdir(t, filepath.Join(root, "a", "b", "c", "target"))
 
-	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("target")}, Options{Depth: 2})
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("target")}, Options{Depth: 2, Home: filepath.Dir(root)})
 	require.NoError(t, err)
 	require.Equal(t, []string{filepath.Join(root, "a", "target")}, artifactPaths(ix))
 }
@@ -217,7 +254,7 @@ func TestDiscoverUnreadable(t *testing.T) {
 	require.NoError(t, os.Chmod(locked, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
-	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{})
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{Home: filepath.Dir(root)})
 	require.NoError(t, err)
 	require.Empty(t, ix.Artifacts)
 	require.Len(t, ix.Unreadable, 1)
@@ -229,7 +266,7 @@ func TestDiscoverCancellation(t *testing.T) {
 	mkdir(t, filepath.Join(root, "a", "b"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := Discover(ctx, []string{root}, nil, Options{})
+	_, err := Discover(ctx, []string{root}, nil, Options{Home: filepath.Dir(root)})
 	require.ErrorIs(t, err, context.Canceled)
 }
 
@@ -242,7 +279,7 @@ func TestMatcherSeesParentAndProject(t *testing.T) {
 	m := funcMatcher{name: "rust", fn: func(d *Dir) bool {
 		return d.Name == "target" && d.Parent.HasFile("Cargo.toml") && d.Project != nil
 	}}
-	ix, err := Discover(context.Background(), []string{root}, []Matcher{m}, Options{})
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{m}, Options{Home: filepath.Dir(root)})
 	require.NoError(t, err)
 	require.Equal(t, []string{filepath.Join(root, "crate", "target")}, artifactPaths(ix))
 	require.Len(t, ix.ArtifactsFor("rust"), 1)
@@ -268,12 +305,14 @@ func TestSourceRunsOnce(t *testing.T) {
 	s := NewSource([]string{root}, []Matcher{funcMatcher{name: "n", fn: func(*Dir) bool {
 		calls.Add(1)
 		return false
-	}}}, Options{})
+	}}}, Options{Home: filepath.Dir(root)})
 	_, err := s.Index(context.Background())
 	require.NoError(t, err)
+	first := calls.Load()
+	require.Positive(t, first)
 	_, err = s.Index(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, int32(1), calls.Load())
+	require.Equal(t, first, calls.Load(), "the second call reuses the first walk")
 }
 
 func TestGitCommitTime(t *testing.T) {

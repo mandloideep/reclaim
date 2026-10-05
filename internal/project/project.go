@@ -24,6 +24,10 @@ import (
 	"github.com/mandloideep/reclaim/internal/fsx"
 )
 
+// ManifestNames are the file and directory names that make a directory a
+// project. A directory holding any of them is never an artifact folder.
+func ManifestNames() []string { return markerNames() }
+
 // markerNames are the file and directory names that make a directory a project.
 func markerNames() []string {
 	return []string{
@@ -180,6 +184,11 @@ func (d *Dir) Markers() []string {
 	return out
 }
 
+// HasManifest reports whether the directory holds one of ManifestNames. Unlike
+// IsProject it ignores suffix markers such as App.xcodeproj, which generated
+// folders like Pods contain.
+func (d *Dir) HasManifest() bool { return d.HasAny(markerNames()...) }
+
 // IsProject reports whether the directory contains a project marker.
 func (d *Dir) IsProject() bool { return len(d.Markers()) > 0 }
 
@@ -274,6 +283,10 @@ type Index struct {
 	Artifacts []Artifact
 	// Unreadable lists directories the walk could not read.
 	Unreadable []fsx.Unreadable
+	// InsideArtifact maps roots that are themselves artifact folders, or lie
+	// inside one, to that folder. Such roots are not walked, because nothing
+	// inside an artifact folder is a project or an artifact of its own.
+	InsideArtifact map[string]string
 }
 
 // ArtifactsFor returns the artifacts recognized by the named matcher.
@@ -362,6 +375,13 @@ func Discover(ctx context.Context, roots []string, matchers []Matcher, opts Opti
 		if !info.IsDir() {
 			continue
 		}
+		if artifact, ok := ds.insideArtifact(root); ok {
+			if idx.InsideArtifact == nil {
+				idx.InsideArtifact = map[string]string{}
+			}
+			idx.InsideArtifact[root] = artifact
+			continue
+		}
 		dev, haveDev := fsx.DeviceOf(info)
 		owner := ds.enclosingProject(root)
 		ds.visit(task{path: root, owner: owner, dev: dev, haveDev: haveDev, root: true})
@@ -421,9 +441,11 @@ func (ds *discovery) visit(t task) {
 	d := newDir(t.path, t.parent, entries)
 	d.Project = t.owner
 
-	// A directory holding a git working tree is never an artifact, even when
-	// its name says so, for example a dist folder checked out as a worktree.
-	if !t.root && !d.Has(".git") {
+	// A directory holding a project manifest or a git working tree is never
+	// an artifact, even when its name or contents say so: a dist folder
+	// checked out as a worktree, or a project that ran "python -m venv ." in
+	// its own root, must never be offered for removal.
+	if !t.root && !d.HasManifest() {
 		for _, m := range ds.matchers {
 			if m.Match(d) {
 				ds.addArtifact(d, m.Name(), t)
@@ -512,6 +534,44 @@ func (ds *discovery) project(root string, markers []string, git bool) *Project {
 	p := &Project{Root: root, Markers: markers, Git: git}
 	ds.projects[root] = p
 	return p
+}
+
+// insideArtifact reports whether root is an artifact folder or lies inside
+// one, by running the matchers over root and its ancestors below the home
+// directory, top down so every matcher sees the parent it expects.
+func (ds *discovery) insideArtifact(root string) (string, bool) {
+	var chain []string
+	for dir := root; ; dir = filepath.Dir(dir) {
+		if ds.opts.Home != "" && IsWithin(ds.opts.Home, dir) {
+			break
+		}
+		chain = append(chain, dir)
+		if dir == filepath.Dir(dir) {
+			break
+		}
+	}
+	if len(chain) == 0 {
+		return "", false
+	}
+	parent, err := NewDir(filepath.Dir(chain[len(chain)-1]), nil)
+	if err != nil {
+		parent = nil
+	}
+	for _, path := range slices.Backward(chain) {
+		d, err := NewDir(path, parent)
+		if err != nil {
+			return "", false
+		}
+		if !d.HasManifest() {
+			for _, m := range ds.matchers {
+				if m.Match(d) {
+					return d.Path, true
+				}
+			}
+		}
+		parent = d
+	}
+	return "", false
 }
 
 // enclosingProject finds the project a root lies in by looking at its

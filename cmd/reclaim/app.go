@@ -234,8 +234,19 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 
 	res := scan.Run(ctx, selected, env, 8)
 	warnings := res.Warnings
+	notes := res.Notes
 	if slices.ContainsFunc(selected, func(s scan.Scanner) bool { return s.Category() == finding.CategoryProject }) {
 		if idx, err := env.Projects.Index(ctx); err == nil {
+			for _, root := range req.roots {
+				artifact, ok := idx.InsideArtifact[root]
+				switch {
+				case !ok:
+				case artifact == root:
+					notes = append(notes, fmt.Sprintf("%s is an artifact folder itself, so nothing inside it is offered on its own; scan its project instead.", root))
+				default:
+					notes = append(notes, fmt.Sprintf("%s is inside the artifact folder %s, so nothing in it is offered on its own.", root, artifact))
+				}
+			}
 			for i, u := range idx.Unreadable {
 				if i == 50 {
 					warnings = append(warnings, finding.Warning{Scanner: "projects", Message: fmt.Sprintf("%d more unreadable folders not shown", len(idx.Unreadable)-50)})
@@ -246,15 +257,27 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 		}
 	}
 	return &finding.Report{
-		Version:  finding.ReportVersion,
-		Created:  a.now().UTC(),
-		Host:     a.host,
-		OS:       a.goos,
-		Roots:    project.NormalizeRoots(reportRoots),
+		Version: finding.ReportVersion,
+		Created: a.now().UTC(),
+		Host:    a.host,
+		OS:      a.goos,
+		// Nested roots are kept, unlike for the walk, so apply refuses to
+		// remove ~/Code itself even though ~ is also a root.
+		Roots:    uniqueRoots(reportRoots),
 		Findings: res.Findings,
 		Warnings: warnings,
-		Notes:    res.Notes,
+		Notes:    notes,
 	}
+}
+
+// uniqueRoots cleans, sorts and deduplicates roots.
+func uniqueRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, r := range roots {
+		out = append(out, filepath.Clean(r))
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 func writeJSON(w io.Writer, v any) error {

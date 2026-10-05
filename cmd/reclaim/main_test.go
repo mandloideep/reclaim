@@ -403,6 +403,24 @@ func TestScanTableAndFlags(t *testing.T) {
 	require.ErrorContains(t, execute(a, "scan", root, "--category", "docker"), "no scanners selected")
 }
 
+func TestScanInsideArtifactOffersNothing(t *testing.T) {
+	a, out := testApp(t, "")
+	root := filepath.Join(a.home, "Code")
+	fixtureTree(t, root)
+	writeTree(t, filepath.Join(root, "web", "node_modules", "left-pad"), map[string]string{
+		"package.json":   `{"scripts":{"build":"tsc"}}`,
+		"dist/index.js":  "compiled",
+		"node_modules/x": "nested",
+	})
+	pkg := filepath.Join(root, "web", "node_modules", "left-pad")
+	require.NoError(t, execute(a, "scan", pkg, "--json", "--min-size", "0"))
+	var r finding.Report
+	require.NoError(t, json.Unmarshal(out.Bytes(), &r))
+	require.Empty(t, r.Findings)
+	require.Len(t, r.Notes, 1)
+	require.Contains(t, r.Notes[0], "inside the artifact folder "+filepath.Join(root, "web", "node_modules"))
+}
+
 func TestScanAllReportsDockerUnavailable(t *testing.T) {
 	a, out := testApp(t, "")
 	root := filepath.Join(a.home, "Code")
@@ -410,7 +428,7 @@ func TestScanAllReportsDockerUnavailable(t *testing.T) {
 	require.NoError(t, execute(a, "scan", root, "--all", "--json", "--min-size", "0"))
 	var r finding.Report
 	require.NoError(t, json.Unmarshal(out.Bytes(), &r))
-	require.Equal(t, []string{a.home}, r.Roots, "caches live under home, so home becomes the root")
+	require.Equal(t, []string{a.home, root}, r.Roots, "caches live under home, so home is a root next to the scan root")
 	msgs := make([]string, 0, len(r.Warnings))
 	for _, w := range r.Warnings {
 		msgs = append(msgs, w.String())
