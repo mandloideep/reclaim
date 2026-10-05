@@ -733,9 +733,16 @@ func (m *Checklist) leafText(n *node) string {
 	} else {
 		label = shortener(m.opts.Home)(label)
 	}
-	s := box + " " + m.tierText(f.Tier) + " " + size(f.Size) + "  " + label + m.styles.dim.Render("  "+f.Scanner)
+	tier := " "
+	if f.Action != finding.ActionNone {
+		tier = m.tierText(f.Tier)
+	}
+	s := box + " " + tier + " " + size(f.Size) + "  " + label + m.styles.dim.Render("  "+f.Scanner)
 	if !f.LastUsed.IsZero() && !m.opts.Now.IsZero() {
 		s += m.styles.dim.Render("  used " + (&Printer{now: m.opts.Now}).age(f.LastUsed))
+	}
+	if !f.Actionable() {
+		s += "  " + m.styles.warn.Render("cannot be selected")
 	}
 	if (f.Tier == finding.TierC || !f.Actionable()) && f.Warning != "" {
 		s += "  " + m.styles.warn.Render("! "+f.Warning)

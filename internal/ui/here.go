@@ -36,7 +36,7 @@ func (p *Printer) Here(root *fsx.Node, fs []finding.Finding, warnings []finding.
 		}
 		for i := range fs {
 			f := &fs[i]
-			line := "  " + p.Tier(f.Tier) + " " + size(f.Size) + "  " + pad(f.Scanner, nameWidth) + "  " + p.Path(f.Path)
+			line := "  " + p.TierCell(f) + " " + size(f.Size) + "  " + pad(f.Scanner, nameWidth) + "  " + p.Path(f.Path)
 			if f.Restore != "" {
 				line += p.dim.Render("  restore: " + f.Restore)
 			}
@@ -66,7 +66,7 @@ func (p *Printer) hereChildren(n *fsx.Node, fs []finding.Finding, indent string)
 			recSize = units.FormatSize(inside)
 		}
 		if own != nil {
-			tier = p.Tier(own.Tier)
+			tier = p.TierCell(own)
 		}
 		rec := fmt.Sprintf("%9s", recSize) + " " + tier
 		if inside == 0 {

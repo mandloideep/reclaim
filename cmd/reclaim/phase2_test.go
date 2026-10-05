@@ -145,7 +145,7 @@ func TestSelectNumberedNeverOffersAttention(t *testing.T) {
 	planPath := filepath.Join(t.TempDir(), "plan.json")
 	a.stdin = strings.NewReader("1-" + strconv.Itoa(n) + "\n")
 	require.NoError(t, execute(a, "select", "--out", planPath))
-	require.Contains(t, out.String(), "-   C    3.0 GB  old-downloads")
+	require.Contains(t, out.String(), "-        3.0 GB  old-downloads", "attention items have no number and no tier")
 	require.Contains(t, out.String(), "Attention, never removed")
 	p, err := plan.Load(planPath)
 	require.NoError(t, err)
