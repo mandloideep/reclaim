@@ -12,8 +12,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
+	"github.com/mandloideep/reclaim/internal/config"
 	"github.com/mandloideep/reclaim/internal/dockerx"
 	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
@@ -32,14 +36,21 @@ type app struct {
 	stdout io.Writer
 	stderr io.Writer
 
-	home     string
-	goos     string
-	host     string
-	stateDir string
-	getenv   func(string) string
-	exec     execx.Runner
-	docker   func() (dockerx.API, error)
-	now      func() time.Time
+	home       string
+	goos       string
+	host       string
+	stateDir   string
+	configPath string
+	// applications are the folders holding installed apps, for the
+	// Downloads installer scanner.
+	applications []string
+	getenv       func(string) string
+	exec         execx.Runner
+	docker       func() (dockerx.API, error)
+	now          func() time.Time
+	// interactive reports whether select can open the checklist: standard
+	// input and output are both terminals.
+	interactive func() bool
 
 	verbose bool
 	in      *bufio.Reader
@@ -58,16 +69,23 @@ func defaultApp() (*app, error) {
 		cacheDir = filepath.Join(home, ".cache")
 	}
 	host, _ := os.Hostname()
+	var applications []string
+	if runtime.GOOS == "darwin" {
+		applications = []string{"/Applications", filepath.Join(home, "Applications")}
+	}
 	return &app{
-		stdin:    os.Stdin,
-		stdout:   os.Stdout,
-		stderr:   os.Stderr,
-		home:     home,
-		goos:     runtime.GOOS,
-		host:     host,
-		stateDir: filepath.Join(cacheDir, "reclaim"),
-		getenv:   os.Getenv,
-		exec:     execx.OS{},
+		stdin:        os.Stdin,
+		stdout:       os.Stdout,
+		stderr:       os.Stderr,
+		home:         home,
+		goos:         runtime.GOOS,
+		host:         host,
+		stateDir:     filepath.Join(cacheDir, "reclaim"),
+		configPath:   config.DefaultPath(home, os.Getenv),
+		applications: applications,
+		interactive:  func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
+		getenv:       os.Getenv,
+		exec:         execx.OS{},
 		docker: func() (dockerx.API, error) {
 			c, err := dockerx.New(os.Getenv, home)
 			if err != nil {
@@ -170,14 +188,62 @@ func resolveDir(path string) (string, error) {
 	return resolved, nil
 }
 
+// loadConfig reads the configuration file. A missing file is an empty
+// configuration.
+func (a *app) loadConfig() (*config.Config, error) {
+	if a.configPath == "" {
+		return &config.Config{}, nil
+	}
+	return config.Load(a.configPath, a.home)
+}
+
+// enabledScanners applies the configuration's disabled scanners and the
+// --category selectors. Disabled scanners do not run, unless a selector
+// names one of them exactly, because flags override the configuration.
+func enabledScanners(all []scan.Scanner, categories, disable []string) ([]scan.Scanner, error) {
+	var disabled []scan.Scanner
+	if len(disable) > 0 {
+		var err error
+		if disabled, err = scan.Select(all, disable); err != nil {
+			return nil, fmt.Errorf("config [scanners] disable: %w", err)
+		}
+	}
+	selected, err := scan.Select(all, categories)
+	if err != nil {
+		return nil, fmt.Errorf("--category: %w", err)
+	}
+	return slices.DeleteFunc(slices.Clone(selected), func(s scan.Scanner) bool {
+		isDisabled := slices.ContainsFunc(disabled, func(d scan.Scanner) bool { return d.Name() == s.Name() })
+		return isDisabled && !slices.Contains(categories, s.Name())
+	}), nil
+}
+
+// configRoots resolves the roots from the configuration file. A root that
+// does not exist is skipped with a warning, so a disconnected drive does not
+// stop the scan.
+func (a *app) configRoots(cfg *config.Config) []string {
+	var roots []string
+	for _, r := range cfg.Roots {
+		p, err := resolveDir(r)
+		if err != nil {
+			a.warnf("config root skipped: %v", err)
+			continue
+		}
+		roots = append(roots, p)
+	}
+	return roots
+}
+
 // scanRequest describes one run of the scanners.
 type scanRequest struct {
 	scanners []scan.Scanner
 	roots    []string
+	exclude  []string
 	depth    int
 	labels   []dockerx.Label
 	walker   *fsx.Walker
 	sizes    map[string]int64
+	scope    *finding.Scope
 }
 
 // runScan runs the scanners and builds a report. Filesystem findings may live
@@ -193,6 +259,8 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 		Roots:        req.roots,
 		Home:         a.home,
 		GOOS:         a.goos,
+		Now:          a.now(),
+		Applications: a.applications,
 		Getenv:       a.getenv,
 		Exec:         a.exec,
 		DockerLabels: req.labels,
@@ -201,6 +269,7 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 		Projects: project.NewSource(req.roots, reg.ProjectMatchers(), project.Options{
 			Depth:      req.depth,
 			Home:       a.home,
+			Exclude:    req.exclude,
 			CommitTime: project.GitCommitTime(a.exec),
 		}),
 		Log:  a.logger(),
@@ -261,10 +330,11 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 		Created: a.now().UTC(),
 		Host:    a.host,
 		OS:      a.goos,
+		Scope:   req.scope,
 		// Nested roots are kept, unlike for the walk, so apply refuses to
 		// remove ~/Code itself even though ~ is also a root.
 		Roots:    uniqueRoots(reportRoots),
-		Findings: res.Findings,
+		Findings: scan.Filter{Exclude: req.exclude}.Apply(res.Findings),
 		Warnings: warnings,
 		Notes:    notes,
 	}
@@ -278,6 +348,29 @@ func uniqueRoots(roots []string) []string {
 	}
 	slices.Sort(out)
 	return slices.Compact(out)
+}
+
+// scopeOf records what produced a report: the command, its positional
+// arguments followed by the flags among names that were set, the resolved
+// path arguments and the walked roots.
+func scopeOf(cmd *cobra.Command, args, paths, roots []string, names ...string) *finding.Scope {
+	line := slices.Clone(args)
+	for _, name := range names {
+		fl := cmd.Flags().Lookup(name)
+		if fl == nil || !fl.Changed {
+			continue
+		}
+		v, typ := fl.Value.String(), fl.Value.Type()
+		switch {
+		case typ == "bool" && v == "true":
+			line = append(line, "--"+name)
+			continue
+		case strings.HasSuffix(typ, "Slice"), strings.HasSuffix(typ, "Array"):
+			v = strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
+		}
+		line = append(line, "--"+name+"="+v)
+	}
+	return &finding.Scope{Command: cmd.Name(), Args: line, Paths: slices.Clone(paths), Roots: slices.Clone(roots)}
 }
 
 func writeJSON(w io.Writer, v any) error {

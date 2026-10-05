@@ -6,10 +6,13 @@ import (
 	"strconv"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/plan"
+	"github.com/mandloideep/reclaim/internal/ui"
 	"github.com/mandloideep/reclaim/internal/units"
 )
 
@@ -25,12 +28,14 @@ func newSelectCmd(a *app) *cobra.Command {
 		Use:   "select",
 		Short: "Choose findings from a report and write a plan",
 		Long: "select reads the last report, or the one given with --report, and writes a plan file for apply.\n" +
+			"In a terminal it opens a checklist grouped by category and project, with tier A preselected.\n" +
 			"--preset safe selects every tier A finding, --preset aggressive adds tier B. Tier C is never\n" +
-			"selected by a preset. Without --preset, select prints a numbered list and reads the numbers to\n" +
-			"select from standard input, such as 1,4-9,12. Tier C items must be listed one by one.",
+			"selected by a preset or a group. When standard input or output is not a terminal, select prints\n" +
+			"a numbered list and reads the numbers to select from standard input, such as 1,4-9,12; tier C\n" +
+			"items must be listed one by one.",
 		Args: cobra.NoArgs,
-		RunE: func(*cobra.Command, []string) error {
-			return a.selectCommand(f)
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return a.selectCommand(cmd, f)
 		},
 	}
 	cmd.Flags().StringVar(&f.preset, "preset", "", "select without prompting: safe (tier A) or aggressive (tiers A and B)")
@@ -39,7 +44,7 @@ func newSelectCmd(a *app) *cobra.Command {
 	return cmd
 }
 
-func (a *app) selectCommand(f selectFlags) error {
+func (a *app) selectCommand(cmd *cobra.Command, f selectFlags) error {
 	path := f.report
 	if path == "" {
 		path = a.lastReportPath()
@@ -51,27 +56,46 @@ func (a *app) selectCommand(f selectFlags) error {
 		}
 		return err
 	}
+	p := a.printer()
+	provenance := p.Provenance(report)
+	a.sayf("%s\n", provenance)
 
 	var selected []finding.Finding
-	if f.preset != "" {
+	switch {
+	case f.preset != "":
 		tiers, err := plan.Preset(f.preset)
 		if err != nil {
 			return fmt.Errorf("--preset: %w", err)
 		}
 		selected = plan.SelectTiers(report.Findings, tiers)
-	} else {
-		if len(report.Findings) == 0 {
-			a.sayf("%s\n", "The report has no findings, so there is nothing to select.")
+	case !slices.ContainsFunc(report.Findings, func(f finding.Finding) bool { return f.Actionable() }):
+		a.sayf("%s\n", "The report has nothing that can be selected, so no plan was written.")
+		return nil
+	case a.interactive != nil && a.interactive():
+		m := ui.NewChecklist(report, ui.ChecklistOptions{
+			Home:       a.home,
+			PlanPath:   f.out,
+			Provenance: provenance,
+			Renderer:   lipgloss.NewRenderer(a.stdout),
+			Now:        a.now(),
+		})
+		prog := tea.NewProgram(m, tea.WithContext(cmd.Context()), tea.WithInput(a.stdin), tea.WithOutput(a.stdout), tea.WithAltScreen())
+		if _, err := prog.Run(); err != nil {
+			return fmt.Errorf("checklist: %w", err)
+		}
+		if m.Outcome() != ui.ChecklistWrite {
+			a.sayf("%s\n", "Quit without writing a plan.")
 			return nil
 		}
-		p := a.printer()
-		p.Numbered(report.Findings)
+		selected = m.Selected()
+	default:
+		numbered := p.Numbered(report.Findings)
 		a.sayf("\nSelect items by number, such as 1,4-9,12 (empty to cancel): ")
 		line, err := a.readLine()
 		if err != nil {
 			return err
 		}
-		idx, skipped, err := parseSelection(line, report.Findings)
+		idx, skipped, err := parseSelection(line, numbered)
 		if err != nil {
 			return err
 		}
@@ -79,14 +103,17 @@ func (a *app) selectCommand(f selectFlags) error {
 			a.sayf("Skipped tier C items %s because they were part of a range; list them one by one to select them.\n", joinInts(skipped))
 		}
 		for _, i := range idx {
-			selected = append(selected, report.Findings[i])
+			selected = append(selected, numbered[i])
 		}
 	}
 	if len(selected) == 0 {
 		a.sayf("%s\n", "Nothing selected, no plan written.")
 		return nil
 	}
-	pl := plan.New(report, selected, a.host, a.now())
+	pl, err := plan.New(report, selected, a.host, a.now())
+	if err != nil {
+		return err
+	}
 	if err := plan.Save(f.out, pl); err != nil {
 		return err
 	}

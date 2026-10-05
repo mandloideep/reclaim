@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/plan"
+	"github.com/mandloideep/reclaim/internal/ui"
 )
 
 // testApp returns an app that touches nothing outside temp directories: a
@@ -30,17 +32,20 @@ func testApp(t *testing.T, stdin string) (*app, *bytes.Buffer) {
 	require.NoError(t, err)
 	var out bytes.Buffer
 	return &app{
-		stdin:    strings.NewReader(stdin),
-		stdout:   &out,
-		stderr:   &bytes.Buffer{},
-		home:     home,
-		goos:     "linux",
-		host:     "test-host",
-		stateDir: t.TempDir(),
-		getenv:   func(string) string { return "" },
-		exec:     &execx.Fake{},
-		docker:   func() (dockerx.API, error) { return nil, errors.New("docker disabled in tests") },
-		now:      time.Now,
+		stdin:        strings.NewReader(stdin),
+		stdout:       &out,
+		stderr:       &bytes.Buffer{},
+		home:         home,
+		goos:         "linux",
+		host:         "test-host",
+		stateDir:     t.TempDir(),
+		configPath:   filepath.Join(home, ".config", "reclaim", "config.toml"),
+		applications: []string{filepath.Join(home, "Applications")},
+		interactive:  func() bool { return false },
+		getenv:       func(string) string { return "" },
+		exec:         &execx.Fake{},
+		docker:       func() (dockerx.API, error) { return nil, errors.New("docker disabled in tests") },
+		now:          time.Now,
 	}, &out
 }
 
@@ -255,8 +260,11 @@ func TestSelectInteractive(t *testing.T) {
 	report, err := loadReport(a.lastReportPath())
 	require.NoError(t, err)
 	n := len(report.Findings)
+	// The list is numbered in its grouped order, which the plain printer
+	// reproduces.
+	numbered := ui.NewPlain(io.Discard, a.home, time.Now()).Numbered(report.Findings)
 	var tierC int
-	for i, f := range report.Findings {
+	for i, f := range numbered {
 		if f.Tier == finding.TierC {
 			tierC = i + 1
 		}
@@ -268,6 +276,8 @@ func TestSelectInteractive(t *testing.T) {
 	a.in = nil
 	out.Reset()
 	require.NoError(t, execute(a, "select", "--out", planPath))
+	require.Contains(t, out.String(), "Report from reclaim scan "+root+" --min-size=0, just now (")
+	require.Contains(t, out.String(), "It covers only ~/Code, not the whole machine")
 	require.Contains(t, out.String(), "1. ")
 	require.Contains(t, out.String(), "Skipped tier C items "+strconv.Itoa(tierC))
 	p, err := plan.Load(planPath)

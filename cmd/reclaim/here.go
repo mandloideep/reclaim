@@ -46,6 +46,7 @@ func toHereNodes(nodes []*fsx.Node) []*hereNode {
 type hereFlags struct {
 	depth int
 	json  bool
+	md    bool
 	out   string
 }
 
@@ -63,18 +64,26 @@ func newHereCmd(a *app) *cobra.Command {
 			if len(args) == 1 {
 				path = args[0]
 			}
-			return a.hereCommand(cmd, path, f)
+			return a.hereCommand(cmd, args, path, f)
 		},
 	}
 	cmd.Flags().IntVar(&f.depth, "depth", 1, "how many levels of the breakdown to show")
 	cmd.Flags().BoolVar(&f.json, "json", false, "print the breakdown and findings as JSON")
+	cmd.Flags().BoolVar(&f.md, "md", false, "print the breakdown and findings as Markdown")
 	cmd.Flags().StringVar(&f.out, "out", "", "also save the findings as a JSON report for select")
 	return cmd
 }
 
-func (a *app) hereCommand(cmd *cobra.Command, path string, f hereFlags) error {
+func (a *app) hereCommand(cmd *cobra.Command, args []string, path string, f hereFlags) error {
 	if f.depth < 1 {
 		return errors.New("--depth must be at least 1")
+	}
+	if f.json && f.md {
+		return errors.New("--json and --md cannot be used together")
+	}
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
 	}
 	root, err := resolveDir(path)
 	if err != nil {
@@ -90,11 +99,17 @@ func (a *app) hereCommand(cmd *cobra.Command, path string, f hereFlags) error {
 	if err != nil {
 		return err
 	}
+	selected, err := enabledScanners(reg.All(), nil, cfg.Disable)
+	if err != nil {
+		return err
+	}
 	report := a.runScan(ctx, reg, scanRequest{
-		scanners: scan.OnlyCategory(reg.All(), finding.CategoryProject),
+		scanners: scan.OnlyCategory(selected, finding.CategoryProject),
 		roots:    []string{root},
+		exclude:  cfg.Exclude,
 		walker:   walker,
 		sizes:    treeRes.DirSizes,
+		scope:    scopeOf(cmd, args, []string{root}, []string{root}, "depth", "json", "md", "out"),
 	})
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("here interrupted: %w", err)
@@ -123,6 +138,10 @@ func (a *app) hereCommand(cmd *cobra.Command, path string, f hereFlags) error {
 			Warnings: report.Warnings,
 			Notes:    report.Notes,
 		})
+	}
+	if f.md {
+		a.markdownPrinter().HereMarkdown(tree, report.Findings, report.Warnings, report.Notes)
+		return nil
 	}
 	a.printer().Here(tree, report.Findings, report.Warnings, report.Notes)
 	if f.out != "" {
