@@ -31,7 +31,8 @@ func newApplyCmd(a *app) *cobra.Command {
 			"actions in order, checking each target again right before acting on it, and logs every result.\n" +
 			"It stops at the first failure unless --keep-going is given. Plans whose scan is older than 24\n" +
 			"hours are refused unless --stale-ok is given.",
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: firstArg(filesWithExt("json")),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.applyCommand(cmd, args[0], f)
 		},
