@@ -60,6 +60,10 @@ func cleanCommands() []cleanCommand {
 	}
 }
 
+// OllamaSystemModels is the models folder of the system wide Ollama service
+// that the Linux install script sets up, in the home of its ollama account.
+const OllamaSystemModels = "/usr/share/ollama/.ollama/models"
+
 // OllamaTarget is the target of the finding for an Ollama model.
 func OllamaTarget(model string) string { return "ollama:" + model }
 

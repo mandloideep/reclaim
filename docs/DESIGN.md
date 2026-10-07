@@ -32,10 +32,25 @@ reclaim select           [--report report.json] [--preset safe|aggressive] [--ou
 reclaim apply plan.json  [--yes] [--log apply.log] [--keep-going] [--stale-ok]
 reclaim here [path]      [--depth 2] [--json] [--md] [--out report.json]
 reclaim scanners         # list registered scanners, what they look for and whether the config disables them
+reclaim completion bash|zsh|fish|powershell
 reclaim version
 ```
 
 Every command accepts `--config path` to read another configuration file and `--verbose` for debug logs.
+`reclaim --help` explains which configuration file is read, in the order given under "Configuration".
+
+### completion
+
+`completion` is cobra's command and writes a completion script for the shell.
+The scripts complete commands and flags, and reclaim gives them real values: `A`, `B` and `C` for `--tier`, every category, ecosystem and scanner name for `--category`, `safe` and `aggressive` for `--preset`, a few sizes and ages for `--min-size` and `--stale`, TOML files for `--config`, JSON files for `select --report`, the `--out` flags and the plan argument of `apply`, and folders for the paths of `scan` and `here`.
+Flags that take a comma separated list offer the values not listed yet after the last comma.
+Values carry a short description, which zsh and fish show.
+
+### version
+
+`version` prints `reclaim <version> <go version> <os>/<arch>`.
+A release build is stamped with `-X main.version=<version>`, which GoReleaser fills with the tag without its `v`; reclaim adds the `v` back, so a release prints its tag, such as `v0.1.0`.
+A `go install` build prints the module version from the build info, which is the tag or a pseudo version, and a build from a checkout prints `(devel)`.
 
 ### scan
 
@@ -72,7 +87,7 @@ A report written before scopes existed is described as coming from an older recl
 The checklist opens only when standard input and standard output are both terminals and `--preset` is not given.
 Otherwise `select` prints a numbered list, grouped exactly like the scan table, and reads a selection such as `1,4-9,12` from standard input, so scripts and tests keep working.
 Tier C items are selected only when their number is listed on its own; a range that covers them skips them and says so.
-Findings listed for attention only are printed without a number, so they can never be selected, and building a plan refuses them as well.
+Findings listed for attention only are printed without a number and with a blank tier column, so they can never be selected, and building a plan refuses them as well.
 
 ### apply
 
@@ -163,7 +178,7 @@ type Scanner interface {
 }
 ```
 
-`Env` carries the roots, the home directory, the OS, the time the scan started, the folders holding installed applications, an environment variable reader, a command runner for asking tools where their caches live, a Docker client that may be nil, the Docker label filter, the size walker, the shared project walk, sizes already measured in the same run, a logger and a diagnostics sink for warnings and notes.
+`Env` carries the roots, the home directory, the OS, the time the scan started, the folders holding installed applications, the models folder of a system wide Ollama service on Linux, an environment variable reader, a command runner for asking tools where their caches live, a Docker client that may be nil, the Docker label filter, the size walker, the shared project walk, sizes already measured in the same run, a logger and a diagnostics sink for warnings and notes.
 Everything a scanner needs comes from `Env` so tests can substitute fakes.
 There is no general filesystem abstraction.
 The walker needs device ids, inodes and link counts, which an in-memory filesystem would have to fake, so scanner tests build real fixtures in temp directories instead.
@@ -199,7 +214,8 @@ type Finding struct {
 The JSON keys are the snake case field names, such as `last_used` and `needs_sudo`, and a report carries `"version": 1`.
 
 The `None` action marks a finding that is shown but never applied: a large old file in Downloads listed for the user's attention.
-Such findings are tier C, carry a warning that says reclaim never removes them, are excluded from every reclaimable total and from the per tier totals, appear in their own group, cannot be ticked in the checklist, get no number in the numbered list, are never picked by a preset, and are refused when building or validating a plan.
+Such findings are tier C in the data, carry a warning that says reclaim never removes them, are excluded from every reclaimable total and from the per tier totals, appear in their own group, cannot be ticked in the checklist, get no number in the numbered list, are never picked by a preset, and are refused when building or validating a plan.
+Because they carry no action, the table, the Markdown summary, the numbered list and the checklist leave their tier column blank, and the checklist marks their rows as not selectable.
 
 A report carries an optional `scope` object with `command`, `args`, `paths` and `roots`, described under `scan`.
 Reports without one remain valid.
@@ -306,12 +322,20 @@ It is a catch-all scanner, so a cache another scanner reports, even after being 
 Playwright MCP keeps persistent browser profiles with logins in `ms-playwright-mcp` and sometimes in `ms-playwright` itself, as `mcp-*` folders; such folders are tier C with a warning naming the profiles.
 - `puppeteer`: `~/.cache/puppeteer` or `PUPPETEER_CACHE_DIR`, tier B.
 A browser folder named by `PLAYWRIGHT_BROWSERS_PATH` or `PUPPETEER_CACHE_DIR` is offered only when it lies strictly inside the home directory, is neither the cache folder nor holds it, and holds at least one entry that looks like a downloaded browser.
-- `xcode-derived-data`: each folder in `~/Library/Developer/Xcode/DerivedData`, tier A.
+- `xcode-derived-data`: each folder in `~/Library/Developer/Xcode/DerivedData` and in the custom DerivedData location, tier A.
+The custom location is the `IDECustomDerivedDataLocation` setting, read with `defaults read com.apple.dt.Xcode IDECustomDerivedDataLocation` through the command runner.
+The default location is scanned even when a custom one is set, because Xcode leaves the folders it built there before the setting changed.
+A custom location is scanned only when it lies strictly inside the home directory, because apply removes nothing outside the recorded roots, and the report notes when it does not.
+Because a folder the user chose may hold other things, only folders Xcode made are offered there: its shared caches (`ModuleCache.noindex`, `SymbolCache.noindex`, `SDKStatCaches.noindex`, `CompilationCache.noindex`) and project folders named after the project with a dash and 28 lowercase letters that hold an `info.plist` recording a `WorkspacePath`.
 - `simulator-devices`: simulators that `xcrun simctl list -j devices` reports unavailable, usually because their runtime is gone, tier B, removed with `xcrun simctl delete <udid>` so CoreSimulator's own records stay consistent.
 - `simulator-runtimes`: deletable runtimes from `xcrun simctl runtime list -j`, tier B, `NeedsSudo`, with the `xcrun simctl runtime delete <identifier>` command for the user to run.
 Without Xcode there is no `simctl`, and both simulator scanners report nothing.
 - `ollama`: one finding per model, read from the manifests in `~/.ollama/models` or `OLLAMA_MODELS`, so the server need not run for a scan; tier B with `ollama rm <model>` as the action.
-A model's size counts only the blobs no other model uses, because shared blobs are freed only when every model using them is removed; the warning says how much is shared and that `ollama rm` needs Ollama running.
+A model's size counts only the blobs no other model in its folder uses, because shared blobs are freed only when every model using them is removed; the warning says how much is shared and that `ollama rm` needs Ollama running.
+On Linux the scanner also reads `/usr/share/ollama/.ollama/models`, where the service set up by Ollama's install script keeps its models.
+Those models belong to the `ollama` account and serve every user, so their findings are `NeedsSudo`: apply prints the command and never runs it.
+When that folder exists but cannot be read, the report notes it.
+`ollama rm` removes a model from whichever server answers, which is usually the system service, so a model of the user's folder is offered only while the system folder can be read and holds no model of the same name; otherwise the report notes why it is left out, and apply checks the same right before running the command.
 - `codex-worktrees`: each task folder in `~/.codex/worktrees` or `$CODEX_HOME/worktrees`, tier B with a reminder to run `git worktree prune`.
 A folder holding a worktree with uncommitted changes, or with commits that no branch, remote or tag holds, such as commits on a detached HEAD, or one git cannot report on, or any worktree when git is missing, is tier C.
 The warning says that ignored files such as `.env` are lost too.
@@ -439,13 +463,25 @@ Without `RECLAIM_DOCKER_TESTS=1` the tests skip, and the scanner and the Docker 
 - An end-to-end test runs `scan` on a fixture tree, writes a plan with `--preset safe`, runs `apply --yes`, and asserts that only the expected paths are gone.
 A second one scans a whole fake machine, with projects, package and app caches, installed apps and a Downloads folder, applies `--preset aggressive`, and asserts that only the tier A and B paths are gone while the archive with an extracted copy and the attention file remain.
 - The checklist is tested by feeding key messages to its `Update` method and asserting on the selection and on `View`.
+- Shell completion is tested through cobra's hidden completion command, and `reclaim version` through a function that takes the stamped version and the build info as arguments.
+- `TestScreenshots` runs `scan`, `here` and the checklist in color over a fixture machine with fake tools and a fake Docker daemon, at a fixed time, and compares the output with the files in `cmd/reclaim/testdata/screenshots`.
+`scripts/screenshots.sh` rewrites those files and renders them with freeze as the SVGs in `docs/screenshots` that the README shows, so the screenshots never come from a real machine and cannot drift from the code.
 - CI runs `go test -race` on macOS and Linux and `golangci-lint`, and a separate job on `ubuntu-latest` runs the Docker integration test against the runner's daemon with `RECLAIM_DOCKER_TESTS=1`, failing if the test skips.
+
+## Releasing
+
+Releases are cut by pushing a tag such as `v0.1.0`.
+The release workflow runs every CI job and then GoReleaser, which builds `cmd/reclaim` for darwin and linux on arm64 and amd64 with CGO disabled, `-trimpath` and the version stamped, publishes tar.gz archives with `LICENSE` and `README.md`, a checksums file and release notes from the commit subjects on the GitHub release, and updates `Formula/reclaim.rb` in the `mandloideep/homebrew-tap` repository.
+The formula installs the bash, zsh and fish completions from the binary and tests `reclaim version`.
+There is no `CHANGELOG.md`; the release notes are the change log.
+GoReleaser and freeze run through `go run` and are not dependencies in `go.mod`.
+[RELEASING.md](RELEASING.md) has the steps, the token the tap needs and how to verify a release.
 
 ## Phases
 
 Phase 1 delivered `scan`, `here`, `select --preset`, `apply`, the project scanners, the package cache scanners, the Docker scanner, JSON and table output, and the test suite.
 Phase 2 delivered the interactive checklist, the app cache scanners, the Downloads scanner, Markdown output, the config file, report provenance, Docker grouping, the location check before clean commands and the Docker integration test in CI.
-Phase 3 delivers GoReleaser, a Homebrew tap, shell completion and a README with screenshots.
+Phase 3 delivered GoReleaser and the release workflow, the Homebrew tap, shell completion values, the README with screenshots rendered from a fixture, `docs/RELEASING.md`, Xcode's custom DerivedData location, the Linux system wide Ollama models, a blank tier column for attention findings and the release tag in `reclaim version`.
 
 Each phase is a pull request or a short series of pull requests.
 Every pull request passes CI and includes tests for what it adds.

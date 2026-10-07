@@ -60,9 +60,18 @@ func (p *Printer) markdownTable(g *Group) {
 	p.println("| --- | ---: | --- | --- | --- |")
 	for i := range g.Findings {
 		f := &g.Findings[i]
-		p.printf("| %s | %s | %s | %s | %s |\n", f.Tier, units.FormatSize(f.Size), mdCell(f.Scanner),
+		p.printf("| %s | %s | %s | %s | %s |\n", mdTier(f), units.FormatSize(f.Size), mdCell(f.Scanner),
 			mdItem(p.label(g, f), f), mdCell(note(f)))
 	}
+}
+
+// mdTier is the tier cell of a finding, blank for findings listed for
+// attention only, which carry no action.
+func mdTier(f *finding.Finding) string {
+	if !f.Actionable() {
+		return ""
+	}
+	return string(f.Tier)
 }
 
 // mdItem shows paths as code and other names, such as image tags, as text.
@@ -135,7 +144,7 @@ func (p *Printer) HereMarkdown(root *fsx.Node, fs []finding.Finding, warnings []
 			if f.Restore != "" {
 				n = strings.TrimPrefix(n+"; restore: "+f.Restore, "; ")
 			}
-			p.printf("| %s | %s | %s | %s | %s |\n", f.Tier, units.FormatSize(f.Size), mdCell(f.Scanner), mdCodeCell(p.Path(f.Path)), mdCell(n))
+			p.printf("| %s | %s | %s | %s | %s |\n", mdTier(f), units.FormatSize(f.Size), mdCell(f.Scanner), mdCodeCell(p.Path(f.Path)), mdCell(n))
 		}
 	}
 	p.markdownWarnings(warnings, notes)
@@ -158,7 +167,7 @@ func (p *Printer) hereMarkdownRows(top, n *fsx.Node, fs []finding.Finding) {
 			rec = units.FormatSize(inside)
 		}
 		if own != nil {
-			tier = string(own.Tier) + " " + own.Scanner
+			tier = strings.TrimSpace(mdTier(own) + " " + own.Scanner)
 		}
 		name, err := filepath.Rel(top.Path, c.Path)
 		if err != nil {

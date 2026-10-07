@@ -238,6 +238,166 @@ func TestDerivedData(t *testing.T) {
 	require.Equal(t, finding.TierA, got[0].Tier)
 }
 
+// xcodeProject makes a DerivedData project folder the way Xcode does: a
+// hashed name and an info.plist naming the workspace.
+func xcodeProject(t *testing.T, dir, name string, size int) {
+	t.Helper()
+	put(t, filepath.Join(dir, name, "Build", "Products", "app"), size)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name, "info.plist"),
+		[]byte("<plist><dict><key>WorkspacePath</key><string>/x/App.xcodeproj</string></dict></plist>"), 0o644))
+}
+
+// TestDerivedDataLocation reads Xcode's custom DerivedData location through
+// the command runner. The default location is always scanned, since Xcode
+// leaves folders there when the setting changes; a custom location inside
+// the home directory is scanned as well and offers only folders Xcode made.
+func TestDerivedDataLocation(t *testing.T) {
+	const query = "defaults read com.apple.dt.Xcode IDECustomDerivedDataLocation"
+	const project = "App-bxrjzktdwfaugpcvhzjmlzkhwqyi"
+	home := fakeHome(t)
+	def := filepath.Join(home, "Library", "Developer", "Xcode", "DerivedData")
+	put(t, filepath.Join(def, "Old-abc", "Build", "x"), 500)
+	custom := filepath.Join(home, "Builds", "DerivedData")
+	xcodeProject(t, custom, project, 700)
+	put(t, filepath.Join(custom, "ModuleCache.noindex", "y"), 300)
+	put(t, filepath.Join(custom, "VMs.noindex", "disk.img"), 900)
+	put(t, filepath.Join(custom, "Copy-bxrjzktdwfaugpcvhzjmlzkhwqyi", "x"), 900)
+	put(t, filepath.Join(custom, "notes", "todo.txt"), 900)
+	outside := filepath.Join(filepath.Dir(filepath.Dir(home)), "Volumes", "Fast", "DerivedData")
+	xcodeProject(t, outside, project, 100)
+	defaults := map[string]string{"defaults": "/usr/bin/defaults"}
+	old := filepath.Join(def, "Old-abc")
+	both := []string{old, filepath.Join(custom, project), filepath.Join(custom, "ModuleCache.noindex")}
+
+	tests := []struct {
+		name  string
+		tools map[string]string
+		value *string
+		want  []string
+		warn  string
+		note  string
+	}{
+		{name: "defaults is missing", want: []string{old}},
+		{name: "the key is not set", tools: defaults, want: []string{old}},
+		{name: "an empty value", tools: defaults, value: ptr("  \n"), want: []string{old}},
+		{name: "a custom location", tools: defaults, value: ptr(custom + "\n"), want: both},
+		{name: "a custom location under ~", tools: defaults, value: ptr("~/Builds/DerivedData"), want: both},
+		{name: "the default location named as custom", tools: defaults, value: ptr(def), want: []string{old}},
+		{name: "outside the home directory", tools: defaults, value: ptr(outside), want: []string{old}, note: "outside the home folder"},
+		{name: "the home directory itself", tools: defaults, value: ptr(home), want: []string{old}, note: "outside the home folder"},
+		{name: "a relative path", tools: defaults, value: ptr("Builds"), want: []string{old}, warn: "not an absolute path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &execx.Fake{Tools: tt.tools, Outputs: map[string]string{}}
+			if tt.value != nil {
+				fake.Outputs[query] = *tt.value
+			}
+			res := scan.Run(context.Background(), []scan.Scanner{scannerNamed(t, "xcode-derived-data")}, testEnv(home, "darwin", fake), 1)
+			want := append([]string{}, tt.want...)
+			slices.Sort(want)
+			require.Equal(t, want, append([]string{}, paths(res.Findings)...))
+			for _, f := range res.Findings {
+				require.Equal(t, finding.TierA, f.Tier)
+				require.Equal(t, finding.ActionRemovePath, f.Action)
+			}
+			if tt.warn != "" {
+				require.Len(t, res.Warnings, 1)
+				require.Contains(t, res.Warnings[0].Message, tt.warn)
+			} else {
+				require.Empty(t, res.Warnings)
+			}
+			if tt.note != "" {
+				require.Len(t, res.Notes, 1)
+				require.Contains(t, res.Notes[0], tt.note)
+			} else {
+				require.Empty(t, res.Notes)
+			}
+		})
+	}
+}
+
+func TestXcodeMade(t *testing.T) {
+	dir := t.TempDir()
+	xcodeProject(t, dir, "App-bxrjzktdwfaugpcvhzjmlzkhwqyi", 10)
+	xcodeProject(t, dir, "My-App-bxrjzktdwfaugpcvhzjmlzkhwqyi", 10)
+	xcodeProject(t, dir, "App-bxrjzktdwfaugpcvhzjmlzkhwqy", 10)
+	xcodeProject(t, dir, "App-BXRJZKTDWFAUGPCVHZJMLZKHWQYI", 10)
+	put(t, filepath.Join(dir, "Plain-bxrjzktdwfaugpcvhzjmlzkhwqyi", "info.plist"), 10)
+	put(t, filepath.Join(dir, "Bare-bxrjzktdwfaugpcvhzjmlzkhwqyi", "x"), 10)
+	for _, name := range xcodeCaches() {
+		put(t, filepath.Join(dir, name, "x"), 10)
+	}
+	put(t, filepath.Join(dir, "VMs.noindex", "x"), 10)
+	put(t, filepath.Join(dir, "notes", "x"), 10)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "Linked-bxrjzktdwfaugpcvhzjmlzkhwqyi"), 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(dir, "App-bxrjzktdwfaugpcvhzjmlzkhwqyi", "info.plist"),
+		filepath.Join(dir, "Linked-bxrjzktdwfaugpcvhzjmlzkhwqyi", "info.plist")))
+	for name, want := range map[string]bool{
+		"App-bxrjzktdwfaugpcvhzjmlzkhwqyi":    true,
+		"My-App-bxrjzktdwfaugpcvhzjmlzkhwqyi": true,
+		"ModuleCache.noindex":                 true,
+		"SymbolCache.noindex":                 true,
+		"SDKStatCaches.noindex":               true,
+		"CompilationCache.noindex":            true,
+		"App-bxrjzktdwfaugpcvhzjmlzkhwqy":     false, // 27 letters
+		"App-BXRJZKTDWFAUGPCVHZJMLZKHWQYI":    false,
+		"Plain-bxrjzktdwfaugpcvhzjmlzkhwqyi":  false, // info.plist without a workspace
+		"Bare-bxrjzktdwfaugpcvhzjmlzkhwqyi":   false, // no info.plist
+		"Linked-bxrjzktdwfaugpcvhzjmlzkhwqyi": false, // info.plist is a symbolic link
+		"VMs.noindex":                         false, // Spotlight's suffix, not an Xcode cache
+		"notes":                               false,
+	} {
+		require.Equal(t, want, xcodeMade(filepath.Join(dir, name)), name)
+	}
+}
+
+// TestApplyRemovesOnlyCustomDerivedData applies every finding of both
+// DerivedData locations and checks that exactly those folders are gone: the
+// locations themselves and the folders Xcode did not make survive.
+func TestApplyRemovesOnlyCustomDerivedData(t *testing.T) {
+	home := fakeHome(t)
+	custom := filepath.Join(home, "Builds", "DerivedData")
+	xcodeProject(t, custom, "App-bxrjzktdwfaugpcvhzjmlzkhwqyi", 700)
+	put(t, filepath.Join(custom, "ModuleCache.noindex", "y"), 300)
+	put(t, filepath.Join(custom, "VMs.noindex", "disk.img"), 900)
+	put(t, filepath.Join(custom, "notes", "todo.txt"), 900)
+	put(t, filepath.Join(custom, "info.plist"), 10)
+	def := filepath.Join(home, "Library", "Developer", "Xcode", "DerivedData")
+	put(t, filepath.Join(def, "Old-abc", "x"), 500)
+	fake := &execx.Fake{
+		Tools:   map[string]string{"defaults": "/usr/bin/defaults"},
+		Outputs: map[string]string{"defaults read com.apple.dt.Xcode IDECustomDerivedDataLocation": custom},
+	}
+	res := scan.Run(context.Background(), []scan.Scanner{scannerNamed(t, "xcode-derived-data")}, testEnv(home, "darwin", fake), 1)
+	require.Len(t, res.Findings, 3)
+	r := &finding.Report{Version: finding.ReportVersion, Created: now, Roots: []string{home}, Findings: res.Findings}
+	p, err := plan.New(r, r.Findings, "host", now)
+	require.NoError(t, err)
+
+	before := tree(t, home)
+	sum, err := apply.Run(context.Background(), p, apply.Options{Home: home, Walker: fsx.NewWalker(2), Exec: fake, Now: func() time.Time { return now }})
+	require.NoError(t, err)
+	for _, o := range sum.Outcomes {
+		require.Equal(t, apply.StatusDone, o.Status, o.Action.Label())
+	}
+	targets := paths(res.Findings)
+	var want []string
+	for _, p := range before {
+		if !slices.ContainsFunc(targets, func(t string) bool { return p == t || strings.HasPrefix(p, t+"/") }) {
+			want = append(want, p)
+		}
+	}
+	require.Equal(t, want, tree(t, home))
+	require.FileExists(t, filepath.Join(custom, "VMs.noindex", "disk.img"))
+	require.FileExists(t, filepath.Join(custom, "notes", "todo.txt"))
+	require.FileExists(t, filepath.Join(custom, "info.plist"))
+	require.DirExists(t, def)
+	require.Empty(t, fake.Ran(), "removing folders runs no command")
+}
+
+func ptr[T any](v T) *T { return &v }
+
 func TestSimulators(t *testing.T) {
 	home := fakeHome(t)
 	devices := filepath.Join(home, "Library", "Developer", "CoreSimulator", "Devices")
@@ -329,7 +489,8 @@ func TestOllama(t *testing.T) {
 	manifest(t, filepath.Join(m, "hf.co", "org", "model", "q4"), map[string]int64{"sha256:w3": 2_000_000_000})
 	manifest(t, filepath.Join(m, "registry.ollama.ai", "library", "-bad", "x"), map[string]int64{"sha256:w4": 5})
 
-	env := testEnv(home, "linux", nil)
+	// macOS has no system wide service, so only the user's folder is read.
+	env := testEnv(home, "darwin", nil)
 	res := scan.Run(context.Background(), []scan.Scanner{scannerNamed(t, "ollama")}, env, 1)
 	require.Len(t, res.Warnings, 1, "a name ollama rm could misread is skipped with a warning")
 	byName := map[string]finding.Finding{}
@@ -352,6 +513,100 @@ func TestOllama(t *testing.T) {
 		require.True(t, ok)
 		require.FileExists(t, filepath.Join(models, "manifests", filepath.FromSlash(rel)))
 	}
+}
+
+func TestOllamaFolders(t *testing.T) {
+	home := fakeHome(t)
+	user := filepath.Join(home, ".ollama", "models")
+	system := filepath.Join(t.TempDir(), "ollama", ".ollama", "models")
+	tests := []struct {
+		name   string
+		system string
+		vars   map[string]string
+		want   []ollamaFolder
+	}{
+		{name: "no system service", want: []ollamaFolder{{dir: user}}},
+		{name: "a system service", system: system, want: []ollamaFolder{{dir: user}, {dir: system, system: true}}},
+		{name: "OLLAMA_MODELS", system: system, vars: map[string]string{"OLLAMA_MODELS": "/srv/models"},
+			want: []ollamaFolder{{dir: "/srv/models"}, {dir: system, system: true}}},
+		{name: "OLLAMA_MODELS names the system folder", system: system, vars: map[string]string{"OLLAMA_MODELS": system},
+			want: []ollamaFolder{{dir: system}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := testEnv(home, "linux", nil)
+			env.OllamaSystemModels = tt.system
+			env.Getenv = func(k string) string { return tt.vars[k] }
+			require.Equal(t, tt.want, ollamaFolders(&env))
+		})
+	}
+}
+
+// TestOllamaSystemFolder scans a user folder and a system wide folder:
+// system models are printed for the user to run, a model in both folders is
+// offered only from the system folder, and an unreadable system folder keeps
+// the user's models from being offered, because ollama rm could reach the
+// system service instead.
+func TestOllamaSystemFolder(t *testing.T) {
+	home := fakeHome(t)
+	user := filepath.Join(home, ".ollama", "models")
+	system := filepath.Join(filepath.Dir(filepath.Dir(home)), "usr", "share", "ollama", ".ollama", "models")
+	lib := func(dir, model, tag string) string {
+		return filepath.Join(dir, "manifests", "registry.ollama.ai", "library", model, tag)
+	}
+	manifest(t, lib(user, "mine", "latest"), map[string]int64{"sha256:u1": 3_000})
+	manifest(t, lib(user, "both", "latest"), map[string]int64{"sha256:u2": 5_000})
+	manifest(t, lib(system, "both", "latest"), map[string]int64{"sha256:s2": 6_000})
+	manifest(t, lib(system, "shared", "7b"), map[string]int64{"sha256:s1": 9_000})
+	folders := []ollamaFolder{{dir: user}, {dir: system, system: true}}
+
+	diag := scan.NewDiagnostics()
+	env := testEnv(home, "linux", nil)
+	env.Diag = diag
+	got, err := scanOllamaFolders(context.Background(), &env, folders)
+	require.NoError(t, err)
+	byKey := map[string]finding.Finding{}
+	for _, f := range got {
+		byKey[f.Path+" "+f.Name] = f
+		require.True(t, plan.AllowedCommand(f.Command))
+	}
+	require.Len(t, byKey, 3)
+	mine := byKey[user+" model mine:latest"]
+	require.False(t, mine.NeedsSudo, "a model only in the user's folder is removed by apply")
+	require.Equal(t, []string{"ollama", "rm", "mine:latest"}, mine.Command)
+	for _, key := range []string{system + " model both:latest", system + " model shared:7b"} {
+		f := byKey[key]
+		require.True(t, f.NeedsSudo, key)
+		require.Equal(t, finding.TierB, f.Tier)
+		require.Contains(t, f.Warning, "system wide Ollama service")
+	}
+	require.NotContains(t, byKey, user+" model both:latest", "ollama rm cannot choose which copy goes")
+	require.Len(t, diag.Notes(), 1)
+	require.Contains(t, diag.Notes()[0], "only the copy in "+system+" is offered")
+	require.Empty(t, diag.Warnings())
+
+	// Every finding can go into a plan: the ids stay unique.
+	r := &finding.Report{Version: finding.ReportVersion, Created: now, Roots: []string{home}, Findings: got}
+	_, err = plan.New(r, got, "host", now)
+	require.NoError(t, err)
+
+	t.Run("an unreadable system folder", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads every folder")
+		}
+		parent := filepath.Dir(system)
+		require.NoError(t, os.Chmod(parent, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+		diag := scan.NewDiagnostics()
+		env.Diag = diag
+		got, err := scanOllamaFolders(context.Background(), &env, folders)
+		require.NoError(t, err)
+		require.Empty(t, got, "the user's models could share a name with an unseen system model")
+		require.Len(t, diag.Notes(), 2)
+		require.Contains(t, diag.Notes()[0], "cannot be read without root")
+		require.Contains(t, diag.Notes()[1], "are not offered")
+		require.Empty(t, diag.Warnings())
+	})
 }
 
 func scannerNamed(t *testing.T, name string) *Scanner {

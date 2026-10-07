@@ -42,6 +42,7 @@ func newScanCmd(a *app) *cobra.Command {
 			"~/work and ~/Downloads, whichever exist, and checks package caches, Docker, app caches and Downloads.\n" +
 			"With paths it only looks for project artifacts under them, unless --all is given.\n" +
 			"A scan never modifies anything.",
+		ValidArgsFunction: folders,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.scanCommand(cmd, args, f)
 		},
@@ -57,6 +58,13 @@ func newScanCmd(a *app) *cobra.Command {
 	fl.BoolVar(&f.all, "all", false, "with paths, also check package caches, Docker, app caches and Downloads")
 	fl.IntVar(&f.depth, "depth", 0, "how many levels below each root to look for projects, 0 for no limit")
 	fl.StringArrayVar(&f.dockerLabels, "docker-label", nil, "only report Docker objects with this label, key=value or key; repeatable")
+	completeFlag(cmd, "min-size", oneOf(sizeChoices))
+	completeFlag(cmd, "tier", listOf(tierChoices))
+	completeFlag(cmd, "category", listOf(categoryChoices))
+	completeFlag(cmd, "stale", oneOf(staleChoices))
+	completeFlag(cmd, "out", filesWithExt("json"))
+	completeFlag(cmd, "depth", cobra.NoFileCompletions)
+	completeFlag(cmd, "docker-label", cobra.NoFileCompletions)
 	return cmd
 }
 

@@ -38,17 +38,109 @@ type ollamaModel struct {
 	modTime time.Time
 }
 
+// ollamaFolder is a models folder the Ollama scanner reads.
+type ollamaFolder struct {
+	dir string
+	// system marks the folder of the system wide service that the Linux
+	// install script sets up. Its files belong to the ollama account and
+	// its models serve every user, so its findings are printed as commands
+	// for the user to run and never run by apply.
+	system bool
+}
+
+// ollamaFolders returns the models folders to scan: the user's, from
+// OLLAMA_MODELS or ~/.ollama/models, and the system wide service's when the
+// environment names one, as it does on Linux.
+func ollamaFolders(env *scan.Env) []ollamaFolder {
+	user := resolve(firstNonEmpty(absVar(env, "OLLAMA_MODELS"), filepath.Join(env.Home, ".ollama", "models")))
+	out := []ollamaFolder{{dir: user}}
+	if env.OllamaSystemModels != "" {
+		if sys := resolve(env.OllamaSystemModels); sys != user {
+			out = append(out, ollamaFolder{dir: sys, system: true})
+		}
+	}
+	return out
+}
+
 // scanOllama reports one finding per model, read from the manifests in the
-// models folder, so the Ollama server does not need to run for a scan. A
-// model's size is the bytes only it uses: blobs shared with other models are
-// freed only when every model using them is removed.
+// models folders, so the Ollama server does not need to run for a scan.
 func scanOllama(ctx context.Context, env *scan.Env) ([]finding.Finding, error) {
-	dir := resolve(firstNonEmpty(absVar(env, "OLLAMA_MODELS"), filepath.Join(env.Home, ".ollama", "models")))
-	manifests := filepath.Join(dir, "manifests")
-	var models []ollamaModel
+	return scanOllamaFolders(ctx, env, ollamaFolders(env))
+}
+
+// scanOllamaFolders reports the models of every folder. A model's size is
+// the bytes only it uses: blobs shared with other models of its folder are
+// freed only when every model using them is removed.
+//
+// ollama rm removes a model from whichever server answers, and the system
+// service usually is the one that answers. A model in the user's folder is
+// therefore offered only when the system folder, if there is one, can be read
+// and holds no model of the same name; apply checks this again.
+func scanOllamaFolders(ctx context.Context, env *scan.Env, folders []ollamaFolder) ([]finding.Finding, error) {
+	var system *ollamaScan
+	scans := make([]ollamaScan, len(folders))
+	for i, folder := range folders {
+		s, err := readModels(ctx, env, folder)
+		if err != nil {
+			return nil, err
+		}
+		scans[i] = s
+		if folder.system {
+			system = &scans[i]
+		}
+	}
+	var out []finding.Finding
+	for _, s := range scans {
+		for _, f := range modelFindings(env, s.folder, s.models) {
+			model := f.Command[len(f.Command)-1]
+			switch {
+			case s.folder.system || system == nil:
+			case system.blocked:
+				env.Diag.Note("The Ollama models in " + s.folder.dir + " are not offered, because the system Ollama models in " +
+					system.folder.dir + " cannot be read and ollama rm could remove a model of the same name there.")
+				continue
+			case system.has(model):
+				env.Diag.Note("Ollama model " + model + " is in " + s.folder.dir + " and in " + system.folder.dir +
+					"; ollama rm cannot choose which copy goes, so only the copy in " + system.folder.dir + " is offered.")
+				continue
+			}
+			out = append(out, f)
+		}
+	}
+	slices.SortFunc(out, func(a, b finding.Finding) int {
+		return cmp.Or(cmp.Compare(a.Target, b.Target), cmp.Compare(a.Path, b.Path))
+	})
+	return out, nil
+}
+
+// ollamaScan is what the scanner read from one models folder.
+type ollamaScan struct {
+	folder ollamaFolder
+	models []ollamaModel
+	// blocked is set for a system folder that exists but cannot be read.
+	blocked bool
+}
+
+func (s *ollamaScan) has(model string) bool {
+	return slices.ContainsFunc(s.models, func(m ollamaModel) bool { return m.name == model })
+}
+
+// readModels reads the manifests of one models folder. A system folder the
+// user cannot read is mentioned in a note, since it normally belongs to the
+// ollama account.
+func readModels(ctx context.Context, env *scan.Env, folder ollamaFolder) (ollamaScan, error) {
+	manifests := filepath.Join(folder.dir, "manifests")
+	res := ollamaScan{folder: folder}
 	err := filepath.WalkDir(manifests, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				return filepath.SkipDir
+			case folder.system && errors.Is(err, fs.ErrPermission):
+				if !res.blocked {
+					env.Diag.Note("The system Ollama models in " + folder.dir + " cannot be read without root, so they are not listed.")
+				}
+				res.blocked = true
 				return filepath.SkipDir
 			}
 			env.Diag.Warn(path, "could not read: "+err.Error())
@@ -66,14 +158,15 @@ func scanOllama(ctx context.Context, env *scan.Env) ([]finding.Finding, error) {
 			return nil
 		}
 		if m, ok := loadModel(env, path, name, d); ok {
-			models = append(models, m)
+			res.models = append(res.models, m)
 		}
 		return nil
 	})
-	if err != nil {
-		return nil, err
-	}
+	return res, err
+}
 
+// modelFindings turns the models of one folder into findings.
+func modelFindings(env *scan.Env, folder ollamaFolder, models []ollamaModel) []finding.Finding {
 	users := map[string]int{}
 	for _, m := range models {
 		for digest := range m.blobs {
@@ -99,24 +192,27 @@ func scanOllama(ctx context.Context, env *scan.Env) ([]finding.Finding, error) {
 			continue
 		}
 		warning := "ollama rm needs the Ollama app or ollama serve running"
+		if folder.system {
+			warning = "a model of the system wide Ollama service, shared by every user of this machine; run the command yourself while the service runs"
+		}
 		if shared > 0 {
 			warning = "shares " + units.FormatSize(shared) + " with other models, freed only when they go too; " + warning
 		}
 		out = append(out, finding.Finding{
-			Tier:     finding.TierB,
-			Path:     dir,
-			Target:   plan.OllamaTarget(m.name),
-			Name:     "model " + m.name,
-			Size:     own,
-			LastUsed: m.modTime,
-			Restore:  "ollama pull " + m.name,
-			Action:   finding.ActionRunCommand,
-			Command:  command,
-			Warning:  warning,
+			Tier:      finding.TierB,
+			Path:      folder.dir,
+			Target:    plan.OllamaTarget(m.name),
+			Name:      "model " + m.name,
+			Size:      own,
+			LastUsed:  m.modTime,
+			Restore:   "ollama pull " + m.name,
+			Action:    finding.ActionRunCommand,
+			Command:   command,
+			NeedsSudo: folder.system,
+			Warning:   warning,
 		})
 	}
-	slices.SortFunc(out, func(a, b finding.Finding) int { return cmp.Compare(a.Target, b.Target) })
-	return out, nil
+	return out
 }
 
 // loadModel reads one manifest. An unreadable manifest adds a warning and

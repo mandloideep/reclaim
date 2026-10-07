@@ -47,10 +47,13 @@ type app struct {
 	// applications are the folders holding installed apps, for the
 	// Downloads installer scanner.
 	applications []string
-	getenv       func(string) string
-	exec         execx.Runner
-	docker       func() (dockerx.API, error)
-	now          func() time.Time
+	// ollamaSystemModels is the models folder of the system wide Ollama
+	// service that only the Linux install script sets up, empty elsewhere.
+	ollamaSystemModels string
+	getenv             func(string) string
+	exec               execx.Runner
+	docker             func() (dockerx.API, error)
+	now                func() time.Time
 	// interactive reports whether select can open the checklist: standard
 	// input and output are both terminals.
 	interactive func() bool
@@ -73,22 +76,27 @@ func defaultApp() (*app, error) {
 	}
 	host, _ := os.Hostname()
 	var applications []string
-	if runtime.GOOS == "darwin" {
+	var ollamaSystemModels string
+	switch runtime.GOOS {
+	case "darwin":
 		applications = []string{"/Applications", filepath.Join(home, "Applications")}
+	case "linux":
+		ollamaSystemModels = plan.OllamaSystemModels
 	}
 	return &app{
-		stdin:        os.Stdin,
-		stdout:       os.Stdout,
-		stderr:       os.Stderr,
-		home:         home,
-		goos:         runtime.GOOS,
-		host:         host,
-		stateDir:     filepath.Join(cacheDir, "reclaim"),
-		configPath:   config.DefaultPath(home, os.Getenv),
-		applications: applications,
-		interactive:  func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
-		getenv:       os.Getenv,
-		exec:         execx.OS{},
+		stdin:              os.Stdin,
+		stdout:             os.Stdout,
+		stderr:             os.Stderr,
+		home:               home,
+		goos:               runtime.GOOS,
+		host:               host,
+		stateDir:           filepath.Join(cacheDir, "reclaim"),
+		configPath:         config.DefaultPath(home, os.Getenv),
+		applications:       applications,
+		ollamaSystemModels: ollamaSystemModels,
+		interactive:        func() bool { return isTerminal(os.Stdin) && isTerminal(os.Stdout) },
+		getenv:             os.Getenv,
+		exec:               execx.OS{},
 		docker: func() (dockerx.API, error) {
 			c, err := dockerx.New(os.Getenv, home)
 			if err != nil {
@@ -278,16 +286,17 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 		walker = fsx.NewWalker(0)
 	}
 	env := scan.Env{
-		Roots:        req.roots,
-		Home:         a.home,
-		GOOS:         a.goos,
-		Now:          a.now(),
-		Applications: a.applications,
-		Getenv:       a.getenv,
-		Exec:         a.exec,
-		DockerLabels: req.labels,
-		Walker:       walker,
-		Sizes:        req.sizes,
+		Roots:              req.roots,
+		Home:               a.home,
+		GOOS:               a.goos,
+		Now:                a.now(),
+		Applications:       a.applications,
+		OllamaSystemModels: a.ollamaSystemModels,
+		Getenv:             a.getenv,
+		Exec:               a.exec,
+		DockerLabels:       req.labels,
+		Walker:             walker,
+		Sizes:              req.sizes,
 		Projects: project.NewSource(req.roots, reg.ProjectMatchers(), project.Options{
 			Depth:      req.depth,
 			Home:       a.home,

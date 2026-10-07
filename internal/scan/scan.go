@@ -66,6 +66,10 @@ type Env struct {
 	// /Applications and ~/Applications on macOS. The Downloads scanner looks
 	// there for the apps that installers belong to.
 	Applications []string
+	// OllamaSystemModels is the models folder of a system wide Ollama
+	// service, plan.OllamaSystemModels on Linux and empty where there is
+	// none.
+	OllamaSystemModels string
 	// Getenv reads an environment variable. Nil reads nothing.
 	Getenv func(string) string
 	// Exec runs external tools, such as "npm config get cache".

@@ -87,6 +87,16 @@ func (p *Printer) Tier(t finding.Tier) string {
 	}
 }
 
+// TierCell renders the tier column of a finding. Findings listed for
+// attention only carry no action, so their tier column is blank: the tier
+// letter would suggest that they could be selected.
+func (p *Printer) TierCell(f *finding.Finding) string {
+	if !f.Actionable() {
+		return " "
+	}
+	return p.Tier(f.Tier)
+}
+
 func (p *Printer) printf(format string, args ...any) {
 	_, _ = fmt.Fprintf(p.w, format, args...)
 }

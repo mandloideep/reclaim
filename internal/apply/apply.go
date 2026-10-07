@@ -83,6 +83,12 @@ type Options struct {
 	Walker *fsx.Walker
 	// Exec runs clean commands.
 	Exec execx.Runner
+	// OllamaSystemModels is the models folder of a system wide Ollama
+	// service, plan.OllamaSystemModels on Linux and empty elsewhere. ollama
+	// rm reaches whichever server answers, so a model of another folder is
+	// removed only while this folder can be read and holds no model of the
+	// same name.
+	OllamaSystemModels string
 	// Getenv reads the environment the commands run in, such as
 	// OLLAMA_HOST. Nil reads nothing.
 	Getenv func(string) string

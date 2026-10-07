@@ -34,6 +34,8 @@ func newSelectCmd(a *app) *cobra.Command {
 			"a numbered list and reads the numbers to select from standard input, such as 1,4-9,12; tier C\n" +
 			"items must be listed one by one.",
 		Args: cobra.NoArgs,
+		// select reads its report from --report, not from an argument.
+		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return a.selectCommand(cmd, f)
 		},
@@ -41,6 +43,9 @@ func newSelectCmd(a *app) *cobra.Command {
 	cmd.Flags().StringVar(&f.preset, "preset", "", "select without prompting: safe (tier A) or aggressive (tiers A and B)")
 	cmd.Flags().StringVar(&f.report, "report", "", "report to read, default the last scan or here report")
 	cmd.Flags().StringVar(&f.out, "out", "plan.json", "plan file to write")
+	completeFlag(cmd, "preset", oneOf(presetChoices))
+	completeFlag(cmd, "report", filesWithExt("json"))
+	completeFlag(cmd, "out", filesWithExt("json"))
 	return cmd
 }
 

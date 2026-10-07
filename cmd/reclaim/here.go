@@ -58,7 +58,8 @@ func newHereCmd(a *app) *cobra.Command {
 		Long: "here lists the entries of a folder sorted by size, like du with one level of depth, and marks\n" +
 			"every entry a scanner recognizes as reclaimable. Reclaimable entries at any depth are listed\n" +
 			"below with their full paths. --out saves them as a report for select.",
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: firstArg(folders),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "."
 			if len(args) == 1 {
@@ -71,6 +72,8 @@ func newHereCmd(a *app) *cobra.Command {
 	cmd.Flags().BoolVar(&f.json, "json", false, "print the breakdown and findings as JSON")
 	cmd.Flags().BoolVar(&f.md, "md", false, "print the breakdown and findings as Markdown")
 	cmd.Flags().StringVar(&f.out, "out", "", "also save the findings as a JSON report for select")
+	completeFlag(cmd, "depth", cobra.NoFileCompletions)
+	completeFlag(cmd, "out", filesWithExt("json"))
 	return cmd
 }
 

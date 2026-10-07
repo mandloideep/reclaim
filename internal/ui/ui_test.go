@@ -71,6 +71,7 @@ func TestReportTable(t *testing.T) {
 		"Downloads  200.0 MB  1 item",
 		"  Installers of installed apps  200.0 MB  1 item",
 		"  Attention, never removed  4.0 GB  1 item  not counted, reclaim never removes these",
+		"\n         4.0 GB  old-downloads", // no tier letter: it carries no action
 		"! not touched for 6mo",
 		"Total reclaimable: 6.5 GB in 11 items (A 4.0 GB, B 2.5 GB, C 5.0 MB)",
 		"Nothing was removed.",
@@ -113,7 +114,7 @@ func TestNumbered(t *testing.T) {
 	require.Contains(t, out, "    ~/Code/app  2.9 GB, 1 item")
 	require.Contains(t, out, "\n                                 ! may be the only copy", "the warning sits under the item")
 	require.Contains(t, out, "    Attention, never removed  4.0 GB, 1 item, not counted, cannot be selected")
-	require.Contains(t, out, "-   C    4.0 GB  old-downloads   ~/Downloads/talk.mov")
+	require.Contains(t, out, "-        4.0 GB  old-downloads   ~/Downloads/talk.mov", "attention findings have a blank tier column")
 
 	// The numbers follow the grouped order: the build cache is the first
 	// Docker item even though it is the smallest image-sized finding.
@@ -144,7 +145,7 @@ func TestMarkdown(t *testing.T) {
 		"### Unused images (900.0 MB, 1 item)",
 		"| B | 900.0 MB | docker | image node:20 |  |",
 		"### Attention, never removed (4.0 GB, 1 item, not counted, reclaim never removes these)",
-		"| C | 4.0 GB | old-downloads | `~/Downloads/talk.mov` | warning: not touched for 6mo |",
+		"|  | 4.0 GB | old-downloads | `~/Downloads/talk.mov` | warning: not touched for 6mo |",
 		"## Warnings (1)\n\n- projects: ~/Code/locked: not scanned: permission denied",
 		"## Notes\n\n- Docker runs in OrbStack.",
 	} {
@@ -187,8 +188,8 @@ func TestHere(t *testing.T) {
 		{Name: "README.md", Path: "/Users/me/Code/app/README.md", Size: 1200},
 	}}
 	fs := []finding.Finding{
-		{Scanner: "node_modules", Tier: finding.TierA, Path: "/Users/me/Code/app/node_modules", Size: 2_900_000_000, Restore: "npm install"},
-		{Scanner: "next", Tier: finding.TierA, Path: "/Users/me/Code/app/packages/web/.next", Size: 80_000_000},
+		{Scanner: "node_modules", Tier: finding.TierA, Path: "/Users/me/Code/app/node_modules", Size: 2_900_000_000, Action: finding.ActionRemovePath, Restore: "npm install"},
+		{Scanner: "next", Tier: finding.TierA, Path: "/Users/me/Code/app/packages/web/.next", Size: 80_000_000, Action: finding.ActionRemovePath},
 	}
 	var buf bytes.Buffer
 	New(&buf, "/Users/me", now).Here(root, fs, nil, nil)

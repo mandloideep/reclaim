@@ -86,7 +86,7 @@ func actionable(fs []finding.Finding) int {
 }
 
 func (p *Printer) findingRow(f *finding.Finding, nameWidth int, indent, label string) {
-	line := indent + p.Tier(f.Tier) + " " + size(f.Size) + "  " + pad(f.Scanner, nameWidth) + "  " + label
+	line := indent + p.TierCell(f) + " " + size(f.Size) + "  " + pad(f.Scanner, nameWidth) + "  " + label
 	if f.Action == finding.ActionRunCommand {
 		cmd := strings.Join(f.Command, " ")
 		if f.NeedsSudo {
@@ -94,7 +94,7 @@ func (p *Printer) findingRow(f *finding.Finding, nameWidth int, indent, label st
 		}
 		line += p.dim.Render("  via " + cmd)
 	}
-	if f.Tier == finding.TierC && f.Warning != "" {
+	if (f.Tier == finding.TierC || !f.Actionable()) && f.Warning != "" {
 		line += "\n" + indent + strings.Repeat(" ", 15+nameWidth) + p.warn.Render("! "+f.Warning)
 	}
 	p.println(line)
@@ -132,7 +132,7 @@ func (p *Printer) Numbered(fs []finding.Finding) []finding.Finding {
 					n++
 					idx = strconv.Itoa(n) + "."
 				}
-				line := pad(idx, idxWidth) + p.Tier(f.Tier) + " " + size(f.Size) + "  " + pad(f.Scanner, nameWidth) + "  " + p.label(&g, &f)
+				line := pad(idx, idxWidth) + p.TierCell(&f) + " " + size(f.Size) + "  " + pad(f.Scanner, nameWidth) + "  " + p.label(&g, &f)
 				if (f.Tier == finding.TierC || !f.Actionable()) && f.Warning != "" {
 					line += "\n" + strings.Repeat(" ", idxWidth+15+nameWidth) + p.warn.Render("! "+f.Warning)
 				}

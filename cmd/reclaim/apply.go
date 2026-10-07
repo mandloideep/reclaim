@@ -31,7 +31,8 @@ func newApplyCmd(a *app) *cobra.Command {
 			"actions in order, checking each target again right before acting on it, and logs every result.\n" +
 			"It stops at the first failure unless --keep-going is given. Plans whose scan is older than 24\n" +
 			"hours are refused unless --stale-ok is given.",
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: firstArg(filesWithExt("json")),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.applyCommand(cmd, args[0], f)
 		},
@@ -84,15 +85,16 @@ func (a *app) applyCommand(cmd *cobra.Command, path string, f applyFlags) error 
 	a.sayf("\n")
 	total := len(pl.Actions)
 	sum, runErr := apply.Run(cmd.Context(), pl, apply.Options{
-		Home:      a.home,
-		Walker:    fsx.NewWalker(0),
-		Exec:      a.exec,
-		Getenv:    a.getenv,
-		Docker:    a.docker,
-		Log:       logFile,
-		PlanPath:  path,
-		KeepGoing: f.keepGoing,
-		Now:       a.now,
+		Home:               a.home,
+		Walker:             fsx.NewWalker(0),
+		Exec:               a.exec,
+		Getenv:             a.getenv,
+		Docker:             a.docker,
+		OllamaSystemModels: a.ollamaSystemModels,
+		Log:                logFile,
+		PlanPath:           path,
+		KeepGoing:          f.keepGoing,
+		Now:                a.now,
 		Progress: func(i int, o apply.Outcome) {
 			a.printOutcome(i, total, o)
 		},

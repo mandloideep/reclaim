@@ -19,8 +19,9 @@ import (
 // target runs, that the target is still what the scan found:
 //
 //   - ollama rm: the model's manifest still exists in the models folder the
-//     scan read, and the ollama client talks to this machine, so the command
-//     cannot remove a same named model on another server.
+//     scan read, the ollama client talks to this machine, and the system
+//     wide service, if any, holds no model of the same name, so the command
+//     cannot remove a same named model of another server.
 //   - xcrun simctl delete: the simulator still exists and is still
 //     unavailable, so a simulator whose runtime was installed again since the
 //     scan, and which may hold data, is not deleted.
@@ -54,6 +55,17 @@ func (r *runner) verifyOllama(model, models string) error {
 		return fmt.Errorf("refusing ollama rm %s: %w", model, err)
 	case !info.Mode().IsRegular():
 		return fmt.Errorf("refusing ollama rm %s: its manifest is not a regular file", model)
+	}
+	// The system wide service usually is the server that answers, so a
+	// model of the same name there would be the one removed.
+	if sys := r.opts.OllamaSystemModels; sys != "" && sys != models {
+		_, err := os.Lstat(filepath.Join(sys, "manifests", filepath.FromSlash(rel)))
+		switch {
+		case err == nil:
+			return fmt.Errorf("refusing ollama rm %s: the system Ollama service in %s has a model of the same name, which the command could remove instead", model, sys)
+		case !errors.Is(err, fs.ErrNotExist):
+			return fmt.Errorf("refusing ollama rm %s: cannot check the system Ollama models in %s for a model of the same name: %w", model, sys, err)
+		}
 	}
 	return nil
 }

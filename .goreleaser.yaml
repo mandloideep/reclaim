@@ -1,0 +1,90 @@
+# GoReleaser configuration for reclaim. docs/RELEASING.md explains how a
+# release is cut. Check it locally, without installing anything, with:
+#
+#   go run github.com/goreleaser/goreleaser/v2@latest check
+#   go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean
+version: 2
+
+project_name: reclaim
+
+builds:
+  - id: reclaim
+    main: ./cmd/reclaim
+    binary: reclaim
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    # reclaim version prints this as v{{.Version}}, the tag.
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    # Reproducible builds: file times come from the commit, not the clock.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: reclaim
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-SNAPSHOT-{{ .ShortCommit }}"
+
+# Release notes on the GitHub release, from commit subjects. There is no
+# CHANGELOG.md.
+changelog:
+  use: git
+  sort: asc
+  abbrev: 7
+  groups:
+    - title: New
+      regexp: '^(Phase \d+:|(Add|Support|Scan|Show|Print|Render)\b)'
+      order: 0
+    - title: Fixes
+      regexp: '^Fix\b'
+      order: 1
+    - title: Other changes
+      order: 999
+  filters:
+    exclude:
+      # Merge commits.
+      - '^Merge\b'
+      # Commits that only change documentation, by the subject conventions
+      # in docs/RELEASING.md. Only the start of a subject counts, so a
+      # change that also touches the README stays in the notes.
+      - '^(?i:docs?|document)\b'
+      - '^(Rewrite|Update|Edit|Fix) (the )?(README|DESIGN\.md|RELEASING\.md)\b'
+      - '^Add phase \d+ worker brief'
+
+release:
+  github:
+    owner: mandloideep
+    name: reclaim
+  # Tags such as v0.2.0-rc.1 are marked as prereleases.
+  prerelease: auto
+
+brews:
+  - name: reclaim
+    repository:
+      owner: mandloideep
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    commit_msg_template: "Update reclaim to {{ .Tag }}"
+    homepage: https://github.com/mandloideep/reclaim
+    description: Find reclaimable disk space on developer machines and remove only what you select
+    license: MIT
+    # Prereleases do not update the formula.
+    skip_upload: auto
+    install: |
+      bin.install "reclaim"
+      generate_completions_from_executable(bin/"reclaim", "completion", shells: [:bash, :zsh, :fish])
+    test: |
+      assert_match "reclaim v#{version}", shell_output("#{bin}/reclaim version")
