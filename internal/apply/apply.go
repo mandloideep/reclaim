@@ -63,6 +63,11 @@ type Outcome struct {
 	Err error
 	// Output is the output of a clean command, truncated.
 	Output string
+	// Checks are the results of the proof that removing a worktree is safe,
+	// for GitWorktreeRemove actions.
+	Checks []Check
+	// Refusal is set when a worktree was refused because a check failed.
+	Refusal *Refusal
 }
 
 // Summary is the result of a run.
@@ -106,6 +111,9 @@ type Options struct {
 	Now func() time.Time
 	// Progress, when set, is called after every action.
 	Progress func(index int, o Outcome)
+	// Getwd returns the working directory of the process, which apply never
+	// removes a worktree around. Nil uses os.Getwd.
+	Getwd func() (string, error)
 }
 
 // logEntry is one line of the apply log.
@@ -124,6 +132,7 @@ type logEntry struct {
 	Estimated bool           `json:"estimated,omitempty"`
 	Error     string         `json:"error,omitempty"`
 	Output    string         `json:"output,omitempty"`
+	Checks    []Check        `json:"checks,omitempty"`
 	Failed    int            `json:"failed,omitempty"`
 }
 
@@ -158,6 +167,7 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (Summary, error) {
 			r.log(logEntry{
 				Event: "action", ID: a.ID, Action: a.Action, Target: a.Target, Path: a.Path, Command: a.Command,
 				Status: o.Status, Freed: &o.Freed, Estimated: o.Estimated, Error: errString(o.Err), Output: o.Output,
+				Checks: o.Checks,
 			})
 		}
 		sum.Outcomes = append(sum.Outcomes, o)
@@ -215,6 +225,10 @@ func (r *runner) one(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome 
 		o = r.removePath(ctx, p, a)
 	case finding.ActionRunCommand:
 		o = r.runCommand(ctx, a)
+	case finding.ActionGitWorktreeRemove:
+		o = r.removeWorktree(ctx, p, a)
+	case finding.ActionGitWorktreePrune:
+		o = r.pruneWorktrees(ctx, a)
 	case finding.ActionDockerRemoveContainer, finding.ActionDockerRemoveImage,
 		finding.ActionDockerRemoveVolume, finding.ActionDockerPruneBuildCache:
 		o = r.dockerAction(ctx, a)
@@ -246,6 +260,12 @@ func (r *runner) removePath(ctx context.Context, p *plan.Plan, a *plan.Action) O
 		return Outcome{Err: fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, before.Mounts[0])}
 	}
 	root := containingRoot(a.Path, p.Roots)
+	if a.Kind == finding.KindEmptyDir {
+		if err := removeEmptyInRoot(root, a.Path, checked); err != nil {
+			return Outcome{Err: fmt.Errorf("remove %s: %w", a.Path, err)}
+		}
+		return Outcome{Freed: before.Size}
+	}
 	err = removeInRoot(root, a.Path, checked)
 	if err != nil && errors.Is(err, fs.ErrPermission) && a.Kind == finding.KindDir {
 		// Read only directories, such as those in a Go module cache, cannot

@@ -163,3 +163,18 @@ func TestWarningString(t *testing.T) {
 	require.Equal(t, "docker: /x: boom", Warning{Scanner: "docker", Path: "/x", Message: "boom"}.String())
 	require.Equal(t, "boom", Warning{Message: "boom"}.String())
 }
+
+// TestReclaimableSizeCountsNestedFindingsOnce counts a finding that lies
+// inside another, such as a node_modules inside a linked worktree, once.
+func TestReclaimableSizeCountsNestedFindingsOnce(t *testing.T) {
+	fs := []Finding{
+		{Path: "/c/app/.claude/worktrees/a", Size: 1000, Action: ActionGitWorktreeRemove, Tier: TierA},
+		{Path: "/c/app/.claude/worktrees/a/node_modules", Size: 600, Action: ActionRemovePath, Tier: TierA},
+		{Path: "/c/app/.claude/worktrees/ab/node_modules", Size: 50, Action: ActionRemovePath, Tier: TierA},
+		{Path: "/c/app/node_modules", Size: 200, Action: ActionRemovePath, Tier: TierA},
+		{Path: "/c/app/.claude/worktrees/b", Size: 400, Action: ActionNone, Tier: TierC},
+		{Path: "/c/app/.claude/worktrees/b/node_modules", Size: 300, Action: ActionRemovePath, Tier: TierA},
+		{Target: "sha256:img", Size: 7, Action: ActionDockerRemoveImage, Tier: TierB},
+	}
+	require.Equal(t, int64(1000+50+200+300+7), ReclaimableSize(fs))
+}

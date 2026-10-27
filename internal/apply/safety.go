@@ -125,20 +125,8 @@ func verifyPath(a *plan.Action, home string, roots []string) (fs.FileInfo, error
 
 // checkObject applies the checks that depend on what is on disk now.
 func checkObject(a *plan.Action, info fs.FileInfo) error {
-	resolved, err := filepath.EvalSymlinks(a.Path)
-	if err != nil {
-		return fmt.Errorf("resolve %s: %w", a.Path, err)
-	}
-	if resolved != a.Path {
-		return fmt.Errorf("refusing %s: the path now goes through a symbolic link to %s", a.Path, resolved)
-	}
-	switch {
-	case info.Mode()&fs.ModeSymlink != 0:
-		return fmt.Errorf("refusing %s: it is now a symbolic link", a.Path)
-	case a.Kind == finding.KindDir && !info.IsDir():
-		return fmt.Errorf("refusing %s: it was a directory at scan time and is not one now", a.Path)
-	case a.Kind == finding.KindFile && !info.Mode().IsRegular():
-		return fmt.Errorf("refusing %s: it was a file at scan time and is not one now", a.Path)
+	if err := checkShape(a, info); err != nil {
+		return err
 	}
 	if info.IsDir() {
 		for _, name := range project.ManifestNames() {
@@ -149,6 +137,28 @@ func checkObject(a *plan.Action, info fs.FileInfo) error {
 				return fmt.Errorf("refusing %s: it contains %s, so it is a project", a.Path, name)
 			}
 		}
+	}
+	return nil
+}
+
+// checkShape checks that no component of the path is a symbolic link, that
+// the object is still the kind the scanner found, and that it is not a mount
+// point.
+func checkShape(a *plan.Action, info fs.FileInfo) error {
+	resolved, err := filepath.EvalSymlinks(a.Path)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", a.Path, err)
+	}
+	if resolved != a.Path {
+		return fmt.Errorf("refusing %s: the path now goes through a symbolic link to %s", a.Path, resolved)
+	}
+	switch {
+	case info.Mode()&fs.ModeSymlink != 0:
+		return fmt.Errorf("refusing %s: it is now a symbolic link", a.Path)
+	case (a.Kind == finding.KindDir || a.Kind == finding.KindEmptyDir) && !info.IsDir():
+		return fmt.Errorf("refusing %s: it was a directory at scan time and is not one now", a.Path)
+	case a.Kind == finding.KindFile && !info.Mode().IsRegular():
+		return fmt.Errorf("refusing %s: it was a file at scan time and is not one now", a.Path)
 	}
 	parent, err := os.Lstat(filepath.Dir(a.Path))
 	if err != nil {
@@ -198,4 +208,40 @@ func removeInRoot(root, path string, checked fs.FileInfo) error {
 		return fmt.Errorf("refusing %s: it was replaced since it was checked", path)
 	}
 	return r.RemoveAll(rel)
+}
+
+// removeEmptyInRoot removes the empty directory at path through an os.Root
+// opened at root, after the same last checks as removeInRoot. It refuses a
+// directory that holds anything, so a folder whose worktrees could not be
+// removed keeps them.
+func removeEmptyInRoot(root, path string, checked fs.FileInfo) error {
+	if resolved, err := filepath.EvalSymlinks(path); err != nil || resolved != path {
+		return fmt.Errorf("refusing %s: the path changed since it was checked", path)
+	}
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("open root %s: %w", root, err)
+	}
+	defer func() { _ = r.Close() }()
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("refusing %s: %w", path, err)
+	}
+	info, err := r.Lstat(rel)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", path, err)
+	}
+	if !os.SameFile(info, checked) {
+		return fmt.Errorf("refusing %s: it was replaced since it was checked", path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(entries) > 0 {
+		return fmt.Errorf("refusing %s: it was to be removed once empty, and it still holds %s", path, entries[0].Name())
+	}
+	// Remove, unlike RemoveAll, fails on a directory that is not empty, so
+	// an entry created after the check above is never removed.
+	return r.Remove(rel)
 }

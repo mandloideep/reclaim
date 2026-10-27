@@ -134,3 +134,25 @@ func LocateQuery(argv []string) (query []string, sub string, ok bool) {
 	}
 	return slices.Clone(c.locate), c.sub, true
 }
+
+// The git commands apply runs for worktree actions. They are not clean
+// commands: a RunCommand action can never run them, and a worktree action
+// must carry exactly the command these functions build from its repository
+// and path, which plan validation ties to the action's target.
+
+// WorktreeRemoveCommand removes the linked worktree at path of repo. It never
+// carries --force, so git refuses a worktree with modified or untracked
+// files.
+func WorktreeRemoveCommand(repo, path string) []string {
+	return []string{"git", "-C", repo, "worktree", "remove", path}
+}
+
+// WorktreePruneCommand removes the registrations of repo's worktrees whose
+// folders are gone.
+func WorktreePruneCommand(repo string) []string {
+	return []string{"git", "-C", repo, "worktree", "prune"}
+}
+
+// WorktreePruneTarget is the target of the finding for the stale worktree
+// registrations of a repository.
+func WorktreePruneTarget(repo string) string { return "git-worktree-prune:" + repo }

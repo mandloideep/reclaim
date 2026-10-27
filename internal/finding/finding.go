@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -62,11 +63,14 @@ const (
 	// CategoryDownloads covers installers and archives in the Downloads folder,
 	// and large old files listed for attention only.
 	CategoryDownloads Category = "downloads"
+	// CategoryWorktree covers linked git worktrees that coding agents and
+	// people leave behind, and stale worktree registrations.
+	CategoryWorktree Category = "worktree"
 )
 
 // Categories lists every known category in report order.
 func Categories() []Category {
-	return []Category{CategoryProject, CategoryPackageCache, CategoryDocker, CategoryAppCache, CategoryDownloads}
+	return []Category{CategoryProject, CategoryWorktree, CategoryPackageCache, CategoryDocker, CategoryAppCache, CategoryDownloads}
 }
 
 // Title is the human readable section heading for the category.
@@ -82,6 +86,8 @@ func (c Category) Title() string {
 		return "App caches"
 	case CategoryDownloads:
 		return "Downloads"
+	case CategoryWorktree:
+		return "Git worktrees"
 	default:
 		return string(c)
 	}
@@ -104,6 +110,13 @@ const (
 	ActionDockerRemoveVolume Action = "DockerRemoveVolume"
 	// ActionDockerPruneBuildCache prunes the unused Docker build cache.
 	ActionDockerPruneBuildCache Action = "DockerPruneBuildCache"
+	// ActionGitWorktreeRemove removes a linked git worktree with "git
+	// worktree remove", never forced, after apply proves again that its work
+	// exists elsewhere.
+	ActionGitWorktreeRemove Action = "GitWorktreeRemove"
+	// ActionGitWorktreePrune removes the registrations of linked worktrees
+	// whose folders no longer exist, with "git worktree prune".
+	ActionGitWorktreePrune Action = "GitWorktreePrune"
 	// ActionNone marks a finding that is shown for attention only, such as a
 	// large old file in Downloads. Select never puts it in a plan and apply
 	// refuses a plan that contains it.
@@ -119,6 +132,8 @@ func Actions() []Action {
 		ActionDockerRemoveImage,
 		ActionDockerRemoveVolume,
 		ActionDockerPruneBuildCache,
+		ActionGitWorktreeRemove,
+		ActionGitWorktreePrune,
 		ActionNone,
 	}
 }
@@ -150,10 +165,13 @@ const (
 	KindDir Kind = "dir"
 	// KindFile is a regular file.
 	KindFile Kind = "file"
+	// KindEmptyDir is a directory that apply removes only when it is empty,
+	// such as a Codex task folder once the worktrees in it are removed.
+	KindEmptyDir Kind = "empty-dir"
 )
 
 // Valid reports whether k is one of the known kinds.
-func (k Kind) Valid() bool { return k == KindDir || k == KindFile }
+func (k Kind) Valid() bool { return k == KindDir || k == KindFile || k == KindEmptyDir }
 
 // Finding is one thing that can be reclaimed.
 type Finding struct {
@@ -192,6 +210,14 @@ type Finding struct {
 	NeedsSudo bool `json:"needs_sudo,omitempty"`
 	// Warning is shown next to the finding, always set for tier C.
 	Warning string `json:"warning,omitempty"`
+	// Repo is the main repository of a worktree finding, which groups it.
+	Repo string `json:"repo,omitempty"`
+	// Registrations are the stale worktree registrations a GitWorktreePrune
+	// finding covers, as the paths git recorded for them.
+	Registrations []string `json:"registrations,omitempty"`
+	// Worktree is the state of a linked worktree as the scanner found it,
+	// the proof that removing it is safe.
+	Worktree *WorktreeState `json:"worktree,omitempty"`
 }
 
 // Actionable reports whether the finding can be selected and applied. Findings
@@ -334,15 +360,41 @@ func (r *Report) TotalSize() int64 {
 	return ReclaimableSize(r.Findings)
 }
 
-// ReclaimableSize sums the size of the findings that can be applied.
+// ReclaimableSize sums the size of the findings that can be applied. A
+// finding whose path lies inside the path of another finding that can be
+// applied, such as a node_modules inside a linked worktree, is counted once,
+// as part of the outer one.
 func ReclaimableSize(fs []Finding) int64 {
 	var total int64
+	var paths []string
 	for i := range fs {
-		if fs[i].Actionable() {
+		if fs[i].Actionable() && fs[i].Path != "" {
+			paths = append(paths, fs[i].Path)
+		}
+	}
+	slices.Sort(paths)
+	for i := range fs {
+		if fs[i].Actionable() && !insideAnother(paths, fs[i].Path) {
 			total += fs[i].Size
 		}
 	}
 	return total
+}
+
+// insideAnother reports whether path lies strictly below one of the sorted
+// paths.
+func insideAnother(sorted []string, path string) bool {
+	if path == "" {
+		return false
+	}
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		if _, found := slices.BinarySearch(sorted, dir); found {
+			return true
+		}
+		if dir == filepath.Dir(dir) {
+			return false
+		}
+	}
 }
 
 // Validate checks that a decoded report has a supported version and that its
