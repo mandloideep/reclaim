@@ -43,7 +43,8 @@ func addFakeRepo(t *testing.T, r fakeRepo, out map[string]string) {
 	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "FETCH_HEAD"), []byte("x\n"), 0o644))
 	require.NoError(t, os.Chtimes(filepath.Join(gitDir, "FETCH_HEAD"), r.fetched, r.fetched))
 
-	list := "worktree " + r.path + "\x00HEAD 0000000000000000000000000000000000000000\x00branch refs/heads/main\x00\x00"
+	var list strings.Builder
+	list.WriteString("worktree " + r.path + "\x00HEAD 0000000000000000000000000000000000000000\x00branch refs/heads/main\x00\x00")
 	register := func(name, path string) {
 		reg := filepath.Join(gitDir, "worktrees", name)
 		require.NoError(t, os.MkdirAll(reg, 0o755))
@@ -52,21 +53,21 @@ func addFakeRepo(t *testing.T, r fakeRepo, out map[string]string) {
 	}
 	for _, w := range r.worktrees {
 		register(w.name, w.path)
-		list += "worktree " + w.path + "\x00HEAD " + w.head + "\x00"
+		list.WriteString("worktree " + w.path + "\x00HEAD " + w.head + "\x00")
 		if w.branch != "" {
-			list += "branch refs/heads/" + w.branch + "\x00"
+			list.WriteString("branch refs/heads/" + w.branch + "\x00")
 		} else {
-			list += "detached\x00"
+			list.WriteString("detached\x00")
 		}
 		if w.lock != "" {
-			list += "locked " + w.lock + "\x00"
+			list.WriteString("locked " + w.lock + "\x00")
 		}
-		list += "\x00"
+		list.WriteString("\x00")
 		require.NoError(t, os.MkdirAll(w.path, 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(w.path, ".git"), []byte("gitdir: "+filepath.Join(gitDir, "worktrees", w.name)+"\n"), 0o644))
 		sparse(t, filepath.Join(w.path, "src", "app.ts"), w.size)
 
-		var status []string
+		status := make([]string, 0, w.modified+w.untracked)
 		for i := range w.modified {
 			status = append(status, " M src/file"+strconv.Itoa(i)+".ts")
 		}
@@ -102,9 +103,9 @@ func addFakeRepo(t *testing.T, r fakeRepo, out map[string]string) {
 	for i, path := range r.stale {
 		name := "old" + strconv.Itoa(i)
 		register(name, path)
-		list += "worktree " + path + "\x00HEAD 1111111111111111111111111111111111111111\x00detached\x00prunable gitdir file points to non-existent location\x00\x00"
+		list.WriteString("worktree " + path + "\x00HEAD 1111111111111111111111111111111111111111\x00detached\x00prunable gitdir file points to non-existent location\x00\x00")
 	}
-	out[git(r.path, "worktree list --porcelain -z")] = list
+	out[git(r.path, "worktree list --porcelain -z")] = list.String()
 	out[git(r.path, "config --get remote.origin.url")] = r.origin
 	out[git(r.path, "for-each-ref --format=%(refname)%09%(symref) refs/remotes/origin/HEAD refs/remotes/origin/main refs/remotes/origin/master refs/heads/main refs/heads/master")] =
 		"refs/remotes/origin/HEAD\t" + def + "\n" + def + "\t\n"
