@@ -188,8 +188,8 @@ It prints the state of the worktree at `path`, default the current folder, in pl
 
 - `0` committed, pushed and merged;
 - `1` pushed but not merged;
-- `2` holding work that exists nowhere else, with the commands that save it;
-- `3` not a linked worktree, or a state git could not report.
+- `2` holding work that exists nowhere else, nested repositories and submodules included, with the commands that save it;
+- `3` not a linked worktree, or reclaim could not tell whether its work exists elsewhere because a git command failed.
 
 `--remove` removes a worktree that exits `0` through a plan and `apply`, like everything else, with the plan and log in the reclaim cache folder.
 `--remove --allow-unmerged` also removes one that exits `1`.

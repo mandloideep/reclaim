@@ -55,7 +55,13 @@ type Refusal struct {
 	// State is the state computed during the proof, nil when the proof
 	// stopped before computing it.
 	State *finding.WorktreeState
+	// HoldsWork is set when the check that failed found work that exists
+	// nowhere else, such as a repository nested inside the worktree.
+	HoldsWork bool
 }
+
+// errNested marks a path check that found repositories inside the worktree.
+var errNested = errors.New("nested repositories")
 
 // Error implements error.
 func (r *Refusal) Error() string {
@@ -96,7 +102,7 @@ type Proof struct {
 // it again right before acting. The error is a *Refusal.
 func ProveWorktree(ctx context.Context, opts Options, roots []string, a *plan.Action) (*Proof, error) {
 	pr := &Proof{}
-	fail := func(check, detail string) (*Proof, error) {
+	fail := func(check, detail string) (*Proof, *Refusal) {
 		pr.Checks = append(pr.Checks, Check{Name: check, Detail: detail})
 		ref := &Refusal{Path: a.Path, Check: check, Detail: detail, State: pr.State}
 		if s := pr.State; s != nil && s.Verdict != finding.VerdictRemovable && s.Verdict != finding.VerdictPushed {
@@ -121,7 +127,9 @@ func ProveWorktree(ctx context.Context, opts Options, roots []string, a *plan.Ac
 	// 2. Every RemovePath check that applies to a folder holding a .git file.
 	info, size, err := checkWorktreePath(ctx, opts, roots, a)
 	if err != nil {
-		return fail(CheckPath, err.Error())
+		pr, ref := fail(CheckPath, err.Error())
+		ref.HoldsWork = errors.Is(err, errNested)
+		return pr, ref
 	}
 	pr.checked, pr.size = info, size
 	pass(CheckPath, "inside a recorded root, not protected, no symbolic link, not a mount point")
@@ -255,7 +263,7 @@ func checkWorktreePath(ctx context.Context, opts Options, roots []string, a *pla
 		for i, r := range res.Repos {
 			nested[i], _ = filepath.Rel(a.Path, r)
 		}
-		return nil, 0, fmt.Errorf("refusing %s: it holds nested repositories: %s", a.Path, strings.Join(nested, ", "))
+		return nil, 0, fmt.Errorf("refusing %s: it holds %w: %s", a.Path, errNested, strings.Join(nested, ", "))
 	}
 	return info, res.Size, nil
 }

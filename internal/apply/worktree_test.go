@@ -303,6 +303,7 @@ func TestApplyWorktreeRefusals(t *testing.T) {
 			require.NotNil(t, o.Refusal, "%v", o.Err)
 			require.Equal(t, tc.check, o.Refusal.Check, "%v", o.Err)
 			require.Contains(t, o.Err.Error(), tc.detail)
+			require.Equal(t, strings.Contains(tc.detail, "nested repositories"), o.Refusal.HoldsWork)
 			if tc.hint != "" {
 				require.Contains(t, strings.Join(o.Refusal.Hints, "\n"), tc.hint)
 				require.Contains(t, o.Refusal.ForceCommand, "worktree remove --force")

@@ -27,10 +27,10 @@ The main checkout is the repository folder that holds the `.git` directory.
    Do not remove the worktree.
    Only if the user asks for it, run `reclaim done --remove --allow-unmerged <worktree path>`.
    - `2`: the worktree holds work that exists nowhere else.
-   The `hints` in the JSON say what: uncommitted changes, untracked files, commits on no remote, commits on a detached HEAD, or ignored files such as `.env`.
+   The `reasons` and `hints` in the JSON say what: uncommitted changes, untracked files, commits on no remote, commits on a detached HEAD, ignored files such as `.env`, a repository nested inside the worktree, or a submodule.
    Commit and push as the hints say, then run `reclaim done --json` again.
    If you cannot save the work, stop and tell the user, quoting the `reasons`.
-   - `3`: the path is not a linked worktree, or git could not report its state.
+   - `3`: the path is not a linked worktree, or reclaim could not tell whether its work exists elsewhere, because a git command failed.
    Stop and tell the user what `reclaim done` printed.
 
 4. If `reclaim done --remove` refuses, read why and tell the user.

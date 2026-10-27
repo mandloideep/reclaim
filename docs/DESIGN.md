@@ -159,7 +159,7 @@ It takes the path of a linked worktree, defaulting to the current directory, and
 
 1. classifies it exactly as the worktree scanner does, pull request lookup included;
 2. prints the state in plain words, such as "committed, pushed, merged in PR #3, 158 MB", and with `--json` as the same state object the scanner writes;
-3. exits 0 when the worktree is tier A, 1 when it is tier B, 2 when it holds work that exists nowhere else, printing the retrieval hints, and 3 when the path is not a linked worktree or the state could not be determined;
+3. exits 0 when the worktree is tier A, 1 when it is tier B, 2 when it holds work that exists nowhere else, printing the retrieval hints, nested repositories, submodules and hidden changes included, and 3 when the path is not a linked worktree or the state could not be determined because a git or `ps` command failed, saying that reclaim could not tell whether its work exists elsewhere;
 the exit code judges the work and not the lock, because an agent's own running session holds the lock of its worktree, and the words say which lock it is, "in use by pid 30201" or "stale lock, pid 50949 gone";
 4. with `--remove`, removes a tier A worktree through the same plan, proof and apply path as everything else, writing the plan and the log to the reclaim cache folder, and refuses anything else with the reason.
 

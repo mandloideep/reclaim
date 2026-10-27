@@ -27,9 +27,11 @@ const (
 	// donePushed: pushed but not merged, or a removable worktree that
 	// --remove could not remove; the work is safe and the worktree stays.
 	donePushed = 1
-	// doneHoldsWork: work that exists nowhere else.
+	// doneHoldsWork: work that exists nowhere else, including a nested
+	// repository, a submodule or changes hidden from git status.
 	doneHoldsWork = 2
-	// doneUnknown: not a linked worktree, or a state git could not report.
+	// doneUnknown: not a linked worktree, or a state git could not report,
+	// such as a failed git or ps command.
 	doneUnknown = 3
 )
 
@@ -49,8 +51,8 @@ func newDoneCmd(a *app) *cobra.Command {
 			"does, prints its state in plain words or with --json as the scanner's state object, and exits:\n\n" +
 			"  0  committed, pushed and merged: safe to remove\n" +
 			"  1  pushed but not merged: the work is safe on the remote; open or finish the pull request\n" +
-			"  2  work that exists nowhere else: the hints say how to save it\n" +
-			"  3  not a linked worktree, or a state git could not report\n\n" +
+			"  2  work that exists nowhere else, nested repositories and submodules included: the hints say how to save it\n" +
+			"  3  not a linked worktree, or reclaim could not tell whether its work exists elsewhere\n\n" +
 			"With --remove it removes a worktree that exits 0, through a plan and apply like everything\n" +
 			"else, and exits 0 only when it is gone; --allow-unmerged extends that to one that exits 1.\n" +
 			"A worktree with work that exists nowhere else is never removed, whatever the flags: done prints\n" +
@@ -197,6 +199,9 @@ func refusalCode(err error) int {
 	if !errors.As(err, &ref) {
 		return doneUnknown
 	}
+	if ref.HoldsWork {
+		return doneHoldsWork
+	}
 	switch ref.Check {
 	case apply.CheckPath, apply.CheckWorkdir:
 		return donePushed
@@ -218,7 +223,9 @@ func refusalCode(err error) int {
 // and --remove refuses any lock anyway.
 func doneCode(s *finding.WorktreeState) int {
 	verdict, _ := worktree.WorkVerdict(s)
-	concrete := s.Modified > 0 || s.Untracked > 0 || s.Ignored > 0 || s.Loose > 0 || s.UnpushedBlocks()
+	// Blockers are findings git reported, such as a nested repository, with
+	// hints that say what to save, so they are work, not an unknown state.
+	concrete := s.Modified > 0 || s.Untracked > 0 || s.Ignored > 0 || s.Loose > 0 || s.UnpushedBlocks() || len(s.Blockers) > 0
 	switch {
 	case concrete:
 		return doneHoldsWork
@@ -262,11 +269,17 @@ func (a *app) printDone(w io.Writer, s *finding.WorktreeState, size int64, code 
 			say("The work is pushed but not merged into %s. Open or finish the pull request first.\n", orUnknown(s.DefaultBranch))
 		}
 	default:
-		if len(s.Hints) > 0 {
+		if code == doneUnknown {
+			say("reclaim could not tell whether its work exists elsewhere: %s\n", strings.Join(s.Reasons, "; "))
+		}
+		switch {
+		case len(s.Hints) > 0 && code == doneHoldsWork:
 			say("This worktree holds work that exists nowhere else. To keep it, first run:\n")
-			for _, h := range s.Hints {
-				say("  %s\n", h)
-			}
+		case len(s.Hints) > 0:
+			say("To keep what it holds, first run:\n")
+		}
+		for _, h := range s.Hints {
+			say("  %s\n", h)
 		}
 		if s.ForceCommand != "" {
 			say("To remove it anyway, losing that work, run it yourself:\n  %s\n", s.ForceCommand)

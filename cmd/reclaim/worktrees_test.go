@@ -14,6 +14,7 @@ import (
 	"github.com/mandloideep/reclaim/internal/apply"
 	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/worktree"
 	"github.com/mandloideep/reclaim/internal/worktree/worktreetest"
 	"github.com/mandloideep/reclaim/skills"
 )
@@ -129,6 +130,7 @@ func TestRefusalCode(t *testing.T) {
 	}{
 		{&apply.Refusal{Check: apply.CheckLinked}, 3},
 		{&apply.Refusal{Check: apply.CheckPath}, 1},
+		{&apply.Refusal{Check: apply.CheckPath, HoldsWork: true}, 2},
 		{&apply.Refusal{Check: apply.CheckState, State: merged}, 1},
 		{&apply.Refusal{Check: apply.CheckState, State: dirty}, 2},
 		{&apply.Refusal{Check: apply.CheckState}, 3},
@@ -279,4 +281,48 @@ func TestSelectProvesWorktrees(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(data), w["merged"])
 	require.Contains(t, string(data), w["pushed"])
+}
+
+// TestDoneExitCodesForBlockers exits 2 for a nested repository and for a
+// submodule, which git reported and the hints say how to save, and 3 only
+// when git could not report the state.
+func TestDoneExitCodesForBlockers(t *testing.T) {
+	a, f, _ := worktreeApp(t)
+	nested := f.Worktree("nested")
+	f.Commit(nested, "n.txt", "n\n")
+	f.Push(nested, "nested")
+	f.MergeFF("nested")
+	dep := filepath.Join(nested, "node_modules", "dep")
+	f.Write(dep, "index.js", "local\n")
+	f.Git(dep, "init", "-q")
+	f.Git(dep, "add", "-A")
+	f.Git(dep, "commit", "-q", "-m", "local only")
+
+	lib := filepath.Join(f.Dir, "lib")
+	f.Git(f.Dir, "init", "-q", "-b", "main", lib)
+	f.Commit(lib, "lib.txt", "lib\n")
+	sub := f.Worktree("sub")
+	f.Git(sub, "-c", "protocol.file.allow=always", "submodule", "add", "-q", lib, "lib")
+	f.Git(sub, "commit", "-q", "-m", "add lib")
+	f.Push(sub, "sub")
+	f.MergeFF("sub")
+
+	for path, says := range map[string]string{nested: "nested repositories: node_modules/dep", sub: "submodule foreach git push"} {
+		for _, args := range [][]string{{path}, {"--remove", "--allow-unmerged", path}} {
+			withOutput(a)
+			require.Equal(t, 2, exitCode(execute(a, append([]string{"done"}, args...)...)), output(a))
+			require.Contains(t, output(a), "holds work that exists nowhere else")
+			require.Contains(t, output(a), says)
+			require.DirExists(t, path)
+		}
+	}
+
+	// A state git could not report: git fails for this worktree.
+	broken := &finding.WorktreeState{Exists: true, Merged: finding.MergedSquash, Unknown: []string{"modified", "untracked"}, Problem: "git status failed"}
+	require.Equal(t, 3, doneCode(broken))
+	worktree.Judge(broken)
+	var out strings.Builder
+	a.printDone(&out, broken, 0, doneCode(broken), false)
+	require.Contains(t, out.String(), "reclaim could not tell whether its work exists elsewhere: git could not report modified, untracked: git status failed")
+	require.NotContains(t, out.String(), "holds work that exists nowhere else")
 }
