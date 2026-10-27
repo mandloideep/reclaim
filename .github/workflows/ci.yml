@@ -31,6 +31,48 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: latest
+  install-script:
+    # Builds a snapshot with GoReleaser, serves dist/ from a local folder and
+    # installs it with scripts/install.sh, as a user without Homebrew would.
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          # GoReleaser v2.18.2 needs a newer Go than go.mod names, as in the
+          # release workflow.
+          go-version: stable
+      - name: Snapshot build
+        run: go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --snapshot --clean
+      - name: Lint the script
+        if: runner.os == 'Linux'
+        run: shellcheck scripts/install.sh
+      - name: Install from the snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh scripts/install.sh --base-url "file://$PWD/dist" --bin-dir "$RUNNER_TEMP/bin"
+          "$RUNNER_TEMP/bin/reclaim" version | tee version.txt
+          grep -q -- '-SNAPSHOT-' version.txt
+      - name: Refuse an archive that does not match its checksum
+        shell: bash
+        run: |
+          set -uo pipefail
+          cp -R dist "$RUNNER_TEMP/bad"
+          archive="$(ls "$RUNNER_TEMP"/bad/reclaim_*_"$(go env GOOS)"_"$(go env GOARCH)".tar.gz)"
+          printf 'tampered' >> "$archive"
+          if sh scripts/install.sh --base-url "file://$RUNNER_TEMP/bad" --bin-dir "$RUNNER_TEMP/bad-bin" 2> err.txt; then
+            echo "the script installed a tampered archive" >&2
+            exit 1
+          fi
+          cat err.txt
+          grep -q 'does not match checksums.txt' err.txt
+          test ! -e "$RUNNER_TEMP/bad-bin/reclaim"
   docker:
     # Runs the Docker integration test against the runner's real daemon. The
     # test creates its own fixtures, all labeled reclaim.test=1, and touches
