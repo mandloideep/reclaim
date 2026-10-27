@@ -164,7 +164,9 @@ the exit code judges the work and not the lock, because an agent's own running s
 4. with `--remove`, removes a tier A worktree through the same plan, proof and apply path as everything else, writing the plan and the log to the reclaim cache folder, and refuses anything else with the reason.
 
 `--remove --allow-unmerged` extends removal to tier B, for agents whose branches are reviewed elsewhere.
-With `--remove`, exit 0 means the worktree is gone; a tier A or B worktree that the proof refuses, for example because it is locked or holds the working directory, exits 1, since its work is safe and the worktree stays, and anything else exits with its code from the list above.
+With `--remove`, exit 0 means the worktree is gone.
+A refusal exits by the check that failed: 1 when the work is safe and only the removal was refused, as for a lock, the working directory or a path outside the roots; the code of the state computed again when the work changed since `done` classified it; 2 when git itself refused because of files to keep; and 3 when it is no longer a linked worktree or the failure is of another kind.
+A mistake on the command line exits 3, never 1.
 With `--json` the state goes to standard output and every other line to standard error.
 A path inside a worktree finds the worktree.
 A worktree with work that exists nowhere else is never removed by `done`, whatever flags are given; `done` prints the retrieval hints and the `git worktree remove --force` command for the user to run by hand.
@@ -409,6 +411,8 @@ Discovery:
 
 Every answer comes from read only git commands run through `execx.Runner`, so tests use fakes and the scan stays offline.
 Git runs with `GIT_OPTIONAL_LOCKS=0`, so even `git status` refreshes no index.
+Every command runs without the variables that point git at another repository, work tree, index or configuration, such as `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE`, which git hooks, `git rebase -x` and `git submodule foreach` set and which would make git describe the wrong worktree.
+- `hidden`: tracked files marked assume-unchanged or skip-worktree hide their changes from `git status`, and `git worktree remove` deletes those changes without complaint, so `git ls-files -v` finds them and any one makes the state unknown.
 `scan` never fetches.
 Merge state is as of the last fetch, which the report shows from the modification time of `FETCH_HEAD`.
 
@@ -468,6 +472,9 @@ It also carries the exact `git -C <repo> worktree remove --force <path>` command
 A stale lock, one whose process is gone, is listed for attention with the `git worktree unlock` command.
 
 Stale registrations, entries in `.git/worktrees` whose folder no longer exists, are one tier A finding per repository, "14 stale worktree registrations", with action `GitWorktreePrune`.
+They come from `git worktree prune --dry-run --verbose`, not from `git worktree list`, which leaves out a registration whose `gitdir` file is missing although `git worktree prune` removes it.
+The finding is offered only when every registration the dry run names points at a folder that does not exist; when one names a folder that still exists, or cannot be read, pruning could orphan a folder that holds work, so the finding is listed for attention.
+Apply runs the dry run again and refuses unless every registration it names is in the plan and points at a folder that is gone.
 They free almost nothing but they let `git worktree add` reuse the paths and keep `git worktree list` honest.
 
 Findings are grouped by repository, then ordered by tool: Claude Code, Codex, other tools, manual, then stale registrations and other clones.
@@ -479,8 +486,9 @@ A worktree that lies outside the report's roots is listed for attention with the
 Findings carry the main repository as `repo`, which groups them.
 `here` inside a repository marks linked worktrees in the breakdown with their state words.
 
-Removal is action `GitWorktreeRemove`: `git -C <repo> worktree remove <path>`, never with `--force`, then `git -C <repo> worktree prune` when git would prune nothing else.
-`git worktree remove` already deletes the worktree's own registration, and a prune with other stale registrations would remove registrations the plan does not cover, such as one of a worktree on a drive that is not mounted, so then the prune is skipped and the log says why.
+Removal is action `GitWorktreeRemove`: `git -C <repo> worktree remove <path>`, never with `--force`.
+`git worktree remove` deletes the worktree's own registration, so apply does not run `git worktree prune` after it, unlike the first version of this design: a prune would also remove registrations the plan does not cover, such as one of a worktree on a drive that is not mounted.
+Apply only asks git, with `git worktree prune --dry-run --verbose`, what a prune would still remove, and notes it in the log.
 `RemovePath` would leave the registration behind, and git's own refusal to remove a dirty worktree is a second guard worth keeping.
 Branches are never deleted; the restore text of a merged worktree names the `git branch -d` command for the user.
 Codex task folders become one `GitWorktreeRemove` per repository inside, then `RemovePath` on the empty task folder.
@@ -494,6 +502,7 @@ Report totals count a finding that lies inside another applicable finding once, 
 The slug replaces `/` with `-`, which is lossy, so the scanner reads the `cwd` field of a session file instead of decoding the name.
 Claude Code writes it in one of the first few records, not always the first, so the scanner reads up to 200 lines of each session file in name order until one records it.
 Tier B once the newest file in the folder is 30 days old, with the warning that Claude Code cannot resume those sessions.
+A project on a volume that is not mounted, under `/Volumes`, `/mnt`, `/media` or `/run/media`, may come back with the drive, so its sessions are not offered.
 - `codex-plugin-backups`: `$CODEX_HOME/.tmp/plugins-backup-*`, tier A.
 - Codex sessions, archived sessions and Claude desktop VM bundles are covered by the app cache scanners.
 
@@ -560,7 +569,8 @@ A directory holding a `.git` directory is never removed, so a main checkout or a
 `--allow-unmerged`, or a tier B finding ticked in `select`, relaxes `merged` only, and `unpushed` must still be zero.
 4. The recomputed `head` equals the recorded one, so a worktree that received commits since the scan is refused.
 5. The path does not contain the working directory of the reclaim process.
-6. `git worktree remove` runs without `--force`, so git's own check for untracked and modified files is the last guard.
+6. Right before git acts, apply checks once more what git does not guard: the folder is the one it checked, with no symbolic link in its path, `HEAD` has not moved, and nothing modified, untracked, hidden or ignored outside artifact folders appeared; the size comes from the walk of check 2, so no slow walk sits between the checks and git.
+Then `git worktree remove` runs without `--force`, so git's own check for untracked and modified files is the last guard.
 
 The log entry of the action lists every check that ran with its result; when one fails it is the last.
 Check 2 cannot reuse the `RemovePath` rule that refuses a folder holding a `.git` entry, which every worktree holds; check 1 takes its place.

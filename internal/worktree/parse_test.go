@@ -114,11 +114,11 @@ func TestMergeStateFake(t *testing.T) {
 	exact := func(from, to, diff, upstream string) map[string]string {
 		c := "u" + to
 		return map[string]string{
-			g("diff-tree -p --no-color --full-index " + from + " " + to): diff,
-			g("diff-tree -r --name-only -z " + from + " " + to):          "f-" + to + "\x00",
-			g("rev-list --no-merges 2222.." + def + " -- f-" + to):       "other " + c,
-			g("diff-tree -p --no-color --full-index other^ other"):       "unrelated diff",
-			g("diff-tree -p --no-color --full-index " + c + "^ " + c):    upstream,
+			g("diff-tree -p --no-color --full-index " + from + " " + to):               diff,
+			g("diff-tree -r --name-only -z " + from + " " + to):                        "f-" + to + "\x00",
+			g("--literal-pathspecs rev-list --no-merges 2222.." + def + " -- f-" + to): "other " + c,
+			g("diff-tree -p --no-color --full-index other^ other"):                     "unrelated diff",
+			g("diff-tree -p --no-color --full-index " + c + "^ " + c):                  upstream,
 		}
 	}
 	common := map[string]string{
@@ -164,18 +164,23 @@ func TestMergeStateFake(t *testing.T) {
 		{"squash by patch id only", with(squashed, exact("2222", "HEAD", "ds", "ds but whitespace differs")), finding.MergedNo,
 			"the branch's changes are not exactly in origin/main", false},
 		{"squash with no candidate commit", with(squashed, exact("2222", "HEAD", "ds", "ds"),
-			map[string]string{g("rev-list --no-merges 2222.." + def + " -- f-HEAD"): ""}), finding.MergedNo, "the branch's changes are not exactly in origin/main", false},
-		{"no net change", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n", g("rev-parse 2222^{tree}"): "tree-head"}), finding.MergedSquash, "", false},
+			map[string]string{g("--literal-pathspecs rev-list --no-merges 2222.." + def + " -- f-HEAD"): ""}), finding.MergedNo, "the branch's changes are not exactly in origin/main", false},
+		{"no net change", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n", g("rev-parse 2222^{tree}"): "tree-head"}), finding.MergedSquash,
+			"its commits add up to no change since origin/main", false},
 		{"not merged", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n"}), finding.MergedNo, "", false},
 		{"unrelated histories", with(map[string]string{g("merge-base HEAD " + def): "<fail>"}), finding.MergedNo, "", false},
+		{"merge-base fails otherwise", with(map[string]string{g("merge-base HEAD " + def): "<fail>"}), finding.MergedUnknown, "", true},
 		{"cherry fails", with(map[string]string{g("cherry " + def + " HEAD"): "<fail>"}), finding.MergedUnknown, "", true},
 		{"commit-tree fails", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n", commitTree: "<fail>"}), finding.MergedUnknown, "", true},
 		{"exact diff fails", with(squashed), finding.MergedUnknown, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			env := Env{Exec: &execx.Fake{Tools: map[string]string{"git": "/usr/bin/git"}, Outputs: tc.outputs}}
-			got, note, err := mergeState(context.Background(), env, dir, def)
+			fake := &execx.Fake{Tools: map[string]string{"git": "/usr/bin/git"}, Outputs: tc.outputs}
+			if tc.name == "unrelated histories" {
+				fake.Exits = map[string]int{g("merge-base HEAD " + def): 1}
+			}
+			got, note, err := mergeState(context.Background(), Env{Exec: fake}, dir, def)
 			require.Equal(t, tc.want, got)
 			require.Equal(t, tc.note, note)
 			require.Equal(t, tc.err, err != nil, "%v", err)
@@ -208,7 +213,9 @@ func TestLockLive(t *testing.T) {
 		want   bool
 	}{
 		{"no pid named", "kept on purpose", &execx.Fake{}, true},
-		{"process gone", recordedUTC, &execx.Fake{Tools: map[string]string{"ps": "/bin/ps"}}, false},
+		{"process gone", recordedUTC, &execx.Fake{Tools: map[string]string{"ps": "/bin/ps"},
+			Exits: map[string]int{"ps -o lstart= -p 42": 1}}, false},
+		{"process table unreadable", recordedUTC, &execx.Fake{Tools: map[string]string{"ps": "/bin/ps"}}, true},
 		{"same process, start recorded in UTC", recordedUTC, &execx.Fake{Tools: map[string]string{"ps": "/bin/ps"},
 			Outputs: map[string]string{"ps -o lstart= -p 42": psOut}}, true},
 		{"same process, start recorded in local time", "claude agent a (pid 42 start " + psOut + ")", &execx.Fake{Tools: map[string]string{"ps": "/bin/ps"},

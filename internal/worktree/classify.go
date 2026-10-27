@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
 )
 
@@ -190,6 +191,11 @@ func ClassifyEntry(ctx context.Context, env Env, repo *Repo, e Entry) *finding.W
 	if err := countIgnored(ctx, env, s); err != nil {
 		unknown("ignored", err)
 	}
+	if n, err := countHidden(ctx, env, s.Path); err != nil {
+		unknown("hidden", err)
+	} else if n > 0 {
+		unknown("hidden", fmt.Errorf("%d tracked files are marked assume-unchanged or skip-worktree, so git status cannot see changes to them", n))
+	}
 	if s.Head != "" {
 		if n, err := revCount(ctx, env, path, "HEAD", "--not", "--branches", "--remotes", "--tags"); err != nil {
 			unknown("loose", err)
@@ -246,6 +252,28 @@ func parseStatus(out string) (modified, untracked int) {
 		}
 	}
 	return modified, untracked
+}
+
+// countHidden counts the tracked files whose changes git status does not
+// show: marked assume-unchanged (a lowercase tag in git ls-files -v) or
+// skip-worktree (tag S). git worktree remove would delete changes to them
+// without complaint.
+func countHidden(ctx context.Context, env Env, dir string) (int, error) {
+	out, err := env.git(ctx, dir, "ls-files", "-v", "-z")
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for rec := range strings.SplitSeq(out, "\x00") {
+		if rec == "" {
+			continue
+		}
+		tag := rec[0]
+		if tag == 'S' || tag >= 'a' && tag <= 'z' {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // maxIgnoredSample is how many ignored names the state keeps.
@@ -314,9 +342,12 @@ func mergeState(ctx context.Context, env Env, dir, def string) (finding.Merged, 
 		return finding.MergedUnknown, "", err
 	}
 	base, err := env.git(ctx, dir, "merge-base", "HEAD", def)
+	if code, ok := execx.ExitCode(err); ok && code == 1 {
+		// git merge-base exits 1 when the histories share no commit.
+		return finding.MergedNo, "", nil
+	}
 	if err != nil {
-		// Unrelated histories have no merge base.
-		return finding.MergedNo, "", nil //nolint:nilerr // no merge base means not merged
+		return finding.MergedUnknown, "", err
 	}
 	head, base = strings.TrimSpace(head), strings.TrimSpace(base)
 	if base == head {
@@ -346,7 +377,7 @@ func mergeState(ctx context.Context, env Env, dir, def string) (finding.Merged, 
 	}
 	if strings.TrimSpace(tree) == strings.TrimSpace(baseTree) {
 		// The files at HEAD are those of a commit in the default branch.
-		return finding.MergedSquash, "", nil
+		return finding.MergedSquash, "its commits add up to no change since " + shortRef(def), nil
 	}
 	// A synthetic commit holding the whole change since the merge base. It
 	// is written as a dangling object that no ref points at.
@@ -418,7 +449,9 @@ func inDefaultExactly(ctx context.Context, env Env, dir, def, base, from, to str
 	if len(paths) == 0 || strings.TrimSpace(want) == "" {
 		return false, nil
 	}
-	out, err := env.git(ctx, dir, append([]string{"rev-list", "--no-merges", base + ".." + def, "--"}, paths...)...)
+	// File names are pathspecs; --literal-pathspecs keeps a name such as
+	// "*.go" or ":x" from matching anything but itself.
+	out, err := env.git(ctx, dir, append([]string{"--literal-pathspecs", "rev-list", "--no-merges", base + ".." + def, "--"}, paths...)...)
 	if err != nil {
 		return false, err
 	}
@@ -473,4 +506,34 @@ func inferTool(env Env, path, lockReason string) string {
 		}
 	}
 	return "manual"
+}
+
+// Recheck repeats, right before git acts, the cheap parts of the state that
+// git worktree remove itself does not guard: HEAD is still head, nothing is
+// modified, untracked or hidden from git status, and no ignored file outside
+// artifact folders appeared. The full classification ran moments earlier;
+// this closes the time it took to measure the worktree.
+func Recheck(ctx context.Context, env Env, path, head string) error {
+	now, err := env.git(ctx, path, "rev-parse", "HEAD")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(now) != head {
+		return fmt.Errorf("HEAD moved to %s since it was checked", strings.TrimSpace(now))
+	}
+	s := &finding.WorktreeState{Path: path}
+	if err := countStatus(ctx, env, s); err != nil {
+		return err
+	}
+	if err := countIgnored(ctx, env, s); err != nil {
+		return err
+	}
+	hidden, err := countHidden(ctx, env, path)
+	if err != nil {
+		return err
+	}
+	if s.Modified+s.Untracked+s.Ignored+hidden > 0 {
+		return fmt.Errorf("since it was checked it gained %d modified, %d untracked, %d ignored and %d hidden files", s.Modified, s.Untracked, s.Ignored, hidden)
+	}
+	return nil
 }

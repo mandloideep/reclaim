@@ -190,6 +190,7 @@ func screenshotApp(t *testing.T) (*app, *bytes.Buffer) {
 		// ps prints local time; Claude Code records the lock in UTC.
 		"ps -o lstart= -p 4242": lockStart.In(time.Local).Format("Mon Jan _2 15:04:05 2006"),
 	}
+	runOutputs := map[string]string{}
 	addFakeRepo(t, fakeRepo{
 		path: repo, origin: "git@github.com:acme/storefront.git", fetched: screenshotNow.Add(-3 * time.Hour),
 		worktrees: []fakeWorktree{
@@ -206,7 +207,7 @@ func screenshotApp(t *testing.T) (*app, *bytes.Buffer) {
 				head: "a5e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3", merged: "ancestor", modified: 12, untracked: 3, size: 231 * MB},
 		},
 		stale: []string{filepath.Join(h, "Code", "storefront-spike"), filepath.Join(h, "Code", "storefront-v1")},
-	}, outputs)
+	}, outputs, runOutputs)
 
 	// Everything is old, then each project gets its own last activity.
 	setTimes(t, h, screenshotNow.Add(-400*day))
@@ -231,7 +232,8 @@ func screenshotApp(t *testing.T) (*app, *bytes.Buffer) {
 	a.exec = &execx.Fake{
 		Tools: map[string]string{"npm": "/opt/homebrew/bin/npm", "go": "/opt/homebrew/bin/go", "brew": "/opt/homebrew/bin/brew",
 			"git": "/usr/bin/git", "ps": "/bin/ps", "gh": "/opt/homebrew/bin/gh"},
-		Outputs: outputs,
+		Outputs:    outputs,
+		RunOutputs: runOutputs,
 		// The project scanners ask git whether artifact folders hold
 		// committed files; in the fixture none do.
 		Fallback: func(name string, args []string) (string, error) {

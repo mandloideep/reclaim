@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/mandloideep/reclaim/internal/apply"
 	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/worktree/worktreetest"
@@ -57,9 +59,8 @@ func output(a *app) string {
 	return a.stdout.(*strings.Builder).String()
 }
 
-func withOutput(a *app) *app {
+func withOutput(a *app) {
 	a.stdout, a.stderr = &strings.Builder{}, &strings.Builder{}
-	return a
 }
 
 func TestDoneExitCodes(t *testing.T) {
@@ -110,9 +111,35 @@ func TestDoneExitCodes(t *testing.T) {
 		require.Contains(t, output(a), "merged")
 	})
 
-	t.Run("allow-unmerged needs remove", func(t *testing.T) {
-		require.ErrorContains(t, execute(withOutput(a), "done", "--allow-unmerged", w["pushed"]), "only makes sense with --remove")
+	t.Run("command line mistakes exit 3", func(t *testing.T) {
+		for _, args := range [][]string{{"--allow-unmerged", w["pushed"]}, {"--bogus"}, {w["pushed"], w["merged"]}} {
+			withOutput(a)
+			require.Equal(t, 3, exitCode(execute(a, append([]string{"done"}, args...)...)), "%v", args)
+			require.Contains(t, a.stderr.(*strings.Builder).String(), "reclaim: warning:")
+		}
 	})
+}
+
+func TestRefusalCode(t *testing.T) {
+	merged := &finding.WorktreeState{Exists: true, Merged: finding.MergedSquash, Locked: true}
+	dirty := &finding.WorktreeState{Exists: true, Merged: finding.MergedSquash, Modified: 2}
+	cases := []struct {
+		err  error
+		want int
+	}{
+		{&apply.Refusal{Check: apply.CheckLinked}, 3},
+		{&apply.Refusal{Check: apply.CheckPath}, 1},
+		{&apply.Refusal{Check: apply.CheckState, State: merged}, 1},
+		{&apply.Refusal{Check: apply.CheckState, State: dirty}, 2},
+		{&apply.Refusal{Check: apply.CheckState}, 3},
+		{&apply.Refusal{Check: apply.CheckWorkdir}, 1},
+		{&apply.Refusal{Check: apply.CheckRemove}, 2},
+		{fmt.Errorf("not removed: %w", &apply.Refusal{Check: apply.CheckWorkdir}), 1},
+		{errors.New("disk full"), 3},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, refusalCode(tc.err), "%v", tc.err)
+	}
 }
 
 // TestDoneRemove proves that --remove removes a tier A worktree and nothing

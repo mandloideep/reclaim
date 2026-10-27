@@ -840,3 +840,17 @@ func tree(t *testing.T, root string) []string {
 	slices.Sort(out)
 	return out
 }
+
+func TestOnMissingVolume(t *testing.T) {
+	cases := map[string]bool{
+		"/Volumes/no-such-reclaim-test-drive/Code/app": true,
+		"/media/me/no-such-reclaim-test-drive/app":     true,
+		"/run/media/me/no-such-reclaim-test-drive/app": true,
+		"/mnt/no-such-reclaim-test-drive/app":          true,
+		"/Users/me/Code/gone":                          false,
+		"/Volumes":                                     false,
+	}
+	for path, want := range cases {
+		require.Equal(t, want, onMissingVolume(path), path)
+	}
+}

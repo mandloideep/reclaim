@@ -124,7 +124,7 @@ func TestApplyRemovesOnlyTheWorktree(t *testing.T) {
 		require.Equal(t, name, c["name"])
 		require.Equal(t, true, c["ok"])
 	}
-	require.Contains(t, sum.Outcomes[0].Output, "prune skipped")
+	require.Contains(t, sum.Outcomes[0].Output, "git worktree prune not run")
 }
 
 // withoutGitBookkeeping keeps the entries of after that existed before or
@@ -136,9 +136,9 @@ func withoutGitBookkeeping(after, before []string) []string {
 	})
 }
 
-// TestApplyPrunesAfterRemoveWhenNothingElseIsStale checks that git worktree
-// prune runs after a removal when no other registration is stale.
-func TestApplyPrunesAfterRemoveWhenNothingElseIsStale(t *testing.T) {
+// TestApplyNeverPrunesAfterRemove checks that after a removal apply only
+// asks git, with a dry run, what a prune would remove, and never prunes.
+func TestApplyNeverPrunesAfterRemove(t *testing.T) {
 	f := worktreetest.New(t)
 	e := env{root: f.Dir, home: filepath.Join(worktreetest.RealTempDir(t), "home", "me")}
 	target := f.Worktree("target")
@@ -152,7 +152,8 @@ func TestApplyPrunesAfterRemoveWhenNothingElseIsStale(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, StatusDone, sum.Outcomes[0].Status)
-	require.Equal(t, [][]string{plan.WorktreeRemoveCommand(f.Repo, target), plan.WorktreePruneCommand(f.Repo)}, ran)
+	require.Equal(t, [][]string{plan.WorktreeRemoveCommand(f.Repo, target),
+		{"git", "-C", f.Repo, "worktree", "prune", "--dry-run", "--verbose"}}, ran)
 	require.False(t, exists(target))
 }
 
@@ -411,6 +412,29 @@ func TestApplyRefusesToPruneUnlistedRegistrations(t *testing.T) {
 	require.True(t, exists(filepath.Join(f.Repo, ".git", "worktrees", "later")))
 }
 
+// TestApplyRefusesToPruneAFolderThatStillExists refuses a prune when git
+// would remove a registration whose gitdir file is missing while its folder,
+// with its work, still exists; git worktree list does not show that one.
+func TestApplyRefusesToPruneAFolderThatStillExists(t *testing.T) {
+	f := worktreetest.New(t)
+	e := env{root: f.Dir, home: filepath.Join(worktreetest.RealTempDir(t), "home", "me")}
+	stale := f.Worktree("stale")
+	require.NoError(t, os.RemoveAll(stale))
+	orphan := f.Worktree("orphan")
+	f.Write(orphan, "work.txt", "uncommitted work\n")
+	require.NoError(t, os.Remove(filepath.Join(f.Repo, ".git", "worktrees", "orphan", "gitdir")))
+	require.NotContains(t, f.Git(f.Repo, "worktree", "list"), orphan)
+
+	reg := filepath.Join(f.Repo, ".git", "worktrees", "orphan")
+	for _, regs := range [][]string{{stale}, {stale, reg}} {
+		sum, _, err := run(t, e, newPlan([]string{f.Dir}, pruneAction(f.Repo, regs...)), gitRun(nil))
+		require.Error(t, err)
+		require.ErrorContains(t, sum.Outcomes[0].Err, "refusing to prune")
+		require.DirExists(t, reg, "the registration of a folder that still exists stays")
+		require.FileExists(t, filepath.Join(orphan, "work.txt"))
+	}
+}
+
 // TestRemoveEmptyDir removes a folder planned to be removed once empty, and
 // refuses one that still holds anything, such as a worktree whose removal
 // failed earlier in the run.
@@ -450,4 +474,20 @@ func TestApplyRemovesSquashMergedWorktreeWithDeletedBranch(t *testing.T) {
 	require.Equal(t, StatusDone, sum.Outcomes[0].Status)
 	require.False(t, exists(path))
 	require.Equal(t, "deleted", f.Git(f.Repo, "branch", "--list", "deleted", "--format=%(refname:short)"), "the local branch stays")
+}
+
+// TestApplyRefusesToPruneAFolderWithoutItsGitFile refuses a prune whose
+// registration points at a folder that lost its .git file but still holds
+// files, which git reports as stale.
+func TestApplyRefusesToPruneAFolderWithoutItsGitFile(t *testing.T) {
+	f := worktreetest.New(t)
+	e := env{root: f.Dir, home: filepath.Join(worktreetest.RealTempDir(t), "home", "me")}
+	kept := f.Worktree("kept")
+	f.Write(kept, "notes.md", "mine\n")
+	require.NoError(t, os.Remove(filepath.Join(kept, ".git")))
+	sum, _, err := run(t, e, newPlan([]string{f.Dir}, pruneAction(f.Repo, kept)), gitRun(nil))
+	require.Error(t, err)
+	require.ErrorContains(t, sum.Outcomes[0].Err, "whose folder may still hold work")
+	require.DirExists(t, filepath.Join(f.Repo, ".git", "worktrees", "kept"))
+	require.FileExists(t, filepath.Join(kept, "notes.md"))
 }

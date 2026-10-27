@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mandloideep/reclaim/internal/execx"
 )
@@ -204,4 +205,59 @@ func readSmall(path string) (string, error) {
 		return "", err
 	}
 	return string(buf[:n]), nil
+}
+
+// PruneCandidate is a registration that git worktree prune would remove.
+type PruneCandidate struct {
+	// Name is the registration's folder under .git/worktrees.
+	Name string
+	// Path is the worktree folder the registration names, or the
+	// registration itself when its gitdir file cannot be read.
+	Path string
+	// Reason is git's explanation, such as "gitdir file points to
+	// non-existent location".
+	Reason string
+	// Gone is set when the registration names a folder that does not exist,
+	// the only case in which pruning it loses nothing.
+	Gone bool
+}
+
+// dryRunTimeout bounds git worktree prune --dry-run.
+const dryRunTimeout = 10 * time.Second
+
+// PruneCandidates asks git which registrations git worktree prune would
+// remove, with --dry-run, which changes nothing. git worktree list leaves
+// out some of them, such as a registration whose gitdir file is missing
+// while its folder, with its work, still exists, so only the dry run says
+// what a prune would do. The dry run reports on standard error, which the
+// runner's Run returns with standard output.
+func PruneCandidates(ctx context.Context, env Env, repo string) ([]PruneCandidate, error) {
+	if env.Exec == nil {
+		return nil, fmt.Errorf("git worktree prune --dry-run in %s: %w", repo, execx.ErrNotInstalled)
+	}
+	ctx, cancel := context.WithTimeout(ctx, dryRunTimeout)
+	defer cancel()
+	out, err := env.Exec.Run(ctx, []string{"git", "-C", repo, "worktree", "prune", "--dry-run", "--verbose"})
+	if err != nil {
+		return nil, fmt.Errorf("ask git what a prune of %s would remove: %w", repo, err)
+	}
+	var cands []PruneCandidate
+	for line := range strings.Lines(string(out)) {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "Removing worktrees/")
+		if !ok {
+			continue
+		}
+		name, reason, _ := strings.Cut(rest, ": ")
+		reg := filepath.Join(repo, ".git", "worktrees", name)
+		c := PruneCandidate{Name: name, Path: reg, Reason: reason}
+		if data, err := readSmall(filepath.Join(reg, "gitdir")); err == nil {
+			if p := strings.TrimSpace(data); filepath.IsAbs(p) {
+				c.Path = filepath.Dir(filepath.Clean(p))
+				_, statErr := os.Lstat(c.Path)
+				c.Gone = errors.Is(statErr, os.ErrNotExist) && reason == "gitdir file points to non-existent location"
+			}
+		}
+		cands = append(cands, c)
+	}
+	return cands, nil
 }

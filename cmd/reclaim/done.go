@@ -57,7 +57,13 @@ func newDoneCmd(a *app) *cobra.Command {
 			"the commands that save it and the git worktree remove --force command for you to run yourself.\n" +
 			"Run it from the main checkout, because done never removes the folder it runs in. It never\n" +
 			"deletes branches and never pushes.",
-		Args:              cobra.MaximumNArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.MaximumNArgs(1)(cmd, args); err != nil {
+				a.warnf("%v", err)
+				return &exitError{code: doneUnknown}
+			}
+			return nil
+		},
 		ValidArgsFunction: firstArg(folders),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
@@ -67,6 +73,12 @@ func newDoneCmd(a *app) *cobra.Command {
 			return a.doneCommand(cmd.Context(), path, f)
 		},
 	}
+	// Agents read the exit code, so a mistake on the command line exits 3,
+	// never 1, which means the work is safe.
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		a.warnf("%v", err)
+		return &exitError{code: doneUnknown}
+	})
 	cmd.Flags().BoolVar(&f.json, "json", false, "print the state as JSON, the object the worktree scanner writes")
 	cmd.Flags().BoolVar(&f.remove, "remove", false, "remove the worktree when its work is committed, pushed and merged")
 	cmd.Flags().BoolVar(&f.allowUnmerged, "allow-unmerged", false, "with --remove, also remove a worktree that is pushed but not merged")
@@ -89,7 +101,8 @@ func exit(code int) error {
 
 func (a *app) doneCommand(ctx context.Context, path string, f doneFlags) error {
 	if f.allowUnmerged && !f.remove {
-		return errors.New("--allow-unmerged only makes sense with --remove")
+		a.warnf("%s", "--allow-unmerged only makes sense with --remove")
+		return exit(doneUnknown)
 	}
 	cfg, err := a.loadConfig()
 	if err != nil {
@@ -167,9 +180,37 @@ func (a *app) doneCommand(ctx context.Context, path string, f doneFlags) error {
 	}
 	if err := a.doneRemove(ctx, out, roots, state, size.Size); err != nil {
 		say("\n%v\n", err)
-		return exit(max(code, donePushed))
+		return exit(refusalCode(err))
 	}
 	return nil
+}
+
+// refusalCode is done's exit code when --remove did not remove a worktree,
+// from the check that refused it: 1 when its work is safe and only the
+// removal was refused, as for a lock, the working directory or a path
+// outside the roots; the code of the state computed during the refusal when
+// the work changed since done classified it; 2 when git itself found files
+// to keep; and 3 when it is no longer a linked worktree or the failure is of
+// another kind.
+func refusalCode(err error) int {
+	var ref *apply.Refusal
+	if !errors.As(err, &ref) {
+		return doneUnknown
+	}
+	switch ref.Check {
+	case apply.CheckPath, apply.CheckWorkdir:
+		return donePushed
+	case apply.CheckState:
+		if ref.State == nil {
+			return doneUnknown
+		}
+		// A lock refuses a worktree whose work is safe.
+		return max(doneCode(ref.State), donePushed)
+	case apply.CheckRemove:
+		return doneHoldsWork
+	default:
+		return doneUnknown
+	}
 }
 
 // doneCode turns a state into done's exit code. It judges the work, not the

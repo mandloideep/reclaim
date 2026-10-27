@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
 )
 
@@ -75,9 +76,13 @@ func lockLive(ctx context.Context, env Env, reason string) bool {
 	}
 	out, err := env.Exec.Output(ctx, "ps", "-o", "lstart=", "-p", m[1])
 	started := strings.Join(strings.Fields(out), " ")
-	if err != nil || started == "" {
-		// ps exits with an error when no process has the id.
+	if code, ok := execx.ExitCode(err); ok && code == 1 {
+		// ps exits 1 when no process has the id.
 		return false
+	}
+	if err != nil || started == "" {
+		// The process table could not be read.
+		return true
 	}
 	s := lockStart.FindStringSubmatch(reason)
 	if s == nil {
@@ -295,6 +300,9 @@ func Words(s *finding.WorktreeState) string {
 	switch {
 	case s.Loose > 0 && s.Detached:
 		parts = append(parts, "detached with "+plural(s.Loose, "commit", "commits")+" no branch holds")
+	case s.Unpushed > 0 && s.MergedRemotely() && s.MergeNote != "":
+		parts = append(parts, s.MergeNote+"; the branch is not on the remote")
+		return finishWords(s, parts)
 	case s.Unpushed > 0 && s.MergedRemotely():
 		// The branch was merged and then deleted on the remote, as GitHub
 		// does; its changes are proven to be in the default branch.

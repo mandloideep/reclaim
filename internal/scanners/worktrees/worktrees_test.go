@@ -179,6 +179,36 @@ func TestGitWorktrees(t *testing.T) {
 
 // TestGitWorktreesLookupFailureIsOneWarning checks that a failing gh adds
 // one warning and changes no finding.
+// TestRegistrationsOfFoldersThatExistAreNotOffered lists for attention,
+// never offers, a prune that would also remove the registration of a folder
+// that still exists, because its gitdir file is missing.
+func TestRegistrationsOfFoldersThatExistAreNotOffered(t *testing.T) {
+	f := worktreetest.New(t)
+	home := filepath.Join(worktreetest.RealTempDir(t), "Users", "me")
+	gone := f.Worktree("gone")
+	require.NoError(t, os.RemoveAll(gone))
+	orphan := f.Worktree("orphan")
+	require.NoError(t, os.Remove(filepath.Join(f.Repo, ".git", "worktrees", "orphan", "gitdir")))
+	regs := runWorktrees(t, envFor(home, []string{f.Dir}, execx.OS{}))["worktree-registrations"]
+	require.Len(t, regs, 1)
+	require.Equal(t, finding.ActionNone, regs[0].Action)
+	require.Contains(t, regs[0].Warning, "gitdir file does not exist")
+	require.Contains(t, regs[0].Warning, "may still hold work")
+	require.Contains(t, regs[0].Registrations, gone)
+	require.Contains(t, regs[0].Registrations, filepath.Join(f.Repo, ".git", "worktrees", "orphan"))
+	require.DirExists(t, orphan)
+
+	// A folder that lost its .git file but still holds files.
+	f2 := worktreetest.New(t)
+	kept := f2.Worktree("kept")
+	f2.Write(kept, "notes.md", "mine\n")
+	require.NoError(t, os.Remove(filepath.Join(kept, ".git")))
+	regs = runWorktrees(t, envFor(home, []string{f2.Dir}, execx.OS{}))["worktree-registrations"]
+	require.Len(t, regs, 1)
+	require.Equal(t, finding.ActionNone, regs[0].Action)
+	require.Contains(t, regs[0].Warning, kept+" (the folder still exists without its .git file)")
+}
+
 func TestGitWorktreesLookupFailureIsOneWarning(t *testing.T) {
 	f := worktreetest.New(t)
 	home := filepath.Join(worktreetest.RealTempDir(t), "Users", "me")

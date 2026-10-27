@@ -329,3 +329,52 @@ func TestSquashMergedExactly(t *testing.T) {
 		require.Contains(t, strings.Join(s.Reasons, "; "), "commits on no remote")
 	})
 }
+
+// TestClassifyIgnoresInheritedGitEnvironment classifies a dirty worktree
+// while GIT_DIR and GIT_WORK_TREE point at the clean main checkout, as they
+// do inside a git hook: the worktree must still be judged on its own state.
+func TestClassifyIgnoresInheritedGitEnvironment(t *testing.T) {
+	f := worktreetest.New(t)
+	w := f.Worktree("hooked")
+	f.Commit(w, "a.txt", "a\n")
+	f.Push(w, "hooked")
+	f.MergeFF("hooked")
+	f.Write(w, "a.txt", "changed\n")
+	f.Write(w, ".env", "SECRET=1\n")
+	clean := f.Worktree("clean")
+	cleanHead := f.Git(clean, "rev-parse", "HEAD")
+	t.Setenv("GIT_DIR", filepath.Join(f.Repo, ".git"))
+	t.Setenv("GIT_WORK_TREE", f.Repo)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(f.Repo, ".git", "index"))
+	s, err := worktree.Classify(context.Background(), osEnv(), w)
+	require.NoError(t, err)
+	require.Equal(t, 1, s.Modified)
+	require.Equal(t, 1, s.Ignored)
+	require.Equal(t, finding.VerdictAttention, s.Verdict)
+	require.NoError(t, worktree.Recheck(context.Background(), osEnv(), clean, cleanHead), "a clean worktree passes the recheck")
+	require.Error(t, worktree.Recheck(context.Background(), osEnv(), w, s.Head))
+}
+
+// TestClassifyHiddenChanges finds changes that git status cannot see,
+// because the file is marked assume-unchanged or skip-worktree, which git
+// worktree remove would delete without complaint.
+func TestClassifyHiddenChanges(t *testing.T) {
+	for _, flag := range []string{"--assume-unchanged", "--skip-worktree"} {
+		t.Run(flag, func(t *testing.T) {
+			f := worktreetest.New(t)
+			w := f.Worktree("hidden")
+			f.Commit(w, "config.json", "{}\n")
+			f.Push(w, "hidden")
+			f.MergeFF("hidden")
+			f.Write(w, "config.json", `{"token":"local"}`+"\n")
+			f.Git(w, "update-index", flag, "config.json")
+			require.Empty(t, f.Git(w, "status", "--porcelain"), "git status cannot see the change")
+			s, err := worktree.Classify(context.Background(), osEnv(), w)
+			require.NoError(t, err)
+			require.Contains(t, s.Unknown, "hidden")
+			require.Contains(t, s.Problem, "assume-unchanged or skip-worktree")
+			require.Equal(t, finding.VerdictAttention, s.Verdict)
+			require.Error(t, worktree.Recheck(context.Background(), osEnv(), w, s.Head))
+		})
+	}
+}

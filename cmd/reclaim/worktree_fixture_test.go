@@ -34,7 +34,7 @@ type fakeRepo struct {
 // addFakeRepo writes the repository's registrations and its worktrees' .git
 // files and contents, and the answers of every git, ps and gh command the
 // worktree scanners run for them.
-func addFakeRepo(t *testing.T, r fakeRepo, out map[string]string) {
+func addFakeRepo(t *testing.T, r fakeRepo, out, runOut map[string]string) {
 	t.Helper()
 	const def = "refs/remotes/origin/main"
 	git := func(dir, args string) string { return "git -C " + dir + " " + args }
@@ -101,17 +101,20 @@ func addFakeRepo(t *testing.T, r fakeRepo, out map[string]string) {
 			merge := "m" + w.head[1:]
 			out[git(w.path, "diff-tree -p --no-color --full-index "+base+" HEAD")] = "diff of " + w.name
 			out[git(w.path, "diff-tree -r --name-only -z "+base+" HEAD")] = "src/app.ts\x00"
-			out[git(w.path, "rev-list --no-merges "+base+".."+def+" -- src/app.ts")] = merge
+			out[git(w.path, "--literal-pathspecs rev-list --no-merges "+base+".."+def+" -- src/app.ts")] = merge
 			out[git(w.path, "diff-tree -p --no-color --full-index "+merge+"^ "+merge)] = "diff of " + w.name
 		}
 		out[git(w.path, "cherry "+def+" "+squash+" "+base)] = mark + squash
 	}
+	var dryRun strings.Builder
 	for i, path := range r.stale {
 		name := "old" + strconv.Itoa(i)
 		register(name, path)
+		dryRun.WriteString("Removing worktrees/" + name + ": gitdir file points to non-existent location\n")
 		list.WriteString("worktree " + path + "\x00HEAD 1111111111111111111111111111111111111111\x00detached\x00prunable gitdir file points to non-existent location\x00\x00")
 	}
 	out[git(r.path, "worktree list --porcelain -z")] = list.String()
+	runOut[git(r.path, "worktree prune --dry-run --verbose")] = dryRun.String()
 	out[git(r.path, "config --get remote.origin.url")] = r.origin
 	out[git(r.path, "for-each-ref --format=%(refname)%09%(symref) refs/remotes/origin/HEAD refs/remotes/origin/main refs/remotes/origin/master refs/heads/main refs/heads/master")] =
 		"refs/remotes/origin/HEAD\t" + def + "\n" + def + "\t\n"

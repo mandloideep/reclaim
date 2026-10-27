@@ -52,6 +52,9 @@ type Refusal struct {
 	Hints []string
 	// ForceCommand removes the worktree whatever it holds.
 	ForceCommand string
+	// State is the state computed during the proof, nil when the proof
+	// stopped before computing it.
+	State *finding.WorktreeState
 }
 
 // Error implements error.
@@ -79,6 +82,8 @@ type Proof struct {
 	State *finding.WorktreeState
 	// checked is the worktree folder as the path check saw it.
 	checked fs.FileInfo
+	// size is the worktree's size, measured by the path check's walk.
+	size int64
 }
 
 // ProveWorktree runs the first five checks of the proof for a
@@ -93,7 +98,7 @@ func ProveWorktree(ctx context.Context, opts Options, roots []string, a *plan.Ac
 	pr := &Proof{}
 	fail := func(check, detail string) (*Proof, error) {
 		pr.Checks = append(pr.Checks, Check{Name: check, Detail: detail})
-		ref := &Refusal{Path: a.Path, Check: check, Detail: detail}
+		ref := &Refusal{Path: a.Path, Check: check, Detail: detail, State: pr.State}
 		if s := pr.State; s != nil && s.Verdict != finding.VerdictRemovable && s.Verdict != finding.VerdictPushed {
 			ref.Hints, ref.ForceCommand = s.Hints, s.ForceCommand
 		}
@@ -114,11 +119,11 @@ func ProveWorktree(ctx context.Context, opts Options, roots []string, a *plan.Ac
 	pass(CheckLinked, "registered in "+filepath.Join(a.Repo, ".git", "worktrees")+" at "+a.Head)
 
 	// 2. Every RemovePath check that applies to a folder holding a .git file.
-	info, err := checkWorktreePath(ctx, opts, roots, a)
+	info, size, err := checkWorktreePath(ctx, opts, roots, a)
 	if err != nil {
 		return fail(CheckPath, err.Error())
 	}
-	pr.checked = info
+	pr.checked, pr.size = info, size
 	pass(CheckPath, "inside a recorded root, not protected, no symbolic link, not a mount point")
 
 	// 3. The state computed now with the scanner's code.
@@ -192,6 +197,11 @@ func checkLinked(ctx context.Context, env worktree.Env, a *plan.Action) error {
 		return err
 	}
 	for _, e := range entries {
+		if e.Path != a.Path && project.IsWithin(e.Path, a.Path) {
+			return fmt.Errorf("another worktree of %s, %s, lies inside it", a.Repo, e.Path)
+		}
+	}
+	for _, e := range entries {
 		if e.Path != a.Path {
 			if resolved, err := filepath.EvalSymlinks(e.Path); err != nil || resolved != a.Path {
 				continue
@@ -215,16 +225,16 @@ func checkLinked(ctx context.Context, env worktree.Env, a *plan.Action) error {
 // holding it, no symbolic link in it, still a directory, not a mount point,
 // and no other filesystem mounted inside. Unlike RemovePath it expects the
 // .git file that makes the folder a worktree.
-func checkWorktreePath(ctx context.Context, opts Options, roots []string, a *plan.Action) (fs.FileInfo, error) {
+func checkWorktreePath(ctx context.Context, opts Options, roots []string, a *plan.Action) (fs.FileInfo, int64, error) {
 	if err := checkProtected(a.Path, opts.Home, a.Repo, roots); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	info, err := os.Lstat(a.Path)
 	if err != nil {
-		return nil, fmt.Errorf("inspect %s: %w", a.Path, err)
+		return nil, 0, fmt.Errorf("inspect %s: %w", a.Path, err)
 	}
 	if err := checkShape(a, info); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	walker := opts.Walker
 	if walker == nil {
@@ -232,12 +242,12 @@ func checkWorktreePath(ctx context.Context, opts Options, roots []string, a *pla
 	}
 	res, err := walker.Size(ctx, a.Path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if len(res.Mounts) > 0 {
-		return nil, fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, res.Mounts[0])
+		return nil, 0, fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, res.Mounts[0])
 	}
-	return info, nil
+	return info, res.Size, nil
 }
 
 // stateWords summarizes a state that passed the check.
@@ -262,44 +272,49 @@ func (r *runner) removeWorktree(ctx context.Context, p *plan.Plan, a *plan.Actio
 		return o
 	}
 	checks := proof.Checks
-	before, err := r.opts.Walker.Size(ctx, a.Path)
-	if err != nil {
-		return Outcome{Checks: checks, Err: err}
-	}
-	// The last look before git acts: the same folder the checks saw, with no
-	// symbolic link in its path.
-	if resolved, err := filepath.EvalSymlinks(a.Path); err != nil || resolved != a.Path {
-		return Outcome{Checks: checks, Err: fmt.Errorf("refusing %s: the path changed since it was checked", a.Path)}
-	}
-	if now, err := os.Lstat(a.Path); err != nil || !os.SameFile(now, proof.checked) {
-		return Outcome{Checks: checks, Err: fmt.Errorf("refusing %s: it was replaced since it was checked", a.Path)}
-	}
 	if r.opts.Exec == nil {
 		return Outcome{Checks: checks, Err: errors.New("no command runner configured")}
+	}
+	// The last look before git acts, which guards what git itself does
+	// not: the same folder the checks saw, with no symbolic link in its
+	// path, at the same HEAD, and still with nothing uncommitted, ignored
+	// outside artifact folders or hidden from git status.
+	refuse := func(detail string) Outcome {
+		checks = append(checks, Check{Name: CheckRemove, Detail: detail})
+		ref := &Refusal{Path: a.Path, Check: CheckRemove, Detail: detail, State: proof.State}
+		return Outcome{Checks: checks, Err: ref, Refusal: ref}
+	}
+	if resolved, err := filepath.EvalSymlinks(a.Path); err != nil || resolved != a.Path {
+		return refuse("the path changed since it was checked")
+	}
+	if now, err := os.Lstat(a.Path); err != nil || !os.SameFile(now, proof.checked) {
+		return refuse("it was replaced since it was checked")
+	}
+	if err := worktree.Recheck(ctx, worktree.Env{Exec: r.opts.Exec}, a.Path, a.Head); err != nil {
+		return refuse(err.Error())
 	}
 	out, err := r.opts.Exec.Run(ctx, plan.WorktreeRemoveCommand(a.Repo, a.Path))
 	output := truncate(string(out))
 	if err != nil {
 		checks = append(checks, Check{Name: CheckRemove, Detail: firstLineOf(output)})
-		ref := &Refusal{Path: a.Path, Check: CheckRemove, Detail: "git refused: " + firstLineOf(output)}
+		ref := &Refusal{Path: a.Path, Check: CheckRemove, Detail: "git refused: " + firstLineOf(output), State: proof.State}
 		if proof.State != nil {
 			ref.ForceCommand = worktree.ForceCommand(proof.State)
 		}
 		return Outcome{Checks: checks, Output: output, Err: ref, Refusal: ref}
 	}
 	checks = append(checks, Check{Name: CheckRemove, OK: true, Detail: "removed"})
-	freed := before.Size
+	freed := proof.size
 	if _, err := os.Lstat(a.Path); err == nil {
 		after, _ := r.opts.Walker.Size(ctx, a.Path)
-		freed = max(before.Size-after.Size, 0)
+		freed = max(proof.size-after.Size, 0)
 		return Outcome{Checks: checks, Output: output, Freed: freed,
 			Err: fmt.Errorf("git worktree remove reported success, but %s is still there", a.Path)}
 	}
-	note, err := r.pruneAfterRemove(ctx, a)
-	if note != "" {
+	if note := r.afterRemove(ctx, a); note != "" {
 		output = strings.TrimSpace(output + "\n" + note)
 	}
-	return Outcome{Checks: checks, Output: output, Freed: freed, Err: err}
+	return Outcome{Checks: checks, Output: output, Freed: freed}
 }
 
 // goneWorktree reports a worktree whose folder is gone. Its registration may
@@ -308,34 +323,33 @@ func goneWorktree(a *plan.Action) Outcome {
 	return Outcome{Err: errGone, Checks: []Check{{Name: CheckLinked, Detail: a.Path + " no longer exists"}}}
 }
 
-// pruneAfterRemove runs git worktree prune after a removal, as DESIGN.md
-// says, but only when git would prune nothing but the removed worktree's
-// registration, so registrations of other folders, such as one on a drive
-// that is not mounted, are never pruned on the side.
-func (r *runner) pruneAfterRemove(ctx context.Context, a *plan.Action) (string, error) {
-	entries, err := worktree.List(ctx, worktree.Env{Exec: r.opts.Exec}, a.Repo)
-	if err != nil {
-		return "", err
+// afterRemove looks, after a removal, at what git worktree prune would
+// still remove, with a dry run. git worktree remove deletes the worktree's
+// own registration, so there is normally nothing; registrations of other
+// folders, such as a worktree on a drive that is not mounted, are not this
+// plan's to prune, so apply never runs the prune here and only notes them.
+// What it finds is a note for the log, never a failure: the worktree is gone.
+func (r *runner) afterRemove(ctx context.Context, a *plan.Action) string {
+	cands, err := worktree.PruneCandidates(ctx, worktree.Env{Exec: r.opts.Exec}, a.Repo)
+	switch {
+	case err != nil:
+		return "could not check for stale registrations: " + err.Error()
+	case len(cands) == 0:
+		return ""
 	}
-	var others []string
-	for _, e := range entries {
-		if e.Prunable && e.Path != a.Path {
-			others = append(others, e.Path)
-		}
+	names := make([]string, 0, len(cands))
+	for _, c := range cands {
+		names = append(names, c.Path)
 	}
-	if len(others) > 0 {
-		return fmt.Sprintf("git worktree prune skipped: %d other stale registrations, which this plan does not cover", len(others)), nil
-	}
-	out, err := r.opts.Exec.Run(ctx, plan.WorktreePruneCommand(a.Repo))
-	if err != nil {
-		return truncate(string(out)), err
-	}
-	return "", nil
+	return fmt.Sprintf("git worktree prune not run: it would remove %d other registrations, which this plan does not cover: %s",
+		len(cands), strings.Join(names, ", "))
 }
 
 // pruneWorktrees removes stale registrations of a repository with git
-// worktree prune, refusing when git would prune any registration the plan
-// does not list.
+// worktree prune. It asks git first, with a dry run, what the prune would
+// remove, and refuses unless every one of them is in the plan and names a
+// folder that is gone, so a registration whose folder still holds work is
+// never orphaned.
 func (r *runner) pruneWorktrees(ctx context.Context, a *plan.Action) Outcome {
 	info, err := os.Lstat(filepath.Join(a.Repo, ".git"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -350,22 +364,19 @@ func (r *runner) pruneWorktrees(ctx context.Context, a *plan.Action) Outcome {
 	if r.opts.Exec == nil {
 		return Outcome{Err: errors.New("no command runner configured")}
 	}
-	entries, err := worktree.List(ctx, worktree.Env{Exec: r.opts.Exec}, a.Repo)
+	cands, err := worktree.PruneCandidates(ctx, worktree.Env{Exec: r.opts.Exec}, a.Repo)
 	if err != nil {
 		return Outcome{Err: err}
 	}
-	var stale []string
-	for _, e := range entries {
-		if !e.Main && e.Prunable {
-			stale = append(stale, e.Path)
-		}
-	}
-	if len(stale) == 0 {
+	if len(cands) == 0 {
 		return Outcome{Err: errGone}
 	}
-	for _, s := range stale {
-		if !slices.Contains(a.Registrations, s) {
-			return Outcome{Err: fmt.Errorf("refusing to prune %s: git would also prune the registration of %s, which the plan does not list; scan again", a.Repo, s)}
+	for _, c := range cands {
+		switch {
+		case !slices.Contains(a.Registrations, c.Path):
+			return Outcome{Err: fmt.Errorf("refusing to prune %s: git would also prune the registration of %s, which the plan does not list; scan again", a.Repo, c.Path)}
+		case !c.Gone:
+			return Outcome{Err: fmt.Errorf("refusing to prune %s: git would prune the registration of %s (%s), whose folder may still hold work", a.Repo, c.Path, c.Reason)}
 		}
 	}
 	out, err := r.opts.Exec.Run(ctx, plan.WorktreePruneCommand(a.Repo))

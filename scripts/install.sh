@@ -24,7 +24,16 @@ fail() {
 }
 
 usage() {
-	sed -n '2,15p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//'
+	cat <<'USAGE'
+Install reclaim from a GitHub release, without sudo.
+
+Usage: install.sh [--version TAG] [--bin-dir DIR] [--base-url URL]
+
+  --version TAG   install this release, such as v0.2.0, instead of the latest
+  --bin-dir DIR   install into DIR instead of ~/.local/bin
+  --base-url URL  download the archives and checksums.txt from URL, such as
+                  file:///path/to/dist for a local snapshot build
+USAGE
 }
 
 while [ $# -gt 0 ]; do
@@ -128,9 +137,14 @@ trap 'exit 130' INT TERM
 fetch "${base_url}/checksums.txt" "${tmp}/checksums.txt"
 # The archive is named reclaim_<version>_<os>_<arch>.tar.gz; checksums.txt
 # lists every archive of the release, so it names the one to download.
-archive="$(sed -n "s/^[0-9a-f]\{64\}  *\(reclaim_[^ ]*_${os}_${arch}\.tar\.gz\)\$/\1/p" "${tmp}/checksums.txt" | head -n 1)"
+# The name may hold only letters, digits, dots, dashes and underscores, so it
+# can never name a path outside the temporary folder.
+archive="$(awk -v suffix="_${os}_${arch}.tar.gz" '
+	length($1) == 64 && $1 ~ /^[0-9a-f]+$/ && $2 ~ /^reclaim_[A-Za-z0-9._-]+$/ &&
+	substr($2, length($2) - length(suffix) + 1) == suffix { print $2; exit }
+' "${tmp}/checksums.txt")"
 [ -n "$archive" ] || fail "${base_url}/checksums.txt lists no archive for ${os}/${arch}"
-want="$(sed -n "s/^\([0-9a-f]\{64\}\)  *${archive}\$/\1/p" "${tmp}/checksums.txt" | head -n 1)"
+want="$(awk -v name="$archive" '$2 == name { print $1; exit }' "${tmp}/checksums.txt")"
 
 printf 'Downloading %s\n' "${base_url}/${archive}"
 fetch "${base_url}/${archive}" "${tmp}/${archive}"
@@ -151,6 +165,7 @@ printf 'into %s\n' "${bin_dir}/reclaim"
 
 case ":${PATH}:" in
 *":${bin_dir}:"*) ;;
+# shellcheck disable=SC2016 # $PATH is printed for the user's profile, not expanded
 *) printf '\n%s is not on your PATH; add it in your shell profile:\n  export PATH="%s:$PATH"\n' "$bin_dir" "$bin_dir" ;;
 esac
 

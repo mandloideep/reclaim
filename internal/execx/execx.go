@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -56,6 +57,58 @@ func quietEnv() []string {
 	}
 }
 
+// ExitError is a command that ran and exited with a status other than zero,
+// such as git merge-base exiting 1 when two histories share no commit. Other
+// failures, such as a timeout or a tool that could not start, are not
+// ExitErrors.
+type ExitError struct {
+	// Code is the exit status.
+	Code int
+	// Stderr is the first line the command wrote to standard error.
+	Stderr string
+}
+
+// Error implements error.
+func (e *ExitError) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
+
+// ExitCode returns the exit status of a command that ran and failed, and
+// false for any other error.
+func ExitCode(err error) (int, bool) {
+	var ee *ExitError
+	if errors.As(err, &ee) {
+		return ee.Code, true
+	}
+	return 0, false
+}
+
+// repositoryEnv are the variables that point git at another repository,
+// work tree, index or configuration than the one -C names. They are set
+// inside git hooks and commands such as git rebase -x and git submodule
+// foreach, and inherited they would make git describe the wrong worktree, so
+// no command reclaim runs sees them.
+func repositoryEnv() []string {
+	return []string{
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_CONFIG_PARAMETERS",
+		"GIT_CONFIG_COUNT", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_REPLACE_REF_BASE",
+		"GIT_NO_REPLACE_OBJECTS", "GIT_SHALLOW_FILE", "GIT_QUARANTINE_PATH",
+	}
+}
+
+// Environ returns env without the variables that point git elsewhere,
+// including the numbered GIT_CONFIG_KEY_ and GIT_CONFIG_VALUE_ pairs.
+func Environ(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		if slices.Contains(repositoryEnv(), key) || strings.HasPrefix(key, "GIT_CONFIG_KEY_") || strings.HasPrefix(key, "GIT_CONFIG_VALUE_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // LookPath implements Runner.
 func (o OS) LookPath(name string) (string, error) {
 	p, err := exec.LookPath(name)
@@ -79,13 +132,17 @@ func (o OS) Output(ctx context.Context, name string, args ...string) (string, er
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Dir = o.dir()
-	cmd.Env = append(os.Environ(), quietEnv()...)
+	cmd.Env = append(Environ(os.Environ()), quietEnv()...)
 	// A tool that leaves a child holding stdout open must not outlive the
 	// timeout.
 	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ctx.Err() == nil {
+			err = &ExitError{Code: ee.ExitCode(), Stderr: firstLine(stderr.String())}
+		}
 		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, firstLine(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
@@ -103,7 +160,7 @@ func (o OS) Run(ctx context.Context, argv []string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, path, argv[1:]...)
 	cmd.Dir = o.dir()
 	cmd.WaitDelay = 5 * time.Second
-	cmd.Env = append(os.Environ(), "COREPACK_ENABLE_DOWNLOAD_PROMPT=0", "HOMEBREW_NO_AUTO_UPDATE=1")
+	cmd.Env = append(Environ(os.Environ()), "COREPACK_ENABLE_DOWNLOAD_PROMPT=0", "HOMEBREW_NO_AUTO_UPDATE=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("%s: %w", strings.Join(argv, " "), err)

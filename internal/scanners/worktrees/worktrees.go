@@ -294,8 +294,12 @@ func toFinding(ctx context.Context, env *scan.Env, s *finding.WorktreeState) (fi
 			env.Diag.Warn(s.Path, "could not measure: "+err.Error())
 		}
 		f.Size = size
-		if info, err := os.Stat(filepath.Join(s.Repo, ".git", "worktrees", filepath.Base(s.Path), "index")); err == nil {
-			f.LastUsed = info.ModTime()
+		// git names a registration after the folder, with a number added
+		// when the name is taken, so the .git file says which one it is.
+		if loc, err := worktree.Locate(s.Path); err == nil {
+			if info, err := os.Stat(filepath.Join(loc.GitDir, "index")); err == nil {
+				f.LastUsed = info.ModTime()
+			}
 		}
 	}
 	switch {
@@ -369,76 +373,89 @@ func pushedWords(s *finding.WorktreeState) string {
 	}
 }
 
-// scanRegistrations reports, per repository, the registrations of linked
-// worktrees whose folders are gone, as one GitWorktreePrune finding.
+// scanRegistrations reports, per repository, the registrations that git
+// worktree prune would remove, as one GitWorktreePrune finding, asking git
+// with a dry run. It offers them only when every one names a folder that is
+// gone; otherwise a prune could orphan a folder that still holds work, so
+// the registrations are listed for attention.
 func scanRegistrations(ctx context.Context, env *scan.Env) ([]finding.Finding, error) {
 	paths, err := repos(ctx, env)
 	if err != nil {
 		return nil, err
 	}
-	if !slices.ContainsFunc(paths, hasLinked) || noGit(env, true) {
+	paths = slices.DeleteFunc(paths, func(r string) bool { return !hasLinked(r) })
+	if len(paths) == 0 || noGit(env, true) {
 		return nil, nil
 	}
+	cands := make([][]worktree.PruneCandidate, len(paths))
+	parallel(ctx, len(paths), func(i int) {
+		c, err := worktree.PruneCandidates(ctx, wenv(env), paths[i])
+		if err != nil {
+			env.Diag.Warn(paths[i], err.Error())
+			return
+		}
+		cands[i] = c
+	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var out []finding.Finding
-	for _, r := range openRepos(ctx, env, paths) {
-		stale := r.Stale()
-		if len(stale) == 0 {
+	for i, repo := range paths {
+		if len(cands[i]) == 0 {
 			continue
 		}
-		regs := make([]string, 0, len(stale))
-		for _, e := range stale {
-			regs = append(regs, e.Path)
-		}
-		size, err := registrationSize(ctx, env, r.Path, regs)
+		f, err := registrationsFinding(ctx, env, repo, cands[i])
 		if err != nil {
 			return nil, err
 		}
-		target := plan.WorktreePruneTarget(r.Path)
-		n := len(regs)
-		name := "1 stale worktree registration"
-		if n != 1 {
-			name = fmt.Sprintf("%d stale worktree registrations", n)
-		}
-		out = append(out, finding.Finding{
-			Tier:          finding.TierA,
-			Target:        target,
-			Name:          name,
-			Size:          size,
-			Project:       r.Path,
-			Repo:          r.Path,
-			Registrations: regs,
-			Action:        finding.ActionGitWorktreePrune,
-			Command:       plan.WorktreePruneCommand(r.Path),
-			Restore:       "nothing to restore: the folders are gone, and git worktree add can use their paths again",
-		})
+		out = append(out, f)
 	}
 	return out, nil
 }
 
-// registrationSize measures the registrations under .git/worktrees whose
-// gitdir file points into one of the stale folders.
-func registrationSize(ctx context.Context, env *scan.Env, repo string, stale []string) (int64, error) {
-	dir := filepath.Join(repo, ".git", "worktrees")
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0, nil //nolint:nilerr // an unreadable folder adds nothing to the size
-	}
-	var total int64
-	for _, e := range entries {
-		data, err := os.ReadFile(filepath.Join(dir, e.Name(), "gitdir"))
-		if err != nil {
-			continue
-		}
-		if !slices.Contains(stale, filepath.Dir(strings.TrimSpace(string(data)))) {
-			continue
-		}
-		n, err := env.Size(ctx, filepath.Join(dir, e.Name()))
+// registrationsFinding turns the prune candidates of one repository into a
+// finding.
+func registrationsFinding(ctx context.Context, env *scan.Env, repo string, cands []worktree.PruneCandidate) (finding.Finding, error) {
+	regs := make([]string, 0, len(cands))
+	var size int64
+	var unsafe []string
+	for _, c := range cands {
+		regs = append(regs, c.Path)
+		n, err := env.Size(ctx, filepath.Join(repo, ".git", "worktrees", c.Name))
 		if err != nil && ctx.Err() != nil {
-			return 0, ctx.Err()
+			return finding.Finding{}, ctx.Err()
 		}
-		total += n
+		size += n
+		if !c.Gone {
+			why := c.Reason
+			if _, err := os.Lstat(c.Path); err == nil && c.Path != filepath.Join(repo, ".git", "worktrees", c.Name) {
+				why = "the folder still exists without its .git file"
+			}
+			unsafe = append(unsafe, c.Path+" ("+why+")")
+		}
 	}
-	return total, nil
+	name := "1 stale worktree registration"
+	if len(regs) != 1 {
+		name = fmt.Sprintf("%d stale worktree registrations", len(regs))
+	}
+	f := finding.Finding{
+		Tier:          finding.TierA,
+		Target:        plan.WorktreePruneTarget(repo),
+		Name:          name,
+		Size:          size,
+		Project:       repo,
+		Repo:          repo,
+		Registrations: regs,
+		Action:        finding.ActionGitWorktreePrune,
+		Command:       plan.WorktreePruneCommand(repo),
+		Restore:       "nothing to restore: the folders are gone, and git worktree add can use their paths again",
+	}
+	if len(unsafe) > 0 {
+		f.Command, f.Restore = nil, ""
+		attention(&f, "git worktree prune would remove the registrations of "+strings.Join(unsafe, ", ")+
+			"; those folders may still hold work, so check them, then remove them or run git worktree repair, before pruning")
+	}
+	return f, nil
 }
 
 // scanCodexWorktrees reports each repository in each Codex task folder as a
