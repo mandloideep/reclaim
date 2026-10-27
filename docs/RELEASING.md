@@ -8,7 +8,8 @@ Nobody builds or uploads anything by hand.
 
 The release job pushes `Formula/reclaim.rb` to [mandloideep/homebrew-tap](https://github.com/mandloideep/homebrew-tap).
 The workflow's own `GITHUB_TOKEN` can only write to this repository, so the job needs a second token, read from the repository secret `HOMEBREW_TAP_GITHUB_TOKEN`.
-Without it the release job stops before it publishes anything.
+Without it the job still publishes the GitHub release with the archives and checksums, prints a warning, and skips the formula, so `go install` and the release archives work and `brew install` does not.
+The formula is not published for an old tag later; the first release tagged after the secret exists is the first one in the tap.
 
 1. Open GitHub, Settings, Developer settings, Personal access tokens, Fine-grained tokens, and choose Generate new token.
 2. Resource owner: `mandloideep`.
@@ -44,8 +45,8 @@ A tag with a suffix, such as `v0.2.0-rc.1`, is published as a prerelease and doe
 
 1. It runs the CI workflow, `.github/workflows/ci.yml`, with every job: build, vet and race tests on macOS and Linux, lint, and the Docker integration test.
 Nothing is published unless they all pass.
-2. It checks that the tag points at a commit on `main` and that `HOMEBREW_TAP_GITHUB_TOKEN` is set.
-3. It runs GoReleaser, `go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --clean`, with the newest stable Go.
+2. It checks that the tag points at a commit on `main`, and whether `HOMEBREW_TAP_GITHUB_TOKEN` is set.
+3. It runs GoReleaser, `go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --clean`, with the newest stable Go, adding `--skip=homebrew` when the secret is missing.
 The job has `contents: write` on this repository and no other permission.
 
 GoReleaser reads `.goreleaser.yaml` and:

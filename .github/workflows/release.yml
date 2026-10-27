@@ -1,7 +1,8 @@
 # Publishes a release when a tag such as v0.1.0 is pushed: the CI jobs run
 # first, then GoReleaser builds the archives, creates the GitHub release with
 # notes from the commit subjects and updates the formula in
-# mandloideep/homebrew-tap. docs/RELEASING.md has the details.
+# mandloideep/homebrew-tap when the tap token is set. docs/RELEASING.md has
+# the details.
 name: release
 on:
   push:
@@ -34,16 +35,19 @@ jobs:
           # GoReleaser; CI tests the version go.mod names.
           go-version: stable
           check-latest: true
-      - name: Check the tap token
+      - name: Decide whether the formula can be published
+        id: tap
         env:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
           if [ -z "$HOMEBREW_TAP_GITHUB_TOKEN" ]; then
-            echo "::error::The HOMEBREW_TAP_GITHUB_TOKEN secret is missing; see docs/RELEASING.md."
-            exit 1
+            echo "::warning::The HOMEBREW_TAP_GITHUB_TOKEN secret is missing, so the Homebrew formula is not published; see docs/RELEASING.md."
+            echo "skip=--skip=homebrew" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=" >> "$GITHUB_OUTPUT"
           fi
       - name: GoReleaser
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-        run: go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --clean
+        run: go run github.com/goreleaser/goreleaser/v2@v2.18.2 release --clean ${{ steps.tap.outputs.skip }}
