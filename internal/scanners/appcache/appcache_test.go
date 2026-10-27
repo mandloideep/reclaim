@@ -620,47 +620,6 @@ func scannerNamed(t *testing.T, name string) *Scanner {
 	return nil
 }
 
-func TestCodexWorktrees(t *testing.T) {
-	home := fakeHome(t)
-	w := filepath.Join(home, ".codex", "worktrees")
-	for _, task := range []string{"clean", "dirty", "broken", "detached"} {
-		put(t, filepath.Join(w, task, "repo", ".git"), 40)
-		put(t, filepath.Join(w, task, "repo", "main.go"), 1000)
-	}
-	put(t, filepath.Join(w, "empty-leftover", "notes.txt"), 300)
-	fake := &execx.Fake{
-		Tools: map[string]string{"git": "/usr/bin/git"},
-		Outputs: map[string]string{
-			"git -C " + filepath.Join(w, "clean", "repo") + " status --porcelain":                                      "",
-			"git -C " + filepath.Join(w, "clean", "repo") + " rev-list -n 1 HEAD --not --branches --remotes --tags":    "",
-			"git -C " + filepath.Join(w, "dirty", "repo") + " status --porcelain":                                      " M main.go",
-			"git -C " + filepath.Join(w, "detached", "repo") + " status --porcelain":                                   "",
-			"git -C " + filepath.Join(w, "detached", "repo") + " rev-list -n 1 HEAD --not --branches --remotes --tags": "abc123",
-		},
-	}
-	got := run(t, testEnv(home, "darwin", fake))["codex-worktrees"]
-	tiers := map[string]finding.Tier{}
-	warnings := map[string]string{}
-	for _, f := range got {
-		tiers[filepath.Base(f.Path)] = f.Tier
-		warnings[filepath.Base(f.Path)] = f.Warning
-	}
-	require.Equal(t, map[string]finding.Tier{
-		"clean": finding.TierB, "dirty": finding.TierC, "broken": finding.TierC, "detached": finding.TierC, "empty-leftover": finding.TierB,
-	}, tiers)
-	require.Contains(t, warnings["detached"], "commits that no branch")
-	require.Contains(t, warnings["dirty"], "repo has uncommitted changes")
-	require.Contains(t, warnings["broken"], "could not report")
-	require.Contains(t, warnings["clean"], "git worktree prune")
-
-	noGit := run(t, testEnv(home, "darwin", &execx.Fake{}))["codex-worktrees"]
-	for _, f := range noGit {
-		if filepath.Base(f.Path) != "empty-leftover" {
-			require.Equal(t, finding.TierC, f.Tier, "without git nothing can be checked")
-		}
-	}
-}
-
 func TestCodexSessions(t *testing.T) {
 	home := fakeHome(t)
 	s := filepath.Join(home, ".codex", "sessions")
@@ -731,11 +690,10 @@ func TestApplyRemovesOnlyAppCacheTargets(t *testing.T) {
 	put(t, filepath.Join(home, ".codex", "sessions", "2026", "07", "01", "a.jsonl"), 800)
 	put(t, filepath.Join(home, ".codex", "config.toml"), 10)
 	ageTree(t, filepath.Join(home, ".codex", "sessions"), 60*24*time.Hour)
-	w := filepath.Join(home, ".codex", "worktrees")
-	put(t, filepath.Join(w, "clean", "repo", ".git"), 40)
-	put(t, filepath.Join(w, "clean", "repo", "main.go"), 1000)
-	put(t, filepath.Join(w, "dirty", "repo", ".git"), 40)
-	put(t, filepath.Join(w, "dirty", "repo", "main.go"), 1000)
+	put(t, filepath.Join(home, ".codex", ".tmp", "plugins-backup-AbC", "plugin.js"), 700)
+	put(t, filepath.Join(home, ".codex", ".tmp", "plugins", "plugin.js"), 700)
+	session(t, filepath.Join(home, ".claude", "projects", "-gone"), filepath.Join(home, "Code", "gone"), 60)
+	session(t, filepath.Join(home, ".claude", "projects", "-here"), home, 60)
 	support := filepath.Join(home, "Library", "Application Support", "Claude")
 	put(t, filepath.Join(support, "vm_bundles", "claudevm.bundle", "rootfs.img"), 5000)
 	put(t, filepath.Join(support, "config.json"), 10)
@@ -748,11 +706,8 @@ func TestApplyRemovesOnlyAppCacheTargets(t *testing.T) {
 	list := `{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-16-4":[{"udid":"` + gone + `","name":"iPhone 14","isAvailable":false}],` +
 		`"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid":"` + ok + `","name":"iPhone 16","isAvailable":true}]}}`
 	fake := &execx.Fake{
-		Tools: map[string]string{"git": "/usr/bin/git", "xcrun": "/usr/bin/xcrun"},
+		Tools: map[string]string{"xcrun": "/usr/bin/xcrun"},
 		Outputs: map[string]string{
-			"git -C " + filepath.Join(w, "clean", "repo") + " status --porcelain":                                   "",
-			"git -C " + filepath.Join(w, "clean", "repo") + " rev-list -n 1 HEAD --not --branches --remotes --tags": "",
-			"git -C " + filepath.Join(w, "dirty", "repo") + " status --porcelain":                                   " M main.go",
 			"xcrun simctl list -j devices": list,
 		},
 		// xcrun simctl delete removes the device's folder, as CoreSimulator does.
@@ -783,8 +738,8 @@ func TestApplyRemovesOnlyAppCacheTargets(t *testing.T) {
 		"Library/Caches/ms-playwright":                                  finding.TierC,
 		"Library/Developer/Xcode/DerivedData/App-abc":                   finding.TierA,
 		".codex/sessions/2026/07":                                       finding.TierB,
-		".codex/worktrees/clean":                                        finding.TierB,
-		".codex/worktrees/dirty":                                        finding.TierC,
+		".codex/.tmp/plugins-backup-AbC":                                finding.TierA,
+		".claude/projects/-gone":                                        finding.TierB,
 		"Library/Application Support/Claude/vm_bundles/claudevm.bundle": finding.TierB,
 		"Library/Developer/CoreSimulator/Devices/" + gone:               finding.TierB,
 	}, tiers)
@@ -810,7 +765,66 @@ func TestApplyRemovesOnlyAppCacheTargets(t *testing.T) {
 	require.DirExists(t, filepath.Join(c, "Google.bak"))
 	require.DirExists(t, filepath.Join(devices, ok))
 	require.FileExists(t, filepath.Join(support, "config.json"))
+	require.FileExists(t, filepath.Join(home, ".codex", ".tmp", "plugins", "plugin.js"))
+	require.DirExists(t, filepath.Join(home, ".claude", "projects", "-here"))
 	require.Equal(t, [][]string{{"xcrun", "simctl", "delete", gone}}, fake.Ran())
+}
+
+// session writes a Claude Code session folder whose files record cwd on
+// their third line, as Claude Code does, aged by days.
+func session(t *testing.T, dir, cwd string, days int) {
+	t.Helper()
+	lines := `{"type":"queue-operation"}` + "\n" + `{"type":"mode"}` + "\n" +
+		`{"type":"user","cwd":"` + cwd + `","message":"hi"}` + "\n"
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "5a72fa07.jsonl"), []byte(lines), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "5a72fa07", "subagents"), 0o755))
+	ageTree(t, dir, time.Duration(days)*24*time.Hour)
+}
+
+func TestClaudeSessions(t *testing.T) {
+	home := fakeHome(t)
+	projects := filepath.Join(home, ".claude", "projects")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "Code", "alive"), 0o755))
+	session(t, filepath.Join(projects, "-old-gone"), filepath.Join(home, "Code", "old-gone"), 45)
+	session(t, filepath.Join(projects, "-recent-gone"), filepath.Join(home, "Code", "recent-gone"), 5)
+	session(t, filepath.Join(projects, "-alive"), filepath.Join(home, "Code", "alive"), 90)
+	// A folder whose name decodes to a path that is gone, but whose files
+	// record one that exists, is kept: the name is not trusted.
+	session(t, filepath.Join(projects, "-Users-x-dashed-name"), filepath.Join(home, "Code", "alive"), 90)
+	// No cwd anywhere: nothing can be said about it.
+	require.NoError(t, os.MkdirAll(filepath.Join(projects, "-nothing"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projects, "-nothing", "a.jsonl"), []byte("{}\nnot json\n"), 0o600))
+	ageTree(t, filepath.Join(projects, "-nothing"), 90*24*time.Hour)
+
+	got := run(t, testEnv(home, "linux", nil))["claude-sessions"]
+	require.Equal(t, []string{filepath.Join(projects, "-old-gone")}, paths(got))
+	require.Equal(t, finding.TierB, got[0].Tier)
+	require.Contains(t, got[0].Warning, "cannot resume")
+
+	// CLAUDE_CONFIG_DIR moves the folder.
+	other := filepath.Join(home, "elsewhere")
+	session(t, filepath.Join(other, "projects", "-moved"), filepath.Join(home, "Code", "moved"), 45)
+	env := testEnv(home, "linux", nil)
+	env.Getenv = func(k string) string {
+		if k == "CLAUDE_CONFIG_DIR" {
+			return other
+		}
+		return ""
+	}
+	got = run(t, env)["claude-sessions"]
+	require.Equal(t, []string{filepath.Join(other, "projects", "-moved")}, paths(got))
+}
+
+func TestCodexPluginBackups(t *testing.T) {
+	home := fakeHome(t)
+	tmp := filepath.Join(home, ".codex", ".tmp")
+	put(t, filepath.Join(tmp, "plugins-backup-iBALYk", "a.js"), 900)
+	put(t, filepath.Join(tmp, "plugins", "a.js"), 900)
+	put(t, filepath.Join(tmp, "plugins.sha"), 40)
+	got := run(t, testEnv(home, "darwin", nil))["codex-plugin-backups"]
+	require.Equal(t, []string{filepath.Join(tmp, "plugins-backup-iBALYk")}, paths(got))
+	require.Equal(t, finding.TierA, got[0].Tier)
 }
 
 func tree(t *testing.T, root string) []string {

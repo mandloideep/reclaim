@@ -19,6 +19,9 @@ stale = "60d"
 
 [scanners]
 disable = ["ollama", "docker", "ollama"]
+
+[worktrees]
+github = false
 `, home)
 	require.NoError(t, err)
 	require.Equal(t, []string{"/Users/me/Code", "/Users/me/Downloads", "/Volumes/work/src"}, cfg.Roots)
@@ -27,9 +30,14 @@ disable = ["ollama", "docker", "ollama"]
 	require.True(t, cfg.HasMinSize)
 	require.Equal(t, 60*24*time.Hour, cfg.Stale)
 	require.Equal(t, []string{"ollama", "docker"}, cfg.Disable)
+	require.False(t, cfg.GitHub())
 
 	empty, err := Parse("", home)
 	require.NoError(t, err)
+	require.True(t, empty.GitHub(), "the GitHub lookup is on by default")
+	on, err := Parse("[worktrees]\ngithub = true\n", home)
+	require.NoError(t, err)
+	require.True(t, on.GitHub())
 	require.False(t, empty.HasMinSize)
 	require.Empty(t, empty.Roots)
 	require.Zero(t, empty.Stale)
@@ -50,6 +58,8 @@ func TestParseErrors(t *testing.T) {
 		{name: "relative exclude", text: `exclude = ["./x"]`, wantErr: "exclude"},
 		{name: "wrong type", text: `roots = "~/Code"`, wantErr: "roots"},
 		{name: "not toml", text: `roots = [`, wantErr: "expected"},
+		{name: "unknown worktrees key", text: "[worktrees]\ngh = false", wantErr: `unknown key "worktrees.gh"`},
+		{name: "github not a bool", text: "[worktrees]\ngithub = \"no\"", wantErr: "github"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

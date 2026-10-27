@@ -244,6 +244,50 @@ func TestFilter(t *testing.T) {
 	}
 }
 
+// TestFilterKeepsFoldersEmptiedByTheirFindings keeps a task folder that is
+// removed once empty while a finding inside it is kept, whatever its size,
+// and drops it when everything inside was filtered out.
+func TestFilterKeepsFoldersEmptiedByTheirFindings(t *testing.T) {
+	fs := []finding.Finding{
+		{ID: "task-a", Path: "/h/.codex/worktrees/a", Kind: finding.KindEmptyDir, Size: 0},
+		{ID: "repo-a", Path: "/h/.codex/worktrees/a/repo", Kind: finding.KindDir, Size: 500},
+		{ID: "task-b", Path: "/h/.codex/worktrees/b", Kind: finding.KindEmptyDir, Size: 0},
+		{ID: "repo-b", Path: "/h/.codex/worktrees/b/repo", Kind: finding.KindDir, Size: 5},
+	}
+	var got []string
+	for _, f := range (Filter{MinSize: 10}).Apply(fs) {
+		got = append(got, f.ID)
+	}
+	require.Equal(t, []string{"task-a", "repo-a"}, got)
+}
+
+func TestUnderRoots(t *testing.T) {
+	all := []Scanner{
+		&fakeScanner{name: "node_modules", category: finding.CategoryProject},
+		rootBased{&fakeScanner{name: "git-worktrees", category: finding.CategoryWorktree}},
+		&fakeScanner{name: "codex-worktrees", category: finding.CategoryWorktree},
+		&fakeScanner{name: "npm", category: finding.CategoryPackageCache},
+	}
+	var got []string
+	for _, s := range UnderRoots(all) {
+		got = append(got, s.Name())
+	}
+	require.Equal(t, []string{"node_modules", "git-worktrees"}, got)
+	env := Env{Home: "/home/u", Getenv: func(k string) string {
+		if k == "CODEX_HOME" {
+			return "/opt/codex"
+		}
+		return ""
+	}}
+	require.Equal(t, "/opt/codex", env.CodexHome())
+	env.Getenv = nil
+	require.Equal(t, "/home/u/.codex", env.CodexHome())
+}
+
+type rootBased struct{ *fakeScanner }
+
+func (rootBased) RootBased() bool { return true }
+
 func TestEnvHelpers(t *testing.T) {
 	env := Env{Home: "/home/u", GOOS: "linux", Getenv: func(k string) string {
 		if k == "XDG_CACHE_HOME" {

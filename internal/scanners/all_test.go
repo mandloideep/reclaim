@@ -23,7 +23,8 @@ func TestRegistry(t *testing.T) {
 	require.Equal(t, 21, counts[finding.CategoryProject])
 	require.Equal(t, 18, counts[finding.CategoryPackageCache])
 	require.Equal(t, 1, counts[finding.CategoryDocker])
-	require.Equal(t, 11, counts[finding.CategoryAppCache])
+	require.Equal(t, 3, counts[finding.CategoryWorktree])
+	require.Equal(t, 12, counts[finding.CategoryAppCache])
 	require.Equal(t, 3, counts[finding.CategoryDownloads])
 	for c := range counts {
 		require.Contains(t, finding.Categories(), c)
