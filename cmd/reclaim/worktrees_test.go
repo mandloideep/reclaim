@@ -234,3 +234,20 @@ func TestSkillCommand(t *testing.T) {
 		require.Contains(t, string(agents), s, "docs/AGENTS.md holds the same instructions")
 	}
 }
+
+// TestSelectProvesWorktrees leaves a worktree out of the plan when it fails
+// the proof between the report and the plan, here because it was modified.
+func TestSelectProvesWorktrees(t *testing.T) {
+	a, f, w := worktreeApp(t)
+	withOutput(a)
+	require.NoError(t, execute(a, "worktrees", f.Dir))
+	f.Write(w["merged"], "late.txt", "written after the report\n")
+	planPath := filepath.Join(t.TempDir(), "plan.json")
+	withOutput(a)
+	require.NoError(t, execute(a, "select", "--preset", "aggressive", "--out", planPath))
+	require.Contains(t, output(a), "Left out of the plan: refusing to remove the worktree "+w["merged"])
+	data, err := os.ReadFile(planPath)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), w["merged"])
+	require.Contains(t, string(data), w["pushed"])
+}
