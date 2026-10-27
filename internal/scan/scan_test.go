@@ -254,7 +254,7 @@ func TestFilterKeepsFoldersEmptiedByTheirFindings(t *testing.T) {
 		{ID: "task-b", Path: "/h/.codex/worktrees/b", Kind: finding.KindEmptyDir, Size: 0},
 		{ID: "repo-b", Path: "/h/.codex/worktrees/b/repo", Kind: finding.KindDir, Size: 5},
 	}
-	var got []string
+	got := make([]string, 0, len(fs))
 	for _, f := range (Filter{MinSize: 10}).Apply(fs) {
 		got = append(got, f.ID)
 	}
@@ -268,7 +268,7 @@ func TestUnderRoots(t *testing.T) {
 		&fakeScanner{name: "codex-worktrees", category: finding.CategoryWorktree},
 		&fakeScanner{name: "npm", category: finding.CategoryPackageCache},
 	}
-	var got []string
+	got := make([]string, 0, len(all))
 	for _, s := range UnderRoots(all) {
 		got = append(got, s.Name())
 	}

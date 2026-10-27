@@ -237,7 +237,7 @@ func TestApplyWorktreeRefusals(t *testing.T) {
 				o.Getwd = func() (string, error) { return filepath.Join(s.path, "sub"), nil }
 			}},
 		{name: "outside the recorded roots", check: CheckPath, detail: "outside the roots",
-			opts: func(o *Options, s *setup) {}, change: func(t *testing.T, s *setup) {}},
+			opts: func(*Options, *setup) {}, change: func(*testing.T, *setup) {}},
 		{name: "replaced by a symbolic link", check: CheckLinked,
 			change: func(t *testing.T, s *setup) {
 				moved := s.path + "-moved"

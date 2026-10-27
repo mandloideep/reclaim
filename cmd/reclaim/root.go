@@ -27,7 +27,9 @@ func newRootCmd(a *app) *cobra.Command {
 			"  reclaim scan              report what can be reclaimed, read only\n" +
 			"  reclaim here              what takes space in this folder, and what can go\n" +
 			"  reclaim select            pick findings from the last report and write a plan\n" +
-			"  reclaim apply plan.json   remove exactly what the plan lists, after confirmation\n\n" +
+			"  reclaim apply plan.json   remove exactly what the plan lists, after confirmation\n" +
+			"  reclaim worktrees         every linked git worktree and whether its work exists elsewhere\n" +
+			"  reclaim done              for agents: is this worktree's work committed, pushed and merged\n\n" +
 			"Settings come from the first of: the file named by --config, which must exist;\n" +
 			"$XDG_CONFIG_HOME/reclaim/config.toml when XDG_CONFIG_HOME is an absolute path;\n" +
 			"~/.config/reclaim/config.toml. A missing default file means the built in defaults,\n" +
@@ -50,6 +52,9 @@ func newRootCmd(a *app) *cobra.Command {
 		newHereCmd(a),
 		newSelectCmd(a),
 		newApplyCmd(a),
+		newWorktreesCmd(a),
+		newDoneCmd(a),
+		newSkillCmd(a),
 		newScannersCmd(a),
 		newVersionCmd(a),
 	)

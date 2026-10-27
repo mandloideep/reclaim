@@ -312,7 +312,8 @@ func (w Warning) String() string {
 // Scope records what produced a report, so select can say where its findings
 // came from.
 type Scope struct {
-	// Command is the command that wrote the report: "scan" or "here".
+	// Command is the command that wrote the report: "scan", "here" or
+	// "worktrees".
 	Command string `json:"command"`
 	// Args are the command line arguments after the command name, with the
 	// flags that were set written as --name=value.
@@ -324,10 +325,10 @@ type Scope struct {
 	Roots []string `json:"roots,omitempty"`
 }
 
-// Partial reports whether the report covers only some folders rather than
-// the whole machine: it came from here, or from a scan given paths.
+// Partial reports whether the report covers only part of the machine: it
+// came from here, from worktrees, or from a scan given paths.
 func (s *Scope) Partial() bool {
-	return s != nil && (s.Command == "here" || len(s.Paths) > 0)
+	return s != nil && (s.Command == "here" || s.Command == "worktrees" || len(s.Paths) > 0)
 }
 
 // Report is the result of a scan. Its JSON form is the input of select.
@@ -360,25 +361,37 @@ func (r *Report) TotalSize() int64 {
 	return ReclaimableSize(r.Findings)
 }
 
-// ReclaimableSize sums the size of the findings that can be applied. A
-// finding whose path lies inside the path of another finding that can be
-// applied, such as a node_modules inside a linked worktree, is counted once,
-// as part of the outer one.
+// ReclaimableSize sums the size of the findings that can be applied, each
+// byte once: see Counted.
 func ReclaimableSize(fs []Finding) int64 {
 	var total int64
-	var paths []string
-	for i := range fs {
-		if fs[i].Actionable() && fs[i].Path != "" {
-			paths = append(paths, fs[i].Path)
-		}
-	}
-	slices.Sort(paths)
-	for i := range fs {
-		if fs[i].Actionable() && !insideAnother(paths, fs[i].Path) {
+	for i, ok := range Counted(fs) {
+		if ok {
 			total += fs[i].Size
 		}
 	}
 	return total
+}
+
+// Counted reports, for each finding, whether it counts in reclaimable
+// totals: it can be applied and its path does not lie inside the path of
+// another finding that can be applied, such as a node_modules inside a
+// linked worktree, which is counted as part of the outer one. A folder that
+// is removed only once empty frees nothing of what is inside it, so it never
+// counts as an outer finding.
+func Counted(fs []Finding) []bool {
+	var outer []string
+	for i := range fs {
+		if fs[i].Actionable() && fs[i].Path != "" && fs[i].Kind != KindEmptyDir {
+			outer = append(outer, fs[i].Path)
+		}
+	}
+	slices.Sort(outer)
+	out := make([]bool, len(fs))
+	for i := range fs {
+		out[i] = fs[i].Actionable() && !insideAnother(outer, fs[i].Path)
+	}
+	return out
 }
 
 // insideAnother reports whether path lies strictly below one of the sorted

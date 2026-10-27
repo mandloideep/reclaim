@@ -203,7 +203,7 @@ func TestClassifyStates(t *testing.T) {
 }
 
 func paths(es []worktree.Entry) []string {
-	var out []string
+	out := make([]string, 0, len(es))
 	for _, e := range es {
 		out = append(out, e.Path)
 	}

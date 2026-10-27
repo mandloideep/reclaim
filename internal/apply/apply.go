@@ -362,7 +362,7 @@ func (r *runner) runCommand(ctx context.Context, a *plan.Action) Outcome {
 		}
 	}
 	out, err := r.opts.Exec.Run(ctx, a.Command)
-	o := Outcome{Output: truncate(string(out), maxOutput)}
+	o := Outcome{Output: truncate(string(out))}
 	if measured {
 		after := int64(0)
 		if res, serr := r.opts.Walker.Size(ctx, a.Path); serr == nil {
@@ -415,12 +415,13 @@ func (r *runner) relocate(ctx context.Context, a *plan.Action) error {
 	return nil
 }
 
-func truncate(s string, n int) string {
+// truncate trims command output to maxOutput bytes for the log.
+func truncate(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= n {
+	if len(s) <= maxOutput {
 		return s
 	}
-	return s[:n] + "\n[output truncated]"
+	return s[:maxOutput] + "\n[output truncated]"
 }
 
 func (r *runner) client() (dockerx.API, error) {

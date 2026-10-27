@@ -192,7 +192,7 @@ func TestHere(t *testing.T) {
 		{Scanner: "next", Tier: finding.TierA, Path: "/Users/me/Code/app/packages/web/.next", Size: 80_000_000, Action: finding.ActionRemovePath},
 	}
 	var buf bytes.Buffer
-	New(&buf, "/Users/me", now).Here(root, fs, nil, nil)
+	New(&buf, "/Users/me", now).Here(root, fs, nil, nil, nil)
 	out := buf.String()
 	for _, want := range []string{
 		"~/Code/app  3.0 GB total, 3.0 GB reclaimable",

@@ -245,7 +245,7 @@ func RestoreCommand(s *finding.WorktreeState) string {
 // Quote quotes a word for a POSIX shell when it needs it.
 func Quote(s string) string {
 	if s != "" && !strings.ContainsFunc(s, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("@%+=:,./_-~", r))
+		return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && !strings.ContainsRune("@%+=:,./_-~", r)
 	}) {
 		return s
 	}
@@ -271,4 +271,69 @@ func more(total, shown int) string {
 		return fmt.Sprintf(" and %d more", total-shown)
 	}
 	return ""
+}
+
+// Words describes a worktree's state in plain words, such as "committed,
+// pushed, merged in PR #3".
+func Words(s *finding.WorktreeState) string {
+	var parts []string
+	if len(s.Unknown) > 0 {
+		parts = append(parts, "git could not report "+strings.Join(s.Unknown, ", "))
+	}
+	if s.Modified > 0 || s.Untracked > 0 {
+		parts = append(parts, changedWords(s))
+	} else if !slices.Contains(s.Unknown, "modified") {
+		parts = append(parts, "committed")
+	}
+	if s.Ignored > 0 {
+		parts = append(parts, plural(s.Ignored, "ignored file", "ignored files")+": "+strings.Join(s.IgnoredSample, ", ")+more(s.Ignored, len(s.IgnoredSample)))
+	}
+	switch {
+	case s.Loose > 0 && s.Detached:
+		parts = append(parts, "detached with "+plural(s.Loose, "commit", "commits")+" no branch holds")
+	case s.Unpushed > 0:
+		parts = append(parts, plural(s.Unpushed, "commit", "commits")+" on no remote")
+	case !slices.Contains(s.Unknown, "unpushed"):
+		parts = append(parts, "pushed")
+	}
+	pr := ""
+	if s.PR != nil {
+		pr = fmt.Sprintf(" in PR #%d", s.PR.Number)
+	}
+	switch {
+	case s.Merged.Proven() && s.PR != nil && s.PR.State == "MERGED":
+		parts = append(parts, "merged"+pr)
+	case s.Merged.Proven():
+		parts = append(parts, "merged")
+	case s.Merged == finding.MergedNo && s.PR != nil && s.PR.State == "MERGED":
+		parts = append(parts, "merged"+pr+" but not in "+s.DefaultBranch+" locally; fetch origin")
+	case s.Merged == finding.MergedNo && s.PR != nil:
+		parts = append(parts, "not merged, PR #"+fmt.Sprint(s.PR.Number)+" "+strings.ToLower(s.PR.State))
+	case s.Merged == finding.MergedNo:
+		parts = append(parts, "not merged")
+	default:
+		parts = append(parts, "merge state unknown")
+	}
+	if s.Locked {
+		parts = append(parts, shortLockWords(s))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// shortLockWords says who holds a lock in a few words.
+func shortLockWords(s *finding.WorktreeState) string {
+	pid := ""
+	if m := lockPID.FindStringSubmatch(s.LockReason); m != nil {
+		pid = " pid " + m[1]
+	}
+	switch {
+	case s.LockLive && pid != "":
+		return "locked by the running" + pid
+	case s.LockLive:
+		return "locked"
+	case pid != "":
+		return "locked by" + pid + ", which is no longer running"
+	default:
+		return "locked by a process that is no longer running"
+	}
 }

@@ -278,7 +278,7 @@ func (r *runner) removeWorktree(ctx context.Context, p *plan.Plan, a *plan.Actio
 		return Outcome{Checks: checks, Err: errors.New("no command runner configured")}
 	}
 	out, err := r.opts.Exec.Run(ctx, plan.WorktreeRemoveCommand(a.Repo, a.Path))
-	output := truncate(string(out), maxOutput)
+	output := truncate(string(out))
 	if err != nil {
 		checks = append(checks, Check{Name: CheckRemove, Detail: firstLineOf(output)})
 		ref := &Refusal{Path: a.Path, Check: CheckRemove, Detail: "git refused: " + firstLineOf(output)}
@@ -328,7 +328,7 @@ func (r *runner) pruneAfterRemove(ctx context.Context, a *plan.Action) (string, 
 	}
 	out, err := r.opts.Exec.Run(ctx, plan.WorktreePruneCommand(a.Repo))
 	if err != nil {
-		return truncate(string(out), maxOutput), err
+		return truncate(string(out)), err
 	}
 	return "", nil
 }
@@ -369,7 +369,7 @@ func (r *runner) pruneWorktrees(ctx context.Context, a *plan.Action) Outcome {
 		}
 	}
 	out, err := r.opts.Exec.Run(ctx, plan.WorktreePruneCommand(a.Repo))
-	o := Outcome{Output: truncate(string(out), maxOutput), Freed: a.Size, Estimated: true}
+	o := Outcome{Output: truncate(string(out)), Freed: a.Size, Estimated: true}
 	if err != nil {
 		o.Err = err
 	}

@@ -13,8 +13,9 @@ import (
 // Here prints the breakdown of a folder: its entries sorted by size down to
 // the depth of the tree, each with the reclaimable bytes inside it and the
 // tier of entries that are themselves findings, then the full list of
-// reclaimable findings at any depth.
-func (p *Printer) Here(root *fsx.Node, fs []finding.Finding, warnings []finding.Warning, notes []string) {
+// reclaimable findings at any depth. worktrees maps the linked worktrees in
+// the breakdown to their state in words.
+func (p *Printer) Here(root *fsx.Node, fs []finding.Finding, worktrees map[string]string, warnings []finding.Warning, notes []string) {
 	var reclaim int64
 	for i := range fs {
 		reclaim += fs[i].Size
@@ -23,7 +24,7 @@ func (p *Printer) Here(root *fsx.Node, fs []finding.Finding, warnings []finding.
 		units.FormatSize(root.Size), p.bold.Render(units.FormatSize(reclaim)))
 	p.println("")
 	p.println(p.dim.Render("     SIZE  RECLAIMABLE  NAME"))
-	p.hereChildren(root, fs, "")
+	p.hereChildren(root, fs, worktrees, "")
 
 	p.println("")
 	if len(fs) == 0 {
@@ -49,7 +50,7 @@ func (p *Printer) Here(root *fsx.Node, fs []finding.Finding, warnings []finding.
 	p.Warnings(warnings, notes)
 }
 
-func (p *Printer) hereChildren(n *fsx.Node, fs []finding.Finding, indent string) {
+func (p *Printer) hereChildren(n *fsx.Node, fs []finding.Finding, worktrees map[string]string, indent string) {
 	for _, c := range n.Children {
 		var inside int64
 		var own *finding.Finding
@@ -79,9 +80,12 @@ func (p *Printer) hereChildren(n *fsx.Node, fs []finding.Finding, indent string)
 		if own != nil {
 			name += p.dim.Render("  " + own.Scanner)
 		}
+		if words, ok := worktrees[c.Path]; ok {
+			name += p.dim.Render("  worktree: " + words)
+		}
 		p.println(size(c.Size) + "  " + rec + "  " + indent + name)
 		if c.IsDir && own == nil {
-			p.hereChildren(c, fs, indent+"  ")
+			p.hereChildren(c, fs, worktrees, indent+"  ")
 		}
 	}
 }

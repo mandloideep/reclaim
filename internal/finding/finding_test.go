@@ -175,6 +175,8 @@ func TestReclaimableSizeCountsNestedFindingsOnce(t *testing.T) {
 		{Path: "/c/app/.claude/worktrees/b", Size: 400, Action: ActionNone, Tier: TierC},
 		{Path: "/c/app/.claude/worktrees/b/node_modules", Size: 300, Action: ActionRemovePath, Tier: TierA},
 		{Target: "sha256:img", Size: 7, Action: ActionDockerRemoveImage, Tier: TierB},
+		{Path: "/h/.codex/worktrees/t1", Size: 0, Action: ActionRemovePath, Kind: KindEmptyDir, Tier: TierA},
+		{Path: "/h/.codex/worktrees/t1/repo", Size: 900, Action: ActionGitWorktreeRemove, Kind: KindDir, Tier: TierA},
 	}
-	require.Equal(t, int64(1000+50+200+300+7), ReclaimableSize(fs))
+	require.Equal(t, int64(1000+50+200+300+7+900), ReclaimableSize(fs), "a folder removed once empty contains nothing it frees")
 }

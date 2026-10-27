@@ -46,6 +46,7 @@ func testApp(t *testing.T, stdin string) (*app, *bytes.Buffer) {
 		exec:         &execx.Fake{},
 		docker:       func() (dockerx.API, error) { return nil, errors.New("docker disabled in tests") },
 		now:          time.Now,
+		getwd:        func() (string, error) { return home, nil },
 	}, &out
 }
 

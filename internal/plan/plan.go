@@ -125,9 +125,11 @@ func FromFinding(f *finding.Finding) Action {
 		Command:   slices.Clone(f.Command),
 		NeedsSudo: f.NeedsSudo,
 		Warning:   f.Warning,
-		Repo:      f.Repo,
 	}
-	a.Registrations = slices.Clone(f.Registrations)
+	if f.Action == finding.ActionGitWorktreeRemove || f.Action == finding.ActionGitWorktreePrune {
+		a.Repo = f.Repo
+		a.Registrations = slices.Clone(f.Registrations)
+	}
 	if f.Worktree != nil {
 		state := *f.Worktree
 		a.Worktree = &state

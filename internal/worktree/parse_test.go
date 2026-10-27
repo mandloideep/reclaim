@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"errors"
+	"maps"
 	"testing"
 	"time"
 
@@ -116,10 +117,7 @@ func TestMergeStateFake(t *testing.T) {
 		g("cherry " + def + " 3333 2222"): "+ 3333",
 	}
 	with := func(over map[string]string) map[string]string {
-		out := map[string]string{}
-		for k, v := range common {
-			out[k] = v
-		}
+		out := maps.Clone(common)
 		for k, v := range over {
 			if v == "<fail>" {
 				delete(out, k)

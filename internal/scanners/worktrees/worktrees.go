@@ -448,8 +448,9 @@ func scanCodexWorktrees(ctx context.Context, env *scan.Env) ([]finding.Finding, 
 	dir := filepath.Join(env.CodexHome(), "worktrees")
 	tasks, err := subdirs(dir)
 	if err != nil {
+		// An unreadable Codex folder is a warning, not a failed scanner.
 		env.Diag.Warn(dir, "could not read: "+err.Error())
-		return nil, nil
+		return nil, nil //nolint:nilerr // reported as a warning
 	}
 	if len(tasks) == 0 || noGit(env, true) {
 		return nil, nil
@@ -507,7 +508,10 @@ func scanCodexWorktrees(ctx context.Context, env *scan.Env) ([]finding.Finding, 
 		out = append(out, t.other...)
 		tier := finding.TierA
 		stays := t.stays
-		for _, i := range t.targets {
+		// The task folder is listed under its repository when all its
+		// worktrees share one, as they usually do.
+		repo := ""
+		for n, i := range t.targets {
 			f := classified[i]
 			if f == nil || f.Action != finding.ActionGitWorktreeRemove {
 				stays = true
@@ -517,6 +521,11 @@ func scanCodexWorktrees(ctx context.Context, env *scan.Env) ([]finding.Finding, 
 			}
 			if f.Tier == finding.TierB {
 				tier = finding.TierB
+			}
+			if n == 0 {
+				repo = f.Repo
+			} else if repo != f.Repo {
+				repo = ""
 			}
 			out = append(out, *f)
 		}
@@ -528,7 +537,8 @@ func scanCodexWorktrees(ctx context.Context, env *scan.Env) ([]finding.Finding, 
 			Path:    t.dir,
 			Kind:    finding.KindEmptyDir,
 			Target:  t.dir,
-			Name:    "codex task " + filepath.Base(t.dir),
+			Name:    "codex task folder " + filepath.Base(t.dir),
+			Repo:    repo,
 			Restore: "Codex makes a new task folder for the next task",
 			Warning: "removed only once the worktrees in it are gone",
 			Action:  finding.ActionRemovePath,

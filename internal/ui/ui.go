@@ -132,8 +132,8 @@ func (p *Printer) age(t time.Time) string {
 // tierTotals formats the per tier totals, such as "A 1.2 GB, B 300 MB".
 func tierTotals(fs []finding.Finding) string {
 	sums := map[finding.Tier]int64{}
-	for i := range fs {
-		if fs[i].Actionable() {
+	for i, ok := range finding.Counted(fs) {
+		if ok {
 			sums[fs[i].Tier] += fs[i].Size
 		}
 	}

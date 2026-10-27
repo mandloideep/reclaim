@@ -6,6 +6,7 @@
 package worktreetest
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,7 +99,7 @@ func RealTempDir(t testing.TB) string {
 // error.
 func (f *Fixture) Git(dir string, args ...string) string {
 	f.t.Helper()
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.CommandContext(context.Background(), "git", append([]string{"-C", dir}, args...)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(f.t, err, "git %s: %s", strings.Join(args, " "), out)
 	return strings.TrimSpace(string(out))

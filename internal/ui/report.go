@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -54,18 +55,80 @@ func (p *Printer) groupHeader(g *Group, indent string) {
 	}
 	p.printf("%s%s  %s  %s%s\n", indent, p.bold.Render(g.Title), units.FormatSize(g.Size),
 		p.dim.Render(plural(len(g.Findings), "item", "items")), extra)
+	if line := p.RepoLine(g.Repo); line != "" {
+		p.println(indent + p.dim.Render(line))
+	}
+}
+
+// RepoLine describes the repository of a group of worktrees: its origin,
+// the branch merge state is checked against, the last fetch, and how many
+// worktrees it has in each state.
+func (p *Printer) RepoLine(r *RepoSummary) string {
+	if r == nil {
+		return ""
+	}
+	var parts []string
+	if r.Origin != "" {
+		parts = append(parts, r.Origin)
+	}
+	if r.DefaultBranch != "" {
+		against := "compared with " + r.DefaultBranch
+		if !r.FetchedAt.IsZero() {
+			against += ", fetched " + p.age(r.FetchedAt)
+		} else {
+			against += ", never fetched"
+		}
+		parts = append(parts, against)
+	}
+	var counts []string
+	for _, v := range []struct {
+		verdict finding.Verdict
+		one     string
+	}{{finding.VerdictRemovable, "removable"}, {finding.VerdictPushed, "pushed, not merged"},
+		{finding.VerdictAttention, "holding work"}, {finding.VerdictInUse, "in use"}} {
+		if n := r.Verdicts[v.verdict]; n > 0 {
+			counts = append(counts, fmt.Sprintf("%d %s", n, v.one))
+		}
+	}
+	if r.Stale > 0 {
+		counts = append(counts, plural(r.Stale, "stale registration", "stale registrations"))
+	}
+	if r.Clones > 0 {
+		counts = append(counts, plural(r.Clones, "other clone", "other clones"))
+	}
+	if len(counts) > 0 {
+		parts = append(parts, strings.Join(counts, ", "))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // label is how a finding is named inside its group: relative to its project
 // for project groups, otherwise its display name with the home directory
 // shortened.
 func (p *Printer) label(g *Group, f *finding.Finding) string {
+	if f.Category == finding.CategoryWorktree && f.Name != "" {
+		if f.Path == "" {
+			return f.Name
+		}
+		return f.Name + "  " + p.relPath(g, f.Path)
+	}
 	if g.Project != "" && f.Path != "" {
 		if rel, err := filepath.Rel(g.Project, f.Path); err == nil && !strings.HasPrefix(rel, "..") {
 			return rel
 		}
 	}
 	return p.Path(f.DisplayName())
+}
+
+// relPath shows a path relative to the group's project when it lies inside
+// it, else with the home directory shortened.
+func (p *Printer) relPath(g *Group, path string) string {
+	if g.Project != "" {
+		if rel, err := filepath.Rel(g.Project, path); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	return p.Path(path)
 }
 
 func boolInt(b bool) int {
@@ -125,6 +188,9 @@ func (p *Printer) Numbered(fs []finding.Finding) []finding.Finding {
 			if !s.Flat() {
 				p.printf("%s%s  %s\n", strings.Repeat(" ", idxWidth), p.bold.Render(g.Title),
 					p.dim.Render(units.FormatSize(g.Size)+", "+plural(len(g.Findings), "item", "items")+attentionNote(&g)))
+				if line := p.RepoLine(g.Repo); line != "" {
+					p.println(strings.Repeat(" ", idxWidth) + p.dim.Render(line))
+				}
 			}
 			for _, f := range g.Findings {
 				idx := "-"

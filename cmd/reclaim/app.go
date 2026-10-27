@@ -54,6 +54,9 @@ type app struct {
 	exec               execx.Runner
 	docker             func() (dockerx.API, error)
 	now                func() time.Time
+	// getwd returns the working directory, which done and apply never
+	// remove a worktree around.
+	getwd func() (string, error)
 	// interactive reports whether select can open the checklist: standard
 	// input and output are both terminals.
 	interactive func() bool
@@ -104,7 +107,8 @@ func defaultApp() (*app, error) {
 			}
 			return c, nil
 		},
-		now: time.Now,
+		now:   time.Now,
+		getwd: os.Getwd,
 	}, nil
 }
 
