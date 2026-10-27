@@ -50,8 +50,7 @@ Write the skill for an agent that has just finished a task: run `reclaim done --
 
 ### Gaps and debt to fix on the way
 
-12. `docs/proposals/worktrees.md` was the draft of this design and is already folded into DESIGN.md; delete it.
-13. The `codex-worktrees` scanner today reports a whole task folder as one finding; after the move it reports one finding per repository inside plus the empty task folder, as DESIGN.md says, and its existing tests move with it.
+12. The `codex-worktrees` scanner today reports a whole task folder as one finding; after the move it reports one finding per repository inside plus the empty task folder, as DESIGN.md says, and its existing tests move with it.
 
 ## Hard rules
 
