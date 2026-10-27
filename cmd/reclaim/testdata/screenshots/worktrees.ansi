@@ -14,7 +14,7 @@
      [2msave: [0mgit -C ~/.codex/worktrees/5e1d/storefront add -A && git -C ~/.codex/worktrees/5e1d/storefront commit
      [2msave: [0mgit -C ~/.codex/worktrees/5e1d/storefront diff > rescue-a5e1d0c9b8a7.patch
      [2mremove anyway, losing it: [0mgit -C ~/Code/storefront worktree remove --force ~/.codex/worktrees/5e1d/storefront
-[1;32mA[0m  800.2 kB  2 stale worktree registrations[2m  via git -C ~/Code/storefront worktree prune[0m
+[1;32mA[0m  802.0 kB  2 stale worktree registrations[2m  via git -C ~/Code/storefront worktree prune[0m
 
 [1m4 linked worktrees[0m: 1 removable, 1 pushed but not merged, 1 holding work or not checkable, 1 in use
 [1m280.8 MB[0m reclaimable (A 184.8 MB, B 96.0 MB)

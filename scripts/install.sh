@@ -163,9 +163,10 @@ mv -f "${bin_dir}/reclaim.tmp.$$" "${bin_dir}/reclaim"
 printf 'Installed %s\n' "$("${bin_dir}/reclaim" version)"
 printf 'into %s\n' "${bin_dir}/reclaim"
 
+# $PATH is printed for the user's profile, not expanded.
+# shellcheck disable=SC2016
 case ":${PATH}:" in
 *":${bin_dir}:"*) ;;
-# shellcheck disable=SC2016 # $PATH is printed for the user's profile, not expanded
 *) printf '\n%s is not on your PATH; add it in your shell profile:\n  export PATH="%s:$PATH"\n' "$bin_dir" "$bin_dir" ;;
 esac
 

@@ -31,6 +31,10 @@ type fakeRepo struct {
 	stale        []string
 }
 
+// gitdirSize is the fixed size of the fixture's gitdir files. Two stale
+// registrations then measure 802.0 kB, in the middle of a rounding step.
+const gitdirSize = 1000
+
 // addFakeRepo writes the repository's registrations and its worktrees' .git
 // files and contents, and the answers of every git, ps and gh command the
 // worktree scanners run for them.
@@ -48,7 +52,14 @@ func addFakeRepo(t *testing.T, r fakeRepo, out, runOut map[string]string) {
 	register := func(name, path string) {
 		reg := filepath.Join(gitDir, "worktrees", name)
 		require.NoError(t, os.MkdirAll(reg, 0o755))
-		require.NoError(t, os.WriteFile(filepath.Join(reg, "gitdir"), []byte(filepath.Join(path, ".git")+"\n"), 0o644))
+		// The gitdir file holds the temp path, whose length differs between
+		// systems; trailing spaces, which readers trim, pad it to a fixed
+		// length so the registration's size, which a screenshot shows, does
+		// not depend on where the temp directory is.
+		gitdir := filepath.Join(path, ".git") + "\n"
+		require.Less(t, len(gitdir), gitdirSize, "the temp path is too long for the fixture")
+		gitdir += strings.Repeat(" ", gitdirSize-len(gitdir))
+		require.NoError(t, os.WriteFile(filepath.Join(reg, "gitdir"), []byte(gitdir), 0o644))
 		sparse(t, filepath.Join(reg, "index"), 400_000)
 	}
 	for _, w := range r.worktrees {
