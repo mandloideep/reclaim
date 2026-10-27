@@ -47,6 +47,10 @@ func (p *Printer) ReportMarkdown(r *finding.Report) {
 			p.println("")
 			p.printf("### %s (%s, %s%s)\n", title, units.FormatSize(g.Size), plural(len(g.Findings), "item", "items"), counted)
 			p.println("")
+			if line := p.RepoLine(g.Repo); line != "" {
+				p.println(mdText(line) + ".")
+				p.println("")
+			}
 			p.markdownTable(&g)
 		}
 	}
@@ -121,7 +125,7 @@ func (p *Printer) markdownWarnings(ws []finding.Warning, notes []string) {
 
 // HereMarkdown writes the breakdown of a folder as Markdown: its entries with
 // their sizes and reclaimable bytes, then every reclaimable finding.
-func (p *Printer) HereMarkdown(root *fsx.Node, fs []finding.Finding, warnings []finding.Warning, notes []string) {
+func (p *Printer) HereMarkdown(root *fsx.Node, fs []finding.Finding, worktrees map[string]string, warnings []finding.Warning, notes []string) {
 	reclaim := finding.ReclaimableSize(fs)
 	p.printf("# %s\n", mdCode(p.Path(root.Path)))
 	p.println("")
@@ -129,7 +133,7 @@ func (p *Printer) HereMarkdown(root *fsx.Node, fs []finding.Finding, warnings []
 	p.println("")
 	p.println("| Size | Reclaimable | Tier | Entry |")
 	p.println("| ---: | ---: | --- | --- |")
-	p.hereMarkdownRows(root, root, fs)
+	p.hereMarkdownRows(root, root, fs, worktrees)
 	p.println("")
 	if len(fs) == 0 {
 		p.println("Nothing reclaimable found in this folder.")
@@ -150,7 +154,7 @@ func (p *Printer) HereMarkdown(root *fsx.Node, fs []finding.Finding, warnings []
 	p.markdownWarnings(warnings, notes)
 }
 
-func (p *Printer) hereMarkdownRows(top, n *fsx.Node, fs []finding.Finding) {
+func (p *Printer) hereMarkdownRows(top, n *fsx.Node, fs []finding.Finding, worktrees map[string]string) {
 	for _, c := range n.Children {
 		var inside int64
 		var own *finding.Finding
@@ -176,9 +180,13 @@ func (p *Printer) hereMarkdownRows(top, n *fsx.Node, fs []finding.Finding) {
 		if c.IsDir {
 			name += "/"
 		}
-		p.printf("| %s | %s | %s | %s |\n", units.FormatSize(c.Size), rec, mdCell(tier), mdCodeCell(name))
+		entry := mdCodeCell(name)
+		if words, ok := worktrees[c.Path]; ok {
+			entry += " worktree: " + mdCell(words)
+		}
+		p.printf("| %s | %s | %s | %s |\n", units.FormatSize(c.Size), rec, mdCell(tier), entry)
 		if c.IsDir && own == nil {
-			p.hereMarkdownRows(top, c, fs)
+			p.hereMarkdownRows(top, c, fs, worktrees)
 		}
 	}
 }

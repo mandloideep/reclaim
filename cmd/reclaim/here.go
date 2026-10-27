@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -10,6 +13,7 @@ import (
 	"github.com/mandloideep/reclaim/internal/fsx"
 	"github.com/mandloideep/reclaim/internal/scan"
 	"github.com/mandloideep/reclaim/internal/scanners"
+	"github.com/mandloideep/reclaim/internal/worktree"
 )
 
 // hereVersion is the schema version of "here --json" output.
@@ -22,6 +26,8 @@ type hereNode struct {
 	Dir      bool        `json:"dir"`
 	Size     int64       `json:"size"`
 	Children []*hereNode `json:"children,omitempty"`
+	// Worktree is the state in words of a linked worktree.
+	Worktree string `json:"worktree,omitempty"`
 }
 
 // hereOutput is the "here --json" document.
@@ -35,12 +41,38 @@ type hereOutput struct {
 	Notes    []string          `json:"notes,omitempty"`
 }
 
-func toHereNodes(nodes []*fsx.Node) []*hereNode {
+func toHereNodes(nodes []*fsx.Node, worktrees map[string]string) []*hereNode {
 	out := make([]*hereNode, 0, len(nodes))
 	for _, n := range nodes {
-		out = append(out, &hereNode{Name: n.Name, Path: n.Path, Dir: n.IsDir, Size: n.Size, Children: toHereNodes(n.Children)})
+		out = append(out, &hereNode{Name: n.Name, Path: n.Path, Dir: n.IsDir, Size: n.Size,
+			Children: toHereNodes(n.Children, worktrees), Worktree: worktrees[n.Path]})
 	}
 	return out
+}
+
+// worktreeMarks classifies the linked worktrees among the folders of the
+// breakdown, without asking GitHub, and returns their state in words.
+func (a *app) worktreeMarks(ctx context.Context, root *fsx.Node) map[string]string {
+	senv := scan.Env{Home: a.home, Getenv: a.getenv}
+	env := worktree.Env{Exec: a.exec, CodexHome: senv.CodexHome()}
+	marks := map[string]string{}
+	var visit func(n *fsx.Node)
+	visit = func(n *fsx.Node) {
+		for _, c := range n.Children {
+			if ctx.Err() != nil || !c.IsDir {
+				continue
+			}
+			if info, err := os.Lstat(filepath.Join(c.Path, ".git")); err == nil && info.Mode().IsRegular() {
+				if s, err := worktree.Classify(ctx, env, c.Path); err == nil {
+					marks[c.Path] = worktree.Words(s)
+				}
+				continue
+			}
+			visit(c)
+		}
+	}
+	visit(root)
+	return marks
 }
 
 type hereFlags struct {
@@ -131,22 +163,23 @@ func (a *app) hereCommand(cmd *cobra.Command, args []string, path string, f here
 		}
 	}
 	a.saveLastReport(report)
+	marks := a.worktreeMarks(ctx, tree)
 	if f.json {
 		return writeJSON(a.stdout, hereOutput{
 			Version:  hereVersion,
 			Path:     root,
 			Size:     tree.Size,
-			Children: toHereNodes(tree.Children),
+			Children: toHereNodes(tree.Children, marks),
 			Findings: report.Findings,
 			Warnings: report.Warnings,
 			Notes:    report.Notes,
 		})
 	}
 	if f.md {
-		a.markdownPrinter().HereMarkdown(tree, report.Findings, report.Warnings, report.Notes)
+		a.markdownPrinter().HereMarkdown(tree, report.Findings, marks, report.Warnings, report.Notes)
 		return nil
 	}
-	a.printer().Here(tree, report.Findings, report.Warnings, report.Notes)
+	a.printer().Here(tree, report.Findings, marks, report.Warnings, report.Notes)
 	if f.out != "" {
 		a.sayf("\nReport saved to %s. Next: reclaim select --report %s\n", f.out, f.out)
 	}

@@ -95,6 +95,7 @@ func (a *app) applyCommand(cmd *cobra.Command, path string, f applyFlags) error 
 		PlanPath:           path,
 		KeepGoing:          f.keepGoing,
 		Now:                a.now,
+		Getwd:              a.getwd,
 		Progress: func(i int, o apply.Outcome) {
 			a.printOutcome(i, total, o)
 		},

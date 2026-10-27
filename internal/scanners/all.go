@@ -12,6 +12,7 @@ import (
 	"github.com/mandloideep/reclaim/internal/scanners/docker"
 	"github.com/mandloideep/reclaim/internal/scanners/downloads"
 	"github.com/mandloideep/reclaim/internal/scanners/projects"
+	"github.com/mandloideep/reclaim/internal/scanners/worktrees"
 )
 
 // Registry holds one fresh instance of every scanner.
@@ -19,6 +20,7 @@ type Registry struct {
 	projects  []*projects.Scanner
 	caches    []*caches.Scanner
 	docker    docker.Scanner
+	worktrees []*worktrees.Scanner
 	appcache  []*appcache.Scanner
 	downloads []*downloads.Scanner
 }
@@ -29,16 +31,20 @@ func New() *Registry {
 		projects:  projects.Scanners(),
 		caches:    caches.Scanners(),
 		docker:    docker.Scanner{},
+		worktrees: worktrees.Scanners(),
 		appcache:  appcache.Scanners(),
 		downloads: downloads.Scanners(),
 	}
 }
 
-// All returns every scanner: project scanners first, then package caches,
-// Docker, app caches and Downloads.
+// All returns every scanner: project scanners first, then worktrees,
+// package caches, Docker, app caches and Downloads.
 func (r *Registry) All() []scan.Scanner {
-	out := make([]scan.Scanner, 0, len(r.projects)+len(r.caches)+1+len(r.appcache)+len(r.downloads))
+	out := make([]scan.Scanner, 0, len(r.projects)+len(r.worktrees)+len(r.caches)+1+len(r.appcache)+len(r.downloads))
 	for _, s := range r.projects {
+		out = append(out, s)
+	}
+	for _, s := range r.worktrees {
 		out = append(out, s)
 	}
 	for _, s := range r.caches {

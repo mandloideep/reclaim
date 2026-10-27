@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -25,6 +26,11 @@ func run(ctx context.Context, args []string) int {
 	cmd := newRootCmd(a)
 	cmd.SetArgs(args)
 	if err := cmd.ExecuteContext(ctx); err != nil {
+		// A command that chose its exit code has said everything already.
+		var ee *exitError
+		if errors.As(err, &ee) {
+			return ee.code
+		}
 		fmt.Fprintln(os.Stderr, "reclaim:", err)
 		return 1
 	}

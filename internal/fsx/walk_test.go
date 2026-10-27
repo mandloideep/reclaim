@@ -224,3 +224,17 @@ func TestUnreadableUnwrap(t *testing.T) {
 	require.True(t, errors.Is(u, fs.ErrPermission))
 	require.Equal(t, "/x: permission denied", u.Error())
 }
+
+// TestSizeFindsRepositories records every folder below the root that holds
+// a .git entry, file or folder, and never the root itself.
+func TestSizeFindsRepositories(t *testing.T) {
+	root := t.TempDir()
+	for _, p := range []string{".git/HEAD", "node_modules/dep/.git/HEAD", "sub/.git", "a/b/c/.git/config", "src/main.go"} {
+		full := filepath.Join(root, filepath.FromSlash(p))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte("x"), 0o644))
+	}
+	res, err := NewWalker(2).Size(context.Background(), root)
+	require.NoError(t, err)
+	require.Equal(t, []string{filepath.Join(root, "a", "b", "c"), filepath.Join(root, "node_modules", "dep"), filepath.Join(root, "sub")}, res.Repos)
+}

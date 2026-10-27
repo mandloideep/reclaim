@@ -54,6 +54,9 @@ type app struct {
 	exec               execx.Runner
 	docker             func() (dockerx.API, error)
 	now                func() time.Time
+	// getwd returns the working directory, which done and apply never
+	// remove a worktree around.
+	getwd func() (string, error)
 	// interactive reports whether select can open the checklist: standard
 	// input and output are both terminals.
 	interactive func() bool
@@ -104,7 +107,8 @@ func defaultApp() (*app, error) {
 			}
 			return c, nil
 		},
-		now: time.Now,
+		now:   time.Now,
+		getwd: os.Getwd,
 	}, nil
 }
 
@@ -274,6 +278,8 @@ type scanRequest struct {
 	walker   *fsx.Walker
 	sizes    map[string]int64
 	scope    *finding.Scope
+	// worktrees tune the worktree scanners.
+	worktrees scan.WorktreeOptions
 }
 
 // runScan runs the scanners and builds a report. Filesystem findings may live
@@ -303,8 +309,9 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 			Exclude:    req.exclude,
 			CommitTime: project.GitCommitTime(a.exec),
 		}),
-		Log:  a.logger(),
-		Diag: diag,
+		Log:       a.logger(),
+		Diag:      diag,
+		Worktrees: req.worktrees,
 	}
 
 	selected := req.scanners
@@ -322,7 +329,11 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 			env.Docker = cli
 		case finding.CategoryProject:
 		default:
-			needsHome = true
+			// Scanners that look only under the roots, such as the git
+			// worktree scanner, keep a scan given paths to those paths.
+			if rb, ok := s.(scan.RootBased); !ok || !rb.RootBased() {
+				needsHome = true
+			}
 		}
 	}
 	if env.Docker != nil {
@@ -331,6 +342,7 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 	if needsHome && a.home != "" {
 		reportRoots = append(reportRoots, a.home)
 	}
+	env.ReportRoots = uniqueRoots(reportRoots)
 
 	res := scan.Run(ctx, selected, env, 8)
 	warnings := res.Warnings

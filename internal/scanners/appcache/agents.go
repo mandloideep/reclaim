@@ -1,92 +1,27 @@
 package appcache
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/scan"
+	"github.com/mandloideep/reclaim/internal/worktree"
 )
 
 // sessionMinAge is how long a month of Codex sessions must have been left
 // alone before it is offered, so recent conversations stay resumable.
 const sessionMinAge = 30 * 24 * time.Hour
 
-func codexHome(env *scan.Env) string {
-	return resolve(firstNonEmpty(absVar(env, "CODEX_HOME"), filepath.Join(env.Home, ".codex")))
-}
-
-// scanCodexWorktrees reports each task folder under ~/.codex/worktrees. A
-// task folder holds one checkout per repository, each a git worktree. A
-// folder whose worktrees have uncommitted changes, or whose state git cannot
-// report, is tier C.
-func scanCodexWorktrees(ctx context.Context, env *scan.Env) ([]finding.Finding, error) {
-	dir := filepath.Join(codexHome(env), "worktrees")
-	var out []finding.Finding
-	for _, e := range subdirs(env, dir) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		task := filepath.Join(dir, e.Name())
-		ent := entry{
-			path:    task,
-			tier:    finding.TierB,
-			restore: "Codex creates a new worktree for the next task; commits on branches stay in the main repository",
-			warning: "git worktrees Codex made for a task; ignored files in them, such as .env, are lost; run git worktree prune in their main repository afterwards",
-		}
-		if reason := dirtyWorktree(ctx, env, task); reason != "" {
-			ent.tier = finding.TierC
-			ent.warning = reason
-		}
-		f, ok, err := dirFinding(ctx, env, ent)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			out = append(out, f)
-		}
-	}
-	return out, nil
-}
-
-// dirtyWorktree returns why the worktrees in a task folder may hold work that
-// exists nowhere else, or an empty string when git reports them all clean.
-func dirtyWorktree(ctx context.Context, env *scan.Env, task string) string {
-	for _, e := range subdirs(env, task) {
-		repo := filepath.Join(task, e.Name())
-		if _, err := os.Lstat(filepath.Join(repo, ".git")); err != nil {
-			continue
-		}
-		if env.Exec == nil {
-			return "git is not available, so uncommitted changes in " + e.Name() + " could not be checked"
-		}
-		if _, err := env.Exec.LookPath("git"); err != nil {
-			return "git is not installed, so uncommitted changes in " + e.Name() + " could not be checked"
-		}
-		status, err := env.Exec.Output(ctx, "git", "-C", repo, "status", "--porcelain")
-		if err != nil {
-			return "git could not report the state of " + e.Name() + ", which may hold uncommitted changes"
-		}
-		if strings.TrimSpace(status) != "" {
-			return e.Name() + " has uncommitted changes, which are lost"
-		}
-		// Commits made on a detached HEAD live only in the worktree's own
-		// history and become unreachable once it is removed and pruned.
-		loose, err := env.Exec.Output(ctx, "git", "-C", repo, "rev-list", "-n", "1", "HEAD", "--not", "--branches", "--remotes", "--tags")
-		if err != nil {
-			return "git could not report whether " + e.Name() + " has commits outside its branches"
-		}
-		if strings.TrimSpace(loose) != "" {
-			return e.Name() + " has commits that no branch, remote or tag holds, which are lost"
-		}
-	}
-	return ""
-}
+func codexHome(env *scan.Env) string { return env.CodexHome() }
 
 // scanCodexSessions reports the Codex conversation logs one month at a time,
 // skipping months touched in the last 30 days, and the archived sessions.
@@ -184,6 +119,108 @@ func scanClaudeVM(ctx context.Context, env *scan.Env) ([]finding.Finding, error)
 		}
 	case !errors.Is(err, os.ErrNotExist):
 		env.Diag.Warn(vm, "could not read the current version: "+err.Error())
+	}
+	return collect(ctx, env, entries)
+}
+
+// claudeConfigDir is $CLAUDE_CONFIG_DIR when it holds an absolute path, else
+// ~/.claude, with symbolic links resolved.
+func claudeConfigDir(env *scan.Env) string {
+	return resolve(firstNonEmpty(absVar(env, "CLAUDE_CONFIG_DIR"), filepath.Join(env.Home, ".claude")))
+}
+
+// maxSessionLines bounds how far into a session file the scanner looks for
+// the working directory, which Claude Code writes in its first few records.
+const maxSessionLines = 200
+
+// scanClaudeSessions reports the session folders of Claude Code projects
+// whose folder no longer exists, once they have been left alone for 30
+// days. A folder's name replaces every / of the project path with -, which
+// cannot be undone, so the project path is read from the cwd field of the
+// session files instead.
+func scanClaudeSessions(ctx context.Context, env *scan.Env) ([]finding.Finding, error) {
+	projects := filepath.Join(claudeConfigDir(env), "projects")
+	now := env.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	var entries []entry
+	for _, e := range subdirs(env, projects) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		dir := filepath.Join(projects, e.Name())
+		cwd := sessionCwd(dir)
+		if cwd == "" {
+			continue
+		}
+		if _, err := os.Lstat(cwd); !errors.Is(err, fs.ErrNotExist) || worktree.OnMissingVolume(cwd) {
+			continue
+		}
+		if now.Sub(newestModTime(ctx, dir)) < sessionMinAge {
+			continue
+		}
+		entries = append(entries, entry{
+			path:    dir,
+			tier:    finding.TierB,
+			name:    "claude sessions of " + cwd,
+			restore: "cannot be restored",
+			warning: "Claude Code cannot resume these sessions; their project folder " + cwd + " no longer exists",
+		})
+	}
+	return collect(ctx, env, entries)
+}
+
+// sessionCwd returns the working directory recorded in the session files of
+// a Claude Code project folder, or an empty string when none records one.
+func sessionCwd(dir string) string {
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil {
+		return ""
+	}
+	slices.Sort(files)
+	for _, name := range files {
+		if cwd := fileCwd(name); cwd != "" {
+			return cwd
+		}
+	}
+	return ""
+}
+
+// fileCwd reads the first records of one session file for a cwd field.
+func fileCwd(name string) string {
+	f, err := os.Open(name)
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	for i := 0; i < maxSessionLines && sc.Scan(); i++ {
+		var rec struct {
+			Cwd string `json:"cwd"`
+		}
+		if json.Unmarshal(sc.Bytes(), &rec) == nil && filepath.IsAbs(rec.Cwd) {
+			return filepath.Clean(rec.Cwd)
+		}
+	}
+	return ""
+}
+
+// scanCodexPluginBackups reports the plugin backups Codex leaves in its
+// temporary folder when it updates plugins.
+func scanCodexPluginBackups(ctx context.Context, env *scan.Env) ([]finding.Finding, error) {
+	tmp := filepath.Join(codexHome(env), ".tmp")
+	var entries []entry
+	for _, e := range subdirs(env, tmp) {
+		if !strings.HasPrefix(e.Name(), "plugins-backup-") {
+			continue
+		}
+		entries = append(entries, entry{
+			path:    filepath.Join(tmp, e.Name()),
+			tier:    finding.TierA,
+			restore: "Codex keeps its plugins in its plugins folder; this is a copy from an update",
+		})
 	}
 	return collect(ctx, env, entries)
 }

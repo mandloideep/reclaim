@@ -32,7 +32,14 @@ func (p *Printer) Provenance(r *finding.Report) string {
 		for i, path := range r.Scope.Paths {
 			paths[i] = p.Path(path)
 		}
-		line += fmt.Sprintf(" It covers only %s, not the whole machine; run reclaim scan for everything.", strings.Join(paths, ", "))
+		covers := strings.Join(paths, ", ")
+		if r.Scope.Command == "worktrees" {
+			covers = "git worktrees"
+			if len(paths) > 0 {
+				covers += " under " + strings.Join(paths, ", ")
+			}
+		}
+		line += fmt.Sprintf(" It covers only %s, not the whole machine; run reclaim scan for everything.", covers)
 	}
 	return line
 }

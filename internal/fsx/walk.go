@@ -56,6 +56,12 @@ type Result struct {
 	Unreadable []Unreadable
 	// Mounts lists directories that were skipped because they are on another filesystem.
 	Mounts []string
+	// Repos lists the directories below the root, never the root itself,
+	// that hold a .git entry: other repositories, submodule checkouts and
+	// worktrees inside the tree. The walk records them on the way, so a
+	// caller that must not remove someone's repository learns of it without
+	// walking again.
+	Repos []string
 	// DirSizes maps every directory in the tree, the root included, to its
 	// size. It is only filled when TreeOptions.DirSizes is set.
 	DirSizes map[string]int64
@@ -149,6 +155,7 @@ type walk struct {
 	dirSizes bool
 	rootDev  uint64
 	haveDev  bool
+	root     string
 
 	size  atomic.Int64
 	files atomic.Int64
@@ -159,6 +166,7 @@ type walk struct {
 	seen       map[[2]uint64]struct{}
 	unreadable []Unreadable
 	mounts     []string
+	repos      []string
 	all        []*Node
 }
 
@@ -183,7 +191,7 @@ func (w *Walker) walk(ctx context.Context, root string, opts TreeOptions) (*Node
 		return nil, Result{}, fmt.Errorf("measure %s: %w", root, ctx.Err())
 	}
 	defer func() { <-w.sem }()
-	wk := &walk{ctx: ctx, w: w, maxDepth: opts.Depth, dirSizes: opts.DirSizes, seen: map[[2]uint64]struct{}{}}
+	wk := &walk{ctx: ctx, w: w, maxDepth: opts.Depth, dirSizes: opts.DirSizes, root: root, seen: map[[2]uint64]struct{}{}}
 	if st, ok := w.statFn(info); ok {
 		wk.rootDev, wk.haveDev = st.dev, true
 	}
@@ -200,9 +208,11 @@ func (w *Walker) walk(ctx context.Context, root string, opts TreeOptions) (*Node
 		Dirs:       wk.dirs.Load(),
 		Unreadable: wk.unreadable,
 		Mounts:     wk.mounts,
+		Repos:      wk.repos,
 	}
 	slices.SortFunc(res.Unreadable, func(a, b Unreadable) int { return strings.Compare(a.Path, b.Path) })
 	slices.Sort(res.Mounts)
+	slices.Sort(res.Repos)
 	node.acc.Store(res.Size)
 	node.finalize()
 	if opts.DirSizes {
@@ -237,6 +247,9 @@ func (wk *walk) dir(path string, chain []*Node, depth int) {
 			break
 		}
 		child := filepath.Join(path, e.Name())
+		if e.Name() == ".git" && path != wk.root {
+			wk.addRepo(path)
+		}
 		info, err := e.Info()
 		if err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {
@@ -324,6 +337,12 @@ func (wk *walk) addUnreadable(path string, err error) {
 func (wk *walk) record(n *Node) {
 	wk.mu.Lock()
 	wk.all = append(wk.all, n)
+	wk.mu.Unlock()
+}
+
+func (wk *walk) addRepo(path string) {
+	wk.mu.Lock()
+	wk.repos = append(wk.repos, path)
 	wk.mu.Unlock()
 }
 

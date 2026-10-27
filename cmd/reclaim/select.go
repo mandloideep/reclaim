@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/mandloideep/reclaim/internal/apply"
 	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/plan"
 	"github.com/mandloideep/reclaim/internal/ui"
@@ -119,12 +121,34 @@ func (a *app) selectCommand(cmd *cobra.Command, f selectFlags) error {
 	if err != nil {
 		return err
 	}
+	a.proveWorktrees(cmd.Context(), pl)
+	if len(pl.Actions) == 0 {
+		a.sayf("%s\n", "Nothing left to remove, no plan written.")
+		return nil
+	}
 	if err := plan.Save(f.out, pl); err != nil {
 		return err
 	}
 	a.sayf("Wrote %s: %d actions, %s. Review it, then run: reclaim apply %s\n",
 		f.out, len(pl.Actions), units.FormatSize(pl.TotalSize()), f.out)
 	return nil
+}
+
+// proveWorktrees runs the proof for every worktree in the plan before it is
+// written, the first of the two times DESIGN.md requires, and drops the
+// ones that fail it, saying why. Apply proves them again before acting.
+func (a *app) proveWorktrees(ctx context.Context, pl *plan.Plan) {
+	opts := apply.Options{Home: a.home, Exec: a.exec, Getwd: a.getwd}
+	pl.Actions = slices.DeleteFunc(pl.Actions, func(act plan.Action) bool {
+		if act.Action != finding.ActionGitWorktreeRemove {
+			return false
+		}
+		if _, err := apply.ProveWorktree(ctx, opts, pl.Roots, &act); err != nil {
+			a.sayf("Left out of the plan: %v\n", err)
+			return true
+		}
+		return false
+	})
 }
 
 // parseSelection parses 1 based indices and ranges such as "1,4-9 12" into 0

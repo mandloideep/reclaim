@@ -67,3 +67,22 @@ func TestFake(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, [][]string{{"npm", "cache", "clean", "--force"}}, f.Ran())
 }
+
+func TestEnvironDropsRepositoryVariables(t *testing.T) {
+	got := Environ([]string{"HOME=/h", "GIT_DIR=/r/.git", "GIT_WORK_TREE=/r", "GIT_INDEX_FILE=/i", "GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=core.worktree", "GIT_CONFIG_VALUE_0=/x", "GIT_CONFIG_GLOBAL=/g", "GIT_TERMINAL_PROMPT=0", "PATH=/bin"})
+	require.Equal(t, []string{"HOME=/h", "GIT_CONFIG_GLOBAL=/g", "GIT_TERMINAL_PROMPT=0", "PATH=/bin"}, got)
+}
+
+func TestExitCode(t *testing.T) {
+	_, err := OS{}.Output(context.Background(), "sh", "-c", "exit 3")
+	code, ok := ExitCode(err)
+	require.True(t, ok)
+	require.Equal(t, 3, code)
+	_, ok = ExitCode(errors.New("timeout"))
+	require.False(t, ok)
+	_, err = (&Fake{Tools: map[string]string{"git": "/g"}, Exits: map[string]int{"git x": 1}}).Output(context.Background(), "git", "x")
+	code, ok = ExitCode(err)
+	require.True(t, ok)
+	require.Equal(t, 1, code)
+}

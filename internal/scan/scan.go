@@ -51,6 +51,37 @@ func isCatchAll(s Scanner) bool {
 	return ok && c.CatchAll()
 }
 
+// RootBased is implemented by scanners outside the project category that
+// look only at what the project walk finds under the roots, such as the git
+// worktree scanner. A scan given paths runs them like the project scanners.
+type RootBased interface {
+	// RootBased reports whether the scanner looks only under the roots.
+	RootBased() bool
+}
+
+// UnderRoots returns the scanners that look only under the roots: the
+// project scanners and the root based ones.
+func UnderRoots(all []Scanner) []Scanner {
+	var out []Scanner
+	for _, s := range all {
+		r, ok := s.(RootBased)
+		if s.Category() == finding.CategoryProject || ok && r.RootBased() {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// WorktreeOptions tune the worktree scanners.
+type WorktreeOptions struct {
+	// GitHub lets them ask gh for the pull request of each branch.
+	GitHub bool
+	// InUse makes them also report the worktrees a running process holds,
+	// as findings listed for attention, so the worktrees command can show
+	// every linked worktree. A scan never offers them.
+	InUse bool
+}
+
 // Env carries everything a scanner needs, so tests can substitute fakes.
 type Env struct {
 	// Roots are the directories project scanners walk.
@@ -90,6 +121,27 @@ type Env struct {
 	// Diag receives warnings and notes for the report. The runner binds it to
 	// the scanner being run.
 	Diag Diagnostics
+	// Worktrees tune the worktree scanners.
+	Worktrees WorktreeOptions
+	// ReportRoots are the roots the report will record, inside which apply
+	// may remove things. Scanners that find things elsewhere, such as a
+	// worktree in /tmp, list them for attention. Nil means Roots and Home.
+	ReportRoots []string
+}
+
+// Removable reports whether apply may remove something at path: it lies
+// strictly inside one of the report roots.
+func (e *Env) Removable(path string) bool {
+	roots := e.ReportRoots
+	if roots == nil {
+		roots = append(slices.Clone(e.Roots), e.Home)
+	}
+	for _, r := range roots {
+		if r != "" && r != path && isWithin(path, r) {
+			return true
+		}
+	}
+	return false
 }
 
 // Var reads an environment variable through Getenv.
@@ -98,6 +150,19 @@ func (e *Env) Var(key string) string {
 		return ""
 	}
 	return e.Getenv(key)
+}
+
+// CodexHome is $CODEX_HOME when it holds an absolute path, else ~/.codex,
+// with symbolic links resolved.
+func (e *Env) CodexHome() string {
+	home := filepath.Join(e.Home, ".codex")
+	if v := e.Var("CODEX_HOME"); filepath.IsAbs(v) {
+		home = filepath.Clean(v)
+	}
+	if r, err := filepath.EvalSymlinks(home); err == nil {
+		return r
+	}
+	return home
 }
 
 // UserCacheDir is the per user cache directory: ~/Library/Caches on macOS and

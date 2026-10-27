@@ -67,11 +67,14 @@ type Filter struct {
 	Exclude []string
 }
 
-// Apply returns the findings that pass the filter, in the same order.
+// Apply returns the findings that pass the filter, in the same order. A
+// folder removed once empty, such as a Codex task folder, measures next to
+// nothing, so it is kept whatever its size while a finding inside it, which
+// empties it, is kept too.
 func (f Filter) Apply(in []finding.Finding) []finding.Finding {
 	out := make([]finding.Finding, 0, len(in))
 	for _, x := range in {
-		if x.Size < f.MinSize {
+		if x.Size < f.MinSize && x.Kind != finding.KindEmptyDir {
 			continue
 		}
 		if x.Path != "" && slices.ContainsFunc(f.Exclude, func(ex string) bool { return isWithin(x.Path, ex) || isWithin(ex, x.Path) }) {
@@ -87,5 +90,12 @@ func (f Filter) Apply(in []finding.Finding) []finding.Finding {
 		}
 		out = append(out, x)
 	}
-	return out
+	return slices.DeleteFunc(out, func(x finding.Finding) bool {
+		if x.Kind != finding.KindEmptyDir || x.Size >= f.MinSize {
+			return false
+		}
+		return !slices.ContainsFunc(out, func(o finding.Finding) bool {
+			return o.Path != x.Path && o.Path != "" && isWithin(o.Path, x.Path)
+		})
+	})
 }

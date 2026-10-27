@@ -9,6 +9,9 @@
 //	[scanners]
 //	disable = ["ollama"]
 //
+//	[worktrees]
+//	github = true
+//
 // Every key is optional. An unknown key is an error that names it, so a typo
 // never silently changes what a scan covers. Command line flags override the
 // file.
@@ -38,6 +41,9 @@ type file struct {
 	Scanners struct {
 		Disable []string `toml:"disable"`
 	} `toml:"scanners"`
+	Worktrees struct {
+		GitHub *bool `toml:"github"`
+	} `toml:"worktrees"`
 }
 
 // Config is the loaded configuration. Paths are absolute and clean, with "~"
@@ -59,7 +65,14 @@ type Config struct {
 	// Disable lists scanner names, categories or ecosystems that do not run
 	// unless a --category flag names them.
 	Disable []string
+	// NoGitHub is set by [worktrees] github = false: the worktree scanners
+	// and done never ask gh for pull request state.
+	NoGitHub bool
 }
+
+// GitHub reports whether the worktree scanners and done may ask gh for pull
+// request state, which is the default.
+func (c *Config) GitHub() bool { return !c.NoGitHub }
 
 // DefaultPath returns the configuration file path: $XDG_CONFIG_HOME/reclaim
 // when that variable holds an absolute path, else ~/.config/reclaim, on
@@ -127,6 +140,9 @@ func Parse(text, home string) (*Config, error) {
 		if cfg.Stale, err = units.ParseAge(f.Stale); err != nil {
 			return nil, fmt.Errorf("stale: %w", err)
 		}
+	}
+	if f.Worktrees.GitHub != nil {
+		cfg.NoGitHub = !*f.Worktrees.GitHub
 	}
 	for _, d := range f.Scanners.Disable {
 		if d = strings.TrimSpace(d); d != "" && !slices.Contains(cfg.Disable, d) {

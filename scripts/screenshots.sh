@@ -1,7 +1,7 @@
 #!/bin/sh
 # Regenerates the README screenshots in docs/screenshots.
 #
-# TestScreenshots in cmd/reclaim runs scan, here and the select checklist
+# TestScreenshots in cmd/reclaim runs scan, here, worktrees and the select checklist
 # against a fixture machine it builds in a temp directory, never against this
 # machine, and writes their colored output to cmd/reclaim/testdata/screenshots.
 # freeze then renders each file as an SVG. freeze runs through go run, so
@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.."
 RUNEWIDTH_EASTASIAN=0 RECLAIM_UPDATE_SCREENSHOTS=1 go test -count=1 -run '^TestScreenshots$' ./cmd/reclaim/
 
 mkdir -p docs/screenshots
-for name in scan here select; do
+for name in scan here worktrees select; do
 	go run github.com/charmbracelet/freeze@latest \
 		"cmd/reclaim/testdata/screenshots/$name.ansi" \
 		--output "docs/screenshots/$name.svg" \
@@ -33,4 +33,4 @@ if grep -l -e '/Users/' -e '/home/' -e '/var/folders/' docs/screenshots/*.svg; t
 	echo "screenshots.sh: a screenshot shows a real path" >&2
 	exit 1
 fi
-echo "Rendered docs/screenshots/scan.svg, here.svg and select.svg."
+echo "Rendered docs/screenshots/scan.svg, here.svg, worktrees.svg and select.svg."

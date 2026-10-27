@@ -125,7 +125,7 @@ func (a *app) scanCommand(cmd *cobra.Command, args []string, f scanFlags) error 
 		}
 		paths = roots
 		if !f.all {
-			selected = scan.OnlyCategory(selected, finding.CategoryProject)
+			selected = scan.UnderRoots(selected)
 		}
 	case len(cfg.Roots) > 0:
 		roots = a.configRoots(cfg)
@@ -143,6 +143,7 @@ func (a *app) scanCommand(cmd *cobra.Command, args []string, f scanFlags) error 
 		"all", "category", "depth", "docker-label", "json", "md", "min-size", "out", "stale", "tier")
 	report := a.runScan(cmd.Context(), reg, scanRequest{
 		scanners: selected, roots: roots, exclude: cfg.Exclude, depth: f.depth, labels: labels, scope: scope,
+		worktrees: scan.WorktreeOptions{GitHub: cfg.GitHub()},
 	})
 	if err := cmd.Context().Err(); err != nil {
 		return fmt.Errorf("scan interrupted: %w", err)

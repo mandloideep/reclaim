@@ -78,6 +78,18 @@ type Action struct {
 	NeedsSudo bool `json:"needs_sudo,omitempty"`
 	// Warning is shown before the action runs.
 	Warning string `json:"warning,omitempty"`
+	// Repo is the main repository of a GitWorktreeRemove or GitWorktreePrune
+	// action.
+	Repo string `json:"repo,omitempty"`
+	// Head is the commit a worktree was at when it was scanned. Apply refuses
+	// a worktree that moved since.
+	Head string `json:"head,omitempty"`
+	// Registrations are the stale registrations a GitWorktreePrune action
+	// covers. Apply refuses when git would prune any other.
+	Registrations []string `json:"registrations,omitempty"`
+	// Worktree is the state the scanner found, the proof that removing the
+	// worktree is safe. Apply computes it again before acting.
+	Worktree *finding.WorktreeState `json:"worktree,omitempty"`
 }
 
 // Label is a short description of the action for terminal output.
@@ -96,7 +108,7 @@ func (a *Action) Label() string {
 
 // FromFinding converts a finding into a plan action.
 func FromFinding(f *finding.Finding) Action {
-	return Action{
+	a := Action{
 		ID:        f.ID,
 		Action:    f.Action,
 		Path:      f.Path,
@@ -114,6 +126,16 @@ func FromFinding(f *finding.Finding) Action {
 		NeedsSudo: f.NeedsSudo,
 		Warning:   f.Warning,
 	}
+	if f.Action == finding.ActionGitWorktreeRemove || f.Action == finding.ActionGitWorktreePrune {
+		a.Repo = f.Repo
+		a.Registrations = slices.Clone(f.Registrations)
+	}
+	if f.Worktree != nil {
+		state := *f.Worktree
+		a.Worktree = &state
+		a.Head = state.Head
+	}
+	return a
 }
 
 // New builds a plan from selected findings of a report. Actions are ordered
@@ -136,13 +158,17 @@ func New(r *finding.Report, selected []finding.Finding, host string, now time.Ti
 	for i := range selected {
 		p.Actions = append(p.Actions, FromFinding(&selected[i]))
 	}
+	// Worktrees go before the folders that hold them, such as a Codex task
+	// folder, which is removed only once it is empty.
 	order := map[finding.Action]int{
 		finding.ActionDockerRemoveContainer: 0,
 		finding.ActionDockerRemoveImage:     1,
 		finding.ActionDockerRemoveVolume:    2,
 		finding.ActionDockerPruneBuildCache: 3,
-		finding.ActionRemovePath:            4,
-		finding.ActionRunCommand:            5,
+		finding.ActionGitWorktreeRemove:     4,
+		finding.ActionGitWorktreePrune:      5,
+		finding.ActionRemovePath:            6,
+		finding.ActionRunCommand:            7,
 	}
 	slices.SortStableFunc(p.Actions, func(a, b Action) int {
 		if d := cmp.Compare(order[a.Action], order[b.Action]); d != 0 {
@@ -299,6 +325,13 @@ func (a *Action) validate() error {
 		if len(a.Command) > 0 {
 			return errors.New("RemovePath must not carry a command")
 		}
+		if a.Repo != "" || a.Head != "" || a.Worktree != nil || len(a.Registrations) > 0 {
+			return errors.New("RemovePath must not carry worktree fields")
+		}
+	case finding.ActionGitWorktreeRemove:
+		return a.validateWorktreeRemove()
+	case finding.ActionGitWorktreePrune:
+		return a.validateWorktreePrune()
 	case finding.ActionRunCommand:
 		c, ok := lookupCommand(a.Command)
 		if !ok {
@@ -311,6 +344,10 @@ func (a *Action) validate() error {
 		if a.Path != "" || len(a.Command) > 0 {
 			return fmt.Errorf("%s must not carry a path or command", a.Action)
 		}
+	}
+	if a.Action != finding.ActionGitWorktreeRemove && a.Action != finding.ActionGitWorktreePrune &&
+		(a.Repo != "" || a.Head != "" || a.Worktree != nil || len(a.Registrations) > 0) {
+		return fmt.Errorf("%s must not carry worktree fields", a.Action)
 	}
 	return nil
 }
