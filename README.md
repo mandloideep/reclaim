@@ -1,12 +1,12 @@
 # reclaim
 
-`reclaim` finds the disk space a developer machine can get back: build artifacts, dependency folders, package manager caches, Docker leftovers, app caches and forgotten downloads.
+`reclaim` finds the disk space a developer machine can get back: build artifacts, dependency folders, git worktrees that coding agents left behind, package manager caches, Docker leftovers, app caches and forgotten downloads.
 It shows everything with its size and says how each item comes back, and it removes only what you pick and confirm.
 
 ![reclaim scan listing project artifacts, package caches, Docker objects, app caches and downloads by size](docs/screenshots/scan.svg)
 
-Status: phases 1 to 3 are complete.
-`scan`, `here`, `select` and `apply` work on macOS and Linux, with table, JSON and Markdown output, an interactive checklist, a config file, shell completion, release binaries and a Homebrew formula.
+Status: phases 1 to 4 are complete.
+`scan`, `here`, `select`, `apply`, `worktrees` and `done` work on macOS and Linux, with table, JSON and Markdown output, an interactive checklist, a config file, shell completion, release binaries, a Homebrew formula, an install script and a skill for coding agents.
 Windows is not supported.
 [docs/DESIGN.md](docs/DESIGN.md) is the specification.
 
@@ -20,8 +20,15 @@ brew install mandloideep/tap/reclaim
 
 The formula installs shell completions for bash, zsh and fish as well.
 
-From a release: download the archive for your system from the [releases page](https://github.com/mandloideep/reclaim/releases), check it against `checksums.txt`, and put `reclaim` on your `PATH`.
-Archives exist for macOS and Linux on arm64 and amd64.
+Without Homebrew, for example on a Linux server or a CI runner, the install script downloads the latest release for your system, checks it against `checksums.txt` and puts `reclaim` in `~/.local/bin`, without `sudo`:
+
+```
+curl -fsSL https://raw.githubusercontent.com/mandloideep/reclaim/main/scripts/install.sh | sh
+```
+
+`--version v0.2.0` installs another release and `--bin-dir ~/bin` another folder; pass them after `sh -s --`.
+It needs `curl` or `wget` and `tar`, and prints how to turn on shell completion.
+The archives for macOS and Linux on arm64 and amd64 are also on the [releases page](https://github.com/mandloideep/reclaim/releases).
 
 With Go 1.25 or newer:
 
@@ -56,8 +63,11 @@ Every finding has a tier that says what removing it costs.
 These are selected for you in the checklist.
 - Tier B can be downloaded or rebuilt again, but that costs time or bandwidth: package manager stores such as the npm cache or the Go module cache, Ollama models, Playwright browsers, unused Docker images and volumes, installers of apps you already installed.
 They are never preselected.
-- Tier C may be data that cannot be restored: a `dist` folder with no build config next to it, a Docker volume attached to a stopped container, an archive in Downloads next to its extracted copy, a Codex worktree with uncommitted changes.
+- Tier C may be data that cannot be restored: a `dist` folder with no build config next to it, a Docker volume attached to a stopped container, an archive in Downloads next to its extracted copy.
 They come with a warning, a preset never selects them, a group toggle skips them, and you tick each one yourself.
+
+Git worktrees are tier A when every change is committed, every commit is pushed and the work is merged into the default branch, including squash and rebase merges, and tier B when they are pushed but not merged.
+A worktree that holds work that exists nowhere else is never offered: it is listed with the commands that save its work.
 
 Large files in Downloads that nobody touched for 90 days are listed under "Attention, never removed".
 They have no tier letter, are never counted as reclaimable and cannot be selected: reclaim shows them so you can decide.
@@ -75,6 +85,9 @@ Only commands from a fixed list can run, so an edited plan cannot run anything e
 - reclaim never runs with elevated rights.
 Anything that needs `sudo` is printed as a command for you to run.
 - A plan whose scan is more than 24 hours old is refused unless you pass `--stale-ok`.
+- A git worktree is removed only with `git worktree remove`, never with `--force`, after `apply` checks again, right before acting, that it is a linked worktree at the commit the scan saw and that nothing in it is uncommitted, untracked, ignored outside build folders, on no branch or on no remote.
+A worktree whose work exists nowhere else is never removed, whoever asks and whatever flags are given; reclaim prints the `--force` command for you instead.
+Branches are never deleted and nothing is ever pushed or fetched.
 - Every `apply` run writes a log of what it did and how much it freed.
 
 ## Commands
@@ -89,7 +102,7 @@ reclaim scan [path...]
 
 Reports everything reclaimable, grouped by category and then by project, Docker object kind or scanner, largest first.
 With no path it walks the roots from the config file, or `~/Code`, `~/Developer`, `~/Projects`, `~/src`, `~/work` and `~/Downloads`, whichever exist, and checks package caches, Docker, app caches and Downloads.
-With paths it looks only for project artifacts under them.
+With paths it looks only for project artifacts and git worktrees under them.
 
 - `--json` prints the full report as JSON, `--md` prints a Markdown summary for an issue or a document.
 - `--min-size 50MB` hides smaller findings; the default is 10 MB and `0` shows everything.
@@ -148,6 +161,48 @@ Prints every action with its size, asks you to type `yes`, then carries the acti
 - `--stale-ok` accepts a plan whose scan is more than 24 hours old.
 - `--log apply.log` appends the log to that file instead of a new one in the reclaim cache folder.
 
+### worktrees
+
+```
+reclaim worktrees [path...]
+```
+
+Shows every linked git worktree of the repositories under the paths or the configured roots, and the ones Codex made, one table per repository: the tool that made it, its branch, uncommitted files, unpushed commits, whether it is merged, its pull request, its lock and its size.
+Under a worktree that holds work it prints the commands that save it and the `git worktree remove --force` command, which reclaim never runs.
+
+![reclaim worktrees showing a merged Claude Code worktree as tier A, an unmerged one as tier B, one in use and a Codex worktree with uncommitted changes](docs/screenshots/worktrees.svg)
+
+Merge state is as of the repository's last fetch; reclaim never fetches.
+Pull requests come from `gh` when it is installed and signed in; `[worktrees] github = false` in the config file turns that off.
+`--json`, `--md` and `--out report.json` work as for `scan`, so `reclaim worktrees` followed by `reclaim select` cleans up worktrees alone.
+
+### done
+
+```
+reclaim done [path]
+```
+
+The one command an agent, or a person, runs at the end of a task in a worktree.
+It prints the state of the worktree at `path`, default the current folder, in plain words, such as "committed, pushed, merged in PR #3, 158 MB", or as JSON with `--json`, and exits:
+
+- `0` committed, pushed and merged;
+- `1` pushed but not merged;
+- `2` holding work that exists nowhere else, with the commands that save it;
+- `3` not a linked worktree, or a state git could not report.
+
+`--remove` removes a worktree that exits `0` through a plan and `apply`, like everything else, with the plan and log in the reclaim cache folder.
+`--remove --allow-unmerged` also removes one that exits `1`.
+Nothing removes a worktree that exits `2`.
+Run it from the main checkout: it never removes the folder it runs in.
+
+### skill
+
+```
+mkdir -p ~/.claude/skills/reclaim && reclaim skill > ~/.claude/skills/reclaim/SKILL.md
+```
+
+Prints the agent skill described under "For agents".
+
 ### scanners and version
 
 `reclaim scanners` lists every scanner with its category, ecosystem, what it looks for and whether the config file disables it.
@@ -172,7 +227,24 @@ stale = "60d"                       # default for --stale
 
 [scanners]
 disable = ["ollama"]                # names, categories or ecosystems, as in reclaim scanners
+
+[worktrees]
+github = true                       # ask gh for pull requests; false keeps reclaim offline
 ```
+
+## For agents
+
+Claude Code, Codex and other coding agents work in git worktrees and leave them behind.
+`reclaim skill` prints a skill that tells an agent, when its task is done, to run `reclaim done --json` from the main checkout, to push or open a pull request when the exit code says so, and to run `reclaim done --remove` only once the work is merged.
+The agent never removes a worktree itself and never forces anything.
+
+For Claude Code:
+
+```
+mkdir -p ~/.claude/skills/reclaim && reclaim skill > ~/.claude/skills/reclaim/SKILL.md
+```
+
+For Codex or any agent that reads `AGENTS.md` or `CLAUDE.md`, paste the section in [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Shell completion
 
@@ -220,7 +292,7 @@ type Scanner interface {
 Everything it needs, such as the home folder, the size walker, a runner for asking tools where their caches are and the Docker client, comes from `scan.Env`, so tests can pass fakes.
 Each finding says what `apply` does with it, its tier, how to get it back and, for tier C, a warning.
 
-Scanners live in family packages under `internal/scanners`: `projects` for artifact folders inside projects, `caches` for package managers, `docker`, `appcache` and `downloads`.
+Scanners live in family packages under `internal/scanners`: `projects` for artifact folders inside projects, `worktrees` for git worktrees, `caches` for package managers, `docker`, `appcache` and `downloads`.
 A new project artifact is usually one more entry in the rules of `internal/scanners/projects/rules.go`, and a new package cache one more entry in `internal/scanners/caches/specs.go`.
 A scanner of a new kind is added to the explicit list in `internal/scanners/all.go`.
 

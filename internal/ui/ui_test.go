@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"errors"
+	"io"
 	"slices"
 	"strconv"
 	"strings"
@@ -254,4 +255,11 @@ func TestPath(t *testing.T) {
 	require.Equal(t, "~/x", p.Path("/Users/me/x"))
 	require.Equal(t, "/Users/meow", p.Path("/Users/meow"))
 	require.Equal(t, "", p.Path(""))
+}
+
+func TestShortCommand(t *testing.T) {
+	p := New(io.Discard, "/Users/me", time.Now())
+	require.Equal(t, "git -C ~/Code/app worktree remove --force ~/Code/app/wt", p.ShortCommand("git -C /Users/me/Code/app worktree remove --force /Users/me/Code/app/wt"))
+	require.Equal(t, "git -C ~/'Code/my app' push", p.ShortCommand("git -C '/Users/me/Code/my app' push"))
+	require.Equal(t, "git -C /Users/meg/x push", p.ShortCommand("git -C /Users/meg/x push"))
 }

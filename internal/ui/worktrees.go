@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -172,7 +173,7 @@ func (p *Printer) Worktrees(r *finding.Report) {
 				line = p.Tier(f.Tier) + line[1:]
 			}
 			if f.Action == finding.ActionGitWorktreePrune {
-				line += p.dim.Render("  via " + strings.Join(f.Command, " "))
+				line += p.dim.Render("  via " + p.ShortCommand(strings.Join(f.Command, " ")))
 			}
 			p.println(line)
 			if f.Warning != "" && !f.Actionable() {
@@ -200,10 +201,10 @@ func (p *Printer) worktreeDetails(f *finding.Finding, indent string) {
 		p.println(indent + p.warn.Render("! "+f.Warning))
 	}
 	for _, h := range s.Hints {
-		p.println(indent + p.dim.Render("save: ") + h)
+		p.println(indent + p.dim.Render("save: ") + p.ShortCommand(h))
 	}
 	if s.ForceCommand != "" {
-		p.println(indent + p.dim.Render("remove anyway, losing it: ") + s.ForceCommand)
+		p.println(indent + p.dim.Render("remove anyway, losing it: ") + p.ShortCommand(s.ForceCommand))
 	}
 }
 
@@ -218,17 +219,17 @@ func (p *Printer) worktreeTotals(fs []finding.Finding) string {
 			counts[s.Verdict]++
 		}
 	}
-	parts := []string{p.bold.Render(plural(n, "linked worktree", "linked worktrees"))}
+	var parts []string
 	for _, v := range []struct {
 		verdict finding.Verdict
 		words   string
-	}{{finding.VerdictRemovable, "removable"}, {finding.VerdictPushed, "pushed, not merged"},
-		{finding.VerdictAttention, "holding work that exists nowhere else or could not be checked"}, {finding.VerdictInUse, "in use"}} {
+	}{{finding.VerdictRemovable, "removable"}, {finding.VerdictPushed, "pushed but not merged"},
+		{finding.VerdictAttention, "holding work or not checkable"}, {finding.VerdictInUse, "in use"}} {
 		if counts[v.verdict] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", counts[v.verdict], v.words))
 		}
 	}
-	line := strings.Join(parts, ", ")
+	line := p.bold.Render(plural(n, "linked worktree", "linked worktrees")) + ": " + strings.Join(parts, ", ")
 	var worktreeFindings []finding.Finding
 	for i := range fs {
 		if fs[i].Category == finding.CategoryWorktree {
@@ -236,9 +237,20 @@ func (p *Printer) worktreeTotals(fs []finding.Finding) string {
 		}
 	}
 	if size := finding.ReclaimableSize(worktreeFindings); size > 0 {
-		line += "; " + p.bold.Render(units.FormatSize(size)) + " reclaimable (" + tierTotals(worktreeFindings) + ")"
+		line += "\n" + p.bold.Render(units.FormatSize(size)) + " reclaimable (" + tierTotals(worktreeFindings) + ")"
 	}
 	return line
+}
+
+// ShortCommand shortens the home directory to ~ in a shell command, keeping
+// it a command that works: a quoted path becomes ~/'rest'.
+func (p *Printer) ShortCommand(cmd string) string {
+	if p.home == "" {
+		return cmd
+	}
+	home := p.home + string(filepath.Separator)
+	cmd = strings.ReplaceAll(cmd, "'"+home, "~/'")
+	return strings.ReplaceAll(cmd, home, "~/")
 }
 
 // joinRow pads every cell but the last to its column width.
@@ -326,7 +338,7 @@ func (p *Printer) WorktreesMarkdown(r *finding.Report) {
 		}
 	}
 	p.println("")
-	p.println(p.worktreeTotals(r.Findings) + ".")
+	p.println(strings.ReplaceAll(p.worktreeTotals(r.Findings), "\n", ".\n") + ".")
 	p.println("")
 	p.println("A is committed, pushed and merged; B is pushed but not merged; a dash is listed only. Nothing was removed.")
 	p.markdownWarnings(r.Warnings, r.Notes)

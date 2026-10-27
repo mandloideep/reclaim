@@ -189,7 +189,8 @@ func TestWorktreesThenSelectThenApply(t *testing.T) {
 	withOutput(a)
 	require.NoError(t, execute(a, "worktrees", f.Dir))
 	out := output(a)
-	for _, s := range []string{"TIER  TOOL", "claude-code", "merged", "pushed", "1 modified", "save: git -C " + w["unpushed"] + " push -u origin unpushed", "remove anyway, losing it: git -C " + f.Repo + " worktree remove --force " + w["dirty"]} {
+	for _, s := range []string{"TIER  TOOL", "claude-code", "merged", "pushed", "1 modified", "save: git -C ~/repo/.claude/worktrees/unpushed push -u origin unpushed",
+		"remove anyway, losing it: git -C ~/repo worktree remove --force ~/repo/.claude/worktrees/dirty"} {
 		require.Contains(t, out, s)
 	}
 

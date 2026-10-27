@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +62,10 @@ func TestScreenshots(t *testing.T) {
 	require.NoError(t, execute(a, "here", filepath.Join(a.home, "Code", "storefront")))
 	shots["here"] = prompt("reclaim here ~/Code/storefront") + out.String()
 
+	out.Reset()
+	require.NoError(t, execute(a, "worktrees"))
+	shots["worktrees"] = prompt("reclaim worktrees") + out.String()
+
 	var view bytes.Buffer
 	m := ui.NewChecklist(report, ui.ChecklistOptions{
 		Home:       a.home,
@@ -73,7 +79,7 @@ func TestScreenshots(t *testing.T) {
 	for _, k := range []tea.KeyMsg{
 		down, {Type: tea.KeyEnter}, // open ~/Code/ripgrep-fork
 		down, down, {Type: tea.KeyEnter}, // open ~/Code/ml-pipeline
-		down, down, down, down, down, down, down, down, // down to the npm cache
+		down, down, down, down, down, down, down, down, down, down, // down to the npm cache
 		{Type: tea.KeySpace, Runes: []rune{' '}}, // tick it, a tier B finding
 	} {
 		m.Update(k)
@@ -171,8 +177,38 @@ func screenshotApp(t *testing.T) (*app, *bytes.Buffer) {
 		"Code/storefront/package.json": `{"scripts":{"build":"next build"}}`,
 	})
 
-	// Everything is old, then each project gets its own last activity.
+	// The storefront repository has worktrees from Claude Code and Codex.
 	day := 24 * time.Hour
+	repo := filepath.Join(h, "Code", "storefront")
+	agents := filepath.Join(repo, ".claude", "worktrees")
+	lockStart := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
+	outputs := map[string]string{
+		"npm config get cache": filepath.Join(h, ".npm"),
+		"go env GOMODCACHE":    filepath.Join(h, "go", "pkg", "mod"),
+		"go env GOCACHE":       filepath.Join(h, "Library", "Caches", "go-build"),
+		"brew --cache":         filepath.Join(h, "Library", "Caches", "Homebrew"),
+		// ps prints local time; Claude Code records the lock in UTC.
+		"ps -o lstart= -p 4242": lockStart.In(time.Local).Format("Mon Jan _2 15:04:05 2006"),
+	}
+	addFakeRepo(t, fakeRepo{
+		path: repo, origin: "git@github.com:acme/storefront.git", fetched: screenshotNow.Add(-3 * time.Hour),
+		worktrees: []fakeWorktree{
+			{path: filepath.Join(agents, "agent-3f9c1e2a"), name: "agent-3f9c1e2a", branch: "fix/checkout-rounding",
+				head: "a3f9c1e2a7d04b6e8c1f2a3b4c5d6e7f8a9b0c1d", merged: "squash", size: 184 * MB,
+				pr: `[{"number":41,"state":"MERGED","url":"https://github.com/acme/storefront/pull/41"}]`},
+			{path: filepath.Join(agents, "agent-7b2d40aa"), name: "agent-7b2d40aa", branch: "feat/gift-cards",
+				head: "a7b2d40aa1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6", merged: "no", size: 96 * MB,
+				pr: `[{"number":44,"state":"OPEN","url":"https://github.com/acme/storefront/pull/44"}]`},
+			{path: filepath.Join(agents, "agent-c0ffee12"), name: "agent-c0ffee12", branch: "chore/upgrade-next",
+				head: "ac0ffee12b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e", merged: "no", size: 88 * MB, pr: `[]`,
+				lock: "claude agent agent-c0ffee12 (pid 4242 start " + lockStart.Format("Mon Jan _2 15:04:05 2006") + ")"},
+			{path: filepath.Join(h, ".codex", "worktrees", "5e1d", "storefront"), name: "storefront",
+				head: "a5e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3", merged: "ancestor", modified: 12, untracked: 3, size: 231 * MB},
+		},
+		stale: []string{filepath.Join(h, "Code", "storefront-spike"), filepath.Join(h, "Code", "storefront-v1")},
+	}, outputs)
+
+	// Everything is old, then each project gets its own last activity.
 	setTimes(t, h, screenshotNow.Add(-400*day))
 	for project, age := range map[string]time.Duration{
 		"storefront": 2 * day, "ml-pipeline": 20 * day, "ripgrep-fork": 150 * day, "weather": 60 * day, "blog": 380 * day,
@@ -184,18 +220,25 @@ func screenshotApp(t *testing.T) (*app, *bytes.Buffer) {
 			}
 		}
 	}
-	// Caches are in daily use.
-	for _, recent := range []string{".npm", "go", "Library/Caches", "Library/Developer/Xcode/DerivedData", ".ollama/models", "Downloads/Zed-0.150.4.dmg"} {
+	// Caches are in daily use, and so are the worktrees.
+	for _, recent := range []string{".npm", "go", "Library/Caches", "Library/Developer/Xcode/DerivedData", ".ollama/models", "Downloads/Zed-0.150.4.dmg",
+		"Code/storefront/.git/worktrees", "Code/storefront/.claude", ".codex"} {
 		setTimes(t, filepath.Join(h, filepath.FromSlash(recent)), screenshotNow.Add(-3*day))
 	}
+	fetched := screenshotNow.Add(-3 * time.Hour)
+	require.NoError(t, os.Chtimes(filepath.Join(repo, ".git", "FETCH_HEAD"), fetched, fetched))
 
 	a.exec = &execx.Fake{
-		Tools: map[string]string{"npm": "/opt/homebrew/bin/npm", "go": "/opt/homebrew/bin/go", "brew": "/opt/homebrew/bin/brew"},
-		Outputs: map[string]string{
-			"npm config get cache": filepath.Join(h, ".npm"),
-			"go env GOMODCACHE":    filepath.Join(h, "go", "pkg", "mod"),
-			"go env GOCACHE":       filepath.Join(h, "Library", "Caches", "go-build"),
-			"brew --cache":         filepath.Join(h, "Library", "Caches", "Homebrew"),
+		Tools: map[string]string{"npm": "/opt/homebrew/bin/npm", "go": "/opt/homebrew/bin/go", "brew": "/opt/homebrew/bin/brew",
+			"git": "/usr/bin/git", "ps": "/bin/ps", "gh": "/opt/homebrew/bin/gh"},
+		Outputs: outputs,
+		// The project scanners ask git whether artifact folders hold
+		// committed files; in the fixture none do.
+		Fallback: func(name string, args []string) (string, error) {
+			if name == "git" && slices.Contains(args, "ls-files") {
+				return "", nil
+			}
+			return "", errors.New(name + " " + strings.Join(args, " ") + ": no fake output")
 		},
 	}
 	finished := screenshotNow.Add(-12 * day).Format(time.RFC3339Nano)

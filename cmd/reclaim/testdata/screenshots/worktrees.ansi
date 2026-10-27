@@ -1,0 +1,23 @@
+[2m$[0m [1mreclaim worktrees[0m
+
+[1;4;4m~[0m[1;4;4m/[0m[1;4;4mC[0m[1;4;4mo[0m[1;4;4md[0m[1;4;4me[0m[1;4;4m/[0m[1;4;4ms[0m[1;4;4mt[0m[1;4;4mo[0m[1;4;4mr[0m[1;4;4me[0m[1;4;4mf[0m[1;4;4mr[0m[1;4;4mo[0m[1;4;4mn[0m[1;4;4mt[0m
+[2mgit@github.com:acme/storefront.git; compared with origin/main, fetched 3h ago; 1 removable, 1 pushed but not merged, 1 holding work, 1 in use, 2 stale registrations[0m
+[2mTIER  TOOL         BRANCH                 UNCOMMITTED               UNPUSHED  MERGED    PR          LOCK            SIZE      PATH[0m
+[1;32mA[0m     claude-code  fix/checkout-rounding  -                         -         squash    #41 merged  -               184.0 MB  .claude/worktrees/agent-3f9c1e2a
+[1;33mB[0m     claude-code  feat/gift-cards        -                         -         no        #44 open    -               96.0 MB   .claude/worktrees/agent-7b2d40aa
+     [2mpushed, not merged; PR #44 is open[0m
+-     claude-code  chore/upgrade-next     -                         -         no        -           live, pid 4242  88.0 MB   .claude/worktrees/agent-c0ffee12
+     [33m! in use, locked by a running process: claude agent agent-c0ffee12 (pid 4242 start Mon Oct  5 08:00:00 2026)[0m
+     [2msave: [0mgh pr create --head chore/upgrade-next
+-     codex        detached a5e1d0c9      12 modified, 3 untracked  -         ancestor  -           -               231.0 MB  ~/.codex/worktrees/5e1d/storefront
+     [33m! 12 modified and 3 untracked files[0m
+     [2msave: [0mgit -C ~/.codex/worktrees/5e1d/storefront add -A && git -C ~/.codex/worktrees/5e1d/storefront commit
+     [2msave: [0mgit -C ~/.codex/worktrees/5e1d/storefront diff > rescue-a5e1d0c9b8a7.patch
+     [2mremove anyway, losing it: [0mgit -C ~/Code/storefront worktree remove --force ~/.codex/worktrees/5e1d/storefront
+[1;32mA[0m  800.2 kB  2 stale worktree registrations[2m  via git -C ~/Code/storefront worktree prune[0m
+
+[1m4 linked worktrees[0m: 1 removable, 1 pushed but not merged, 1 holding work or not checkable, 1 in use
+[1m280.8 MB[0m reclaimable (A 184.8 MB, B 96.0 MB)
+[2mA is committed, pushed and merged; B is pushed but not merged; - is listed only. Nothing was removed.[0m
+
+Next: reclaim select to pick the worktrees that go, or reclaim select --preset safe.

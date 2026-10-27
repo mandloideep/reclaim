@@ -84,7 +84,7 @@ func (p *Printer) RepoLine(r *RepoSummary) string {
 	for _, v := range []struct {
 		verdict finding.Verdict
 		one     string
-	}{{finding.VerdictRemovable, "removable"}, {finding.VerdictPushed, "pushed, not merged"},
+	}{{finding.VerdictRemovable, "removable"}, {finding.VerdictPushed, "pushed but not merged"},
 		{finding.VerdictAttention, "holding work"}, {finding.VerdictInUse, "in use"}} {
 		if n := r.Verdicts[v.verdict]; n > 0 {
 			counts = append(counts, fmt.Sprintf("%d %s", n, v.one))

@@ -14,8 +14,11 @@ type Fake struct {
 	// Tools maps a tool name to its full path. Tools not listed are not installed.
 	Tools map[string]string
 	// Outputs maps a full command line, such as "npm config get cache", to the
-	// output Output returns. Commands not listed fail.
+	// output Output returns. Commands not listed go to Fallback, or fail.
 	Outputs map[string]string
+	// Fallback, when set, answers the Output calls that Outputs does not
+	// list.
+	Fallback func(name string, args []string) (string, error)
 	// RunErr, when set, is returned by every Run call.
 	RunErr error
 	// OnRun, when set, is called by Run, for example to simulate the effect of
@@ -42,6 +45,10 @@ func (f *Fake) Output(_ context.Context, name string, args ...string) (string, e
 	line := strings.Join(append([]string{name}, args...), " ")
 	if out, ok := f.Outputs[line]; ok {
 		return strings.TrimSpace(out), nil
+	}
+	if f.Fallback != nil {
+		out, err := f.Fallback(name, args)
+		return strings.TrimSpace(out), err
 	}
 	return "", errors.New(line + ": no fake output")
 }
