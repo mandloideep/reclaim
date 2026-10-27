@@ -150,7 +150,7 @@ func (a *app) doneCommand(ctx context.Context, path string, f doneFlags) error {
 			a.warnf("pull request state is not shown: %v", err)
 		}
 	}
-	size, _ := fsx.NewWalker(0).Size(ctx, state.Path)
+	size := fsx.Result{Size: state.Size}
 	code := doneCode(state)
 
 	if f.json {
@@ -200,7 +200,7 @@ func refusalCode(err error) int {
 	switch ref.Check {
 	case apply.CheckPath, apply.CheckWorkdir:
 		return donePushed
-	case apply.CheckState:
+	case apply.CheckState, apply.CheckHead:
 		if ref.State == nil {
 			return doneUnknown
 		}

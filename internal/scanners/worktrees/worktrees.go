@@ -85,7 +85,7 @@ func Scanners() []*Scanner {
 const concurrency = 8
 
 func wenv(env *scan.Env) worktree.Env {
-	return worktree.Env{Exec: env.Exec, CodexHome: env.CodexHome()}
+	return worktree.Env{Exec: env.Exec, CodexHome: env.CodexHome(), Walker: env.Walker}
 }
 
 // noGit reports whether git is missing, and notes it when there were
@@ -286,12 +286,17 @@ func toFinding(ctx context.Context, env *scan.Env, s *finding.WorktreeState) (fi
 		Worktree: s,
 	}
 	if s.Exists {
-		size, err := env.Size(ctx, s.Path)
-		if err != nil {
-			if ctx.Err() != nil {
-				return finding.Finding{}, false, ctx.Err()
+		// Classification walked the worktree for nested repositories and
+		// measured it on the way; only a walk that failed is repeated.
+		size := s.Size
+		if size == 0 {
+			var err error
+			if size, err = env.Size(ctx, s.Path); err != nil {
+				if ctx.Err() != nil {
+					return finding.Finding{}, false, ctx.Err()
+				}
+				env.Diag.Warn(s.Path, "could not measure: "+err.Error())
 			}
-			env.Diag.Warn(s.Path, "could not measure: "+err.Error())
 		}
 		f.Size = size
 		// git names a registration after the folder, with a number added

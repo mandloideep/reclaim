@@ -207,6 +207,17 @@ func TestRegistrationsOfFoldersThatExistAreNotOffered(t *testing.T) {
 	require.Len(t, regs, 1)
 	require.Equal(t, finding.ActionNone, regs[0].Action)
 	require.Contains(t, regs[0].Warning, kept+" (the folder still exists without its .git file)")
+
+	// A folder on a volume that is not mounted.
+	f3 := worktreetest.New(t)
+	away := f3.Worktree("away")
+	require.NoError(t, os.RemoveAll(away))
+	require.NoError(t, os.WriteFile(filepath.Join(f3.Repo, ".git", "worktrees", "away", "gitdir"),
+		[]byte("/Volumes/no-such-reclaim-test-drive/away/.git\n"), 0o644))
+	regs = runWorktrees(t, envFor(home, []string{f3.Dir}, execx.OS{}))["worktree-registrations"]
+	require.Len(t, regs, 1)
+	require.Equal(t, finding.ActionNone, regs[0].Action)
+	require.Contains(t, regs[0].Warning, "/Volumes/no-such-reclaim-test-drive/away (its volume is not mounted)")
 }
 
 func TestGitWorktreesLookupFailureIsOneWarning(t *testing.T) {

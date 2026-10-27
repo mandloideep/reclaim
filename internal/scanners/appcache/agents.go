@@ -14,6 +14,7 @@ import (
 
 	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/scan"
+	"github.com/mandloideep/reclaim/internal/worktree"
 )
 
 // sessionMinAge is how long a month of Codex sessions must have been left
@@ -153,7 +154,7 @@ func scanClaudeSessions(ctx context.Context, env *scan.Env) ([]finding.Finding, 
 		if cwd == "" {
 			continue
 		}
-		if _, err := os.Lstat(cwd); !errors.Is(err, fs.ErrNotExist) || onMissingVolume(cwd) {
+		if _, err := os.Lstat(cwd); !errors.Is(err, fs.ErrNotExist) || worktree.OnMissingVolume(cwd) {
 			continue
 		}
 		if now.Sub(newestModTime(ctx, dir)) < sessionMinAge {
@@ -168,26 +169,6 @@ func scanClaudeSessions(ctx context.Context, env *scan.Env) ([]finding.Finding, 
 		})
 	}
 	return collect(ctx, env, entries)
-}
-
-// onMissingVolume reports whether path lies on a removable or network volume
-// that is not mounted now, such as /Volumes/External on macOS or
-// /media/me/disk on Linux: its project may come back with the drive.
-func onMissingVolume(path string) bool {
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	var depth int
-	switch {
-	case len(parts) > 1 && (parts[0] == "Volumes" || parts[0] == "mnt"):
-		depth = 2
-	case len(parts) > 2 && parts[0] == "media":
-		depth = 3
-	case len(parts) > 3 && parts[0] == "run" && parts[1] == "media":
-		depth = 4
-	default:
-		return false
-	}
-	_, err := os.Lstat("/" + strings.Join(parts[:depth], "/"))
-	return errors.Is(err, fs.ErrNotExist)
 }
 
 // sessionCwd returns the working directory recorded in the session files of

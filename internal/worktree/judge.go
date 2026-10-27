@@ -134,9 +134,10 @@ func Judge(s *finding.WorktreeState) {
 // only the merge is missing, and attention otherwise, with the reasons.
 func WorkVerdict(s *finding.WorktreeState) (finding.Verdict, []string) {
 	var reasons []string
-	if len(s.Unknown) > 0 {
-		reasons = append(reasons, fmt.Sprintf("git could not report %s: %s", strings.Join(s.Unknown, ", "), s.Problem))
+	if failed := failedParts(s); len(failed) > 0 {
+		reasons = append(reasons, fmt.Sprintf("git could not report %s: %s", strings.Join(failed, ", "), s.Problem))
 	}
+	reasons = append(reasons, s.Blockers...)
 	if s.Modified > 0 || s.Untracked > 0 {
 		reasons = append(reasons, changedWords(s))
 	}
@@ -221,6 +222,12 @@ func hints(s *finding.WorktreeState) []string {
 			out = append(out, "gh pr create --head "+Quote(s.Branch))
 		}
 	}
+	if slices.Contains(s.Unknown, partSubmodules) {
+		out = append(out, "git -C "+p+" submodule foreach git push")
+	}
+	if slices.Contains(s.Unknown, partNested) {
+		out = append(out, "commit and push the work in the repositories inside "+p)
+	}
 	if s.Locked && !s.LockLive {
 		out = append(out, "git -C "+Quote(s.Repo)+" worktree unlock "+p)
 	}
@@ -282,9 +289,10 @@ func more(total, shown int) string {
 // pushed, merged in PR #3".
 func Words(s *finding.WorktreeState) string {
 	var parts []string
-	if len(s.Unknown) > 0 {
-		parts = append(parts, "git could not report "+strings.Join(s.Unknown, ", "))
+	if failed := failedParts(s); len(failed) > 0 {
+		parts = append(parts, "git could not report "+strings.Join(failed, ", "))
 	}
+	parts = append(parts, s.Blockers...)
 	if s.Modified > 0 || s.Untracked > 0 {
 		parts = append(parts, changedWords(s))
 	} else if !slices.Contains(s.Unknown, "modified") {

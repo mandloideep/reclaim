@@ -110,13 +110,13 @@ func ProveWorktree(ctx context.Context, opts Options, roots []string, a *plan.Ac
 	if a.Action != finding.ActionGitWorktreeRemove {
 		return fail(CheckLinked, fmt.Sprintf("action %s is not %s", a.Action, finding.ActionGitWorktreeRemove))
 	}
-	env := worktree.Env{Exec: opts.Exec}
+	env := worktree.Env{Exec: opts.Exec, Walker: opts.Walker}
 
 	// 1. A linked worktree of the recorded repository at the recorded head.
 	if err := checkLinked(ctx, env, a); err != nil {
 		return fail(CheckLinked, err.Error())
 	}
-	pass(CheckLinked, "registered in "+filepath.Join(a.Repo, ".git", "worktrees")+" at "+a.Head)
+	pass(CheckLinked, "registered in "+filepath.Join(a.Repo, ".git", "worktrees"))
 
 	// 2. Every RemovePath check that applies to a folder holding a .git file.
 	info, size, err := checkWorktreePath(ctx, opts, roots, a)
@@ -212,9 +212,9 @@ func checkLinked(ctx context.Context, env worktree.Env, a *plan.Action) error {
 			return fmt.Errorf("git lists it as the main worktree of %s", a.Repo)
 		case e.Prunable:
 			return fmt.Errorf("git lists it as prunable: %s", e.PrunableReason)
-		case e.Head != a.Head:
-			return fmt.Errorf("git lists it at %s, the plan was made at %s", e.Head, a.Head)
 		}
+		// A HEAD that moved is check 4's to report, after the state is
+		// computed again, so done can say what the worktree holds now.
 		return nil
 	}
 	return fmt.Errorf("git -C %s worktree list does not list it", a.Repo)
@@ -246,6 +246,16 @@ func checkWorktreePath(ctx context.Context, opts Options, roots []string, a *pla
 	}
 	if len(res.Mounts) > 0 {
 		return nil, 0, fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, res.Mounts[0])
+	}
+	// A second guard after check 3's: a repository inside the worktree,
+	// even in an ignored folder, holds commits git worktree remove would
+	// delete without complaint. The walk that measured it found them.
+	if len(res.Repos) > 0 {
+		nested := make([]string, len(res.Repos))
+		for i, r := range res.Repos {
+			nested[i], _ = filepath.Rel(a.Path, r)
+		}
+		return nil, 0, fmt.Errorf("refusing %s: it holds nested repositories: %s", a.Path, strings.Join(nested, ", "))
 	}
 	return info, res.Size, nil
 }
@@ -290,7 +300,7 @@ func (r *runner) removeWorktree(ctx context.Context, p *plan.Plan, a *plan.Actio
 	if now, err := os.Lstat(a.Path); err != nil || !os.SameFile(now, proof.checked) {
 		return refuse("it was replaced since it was checked")
 	}
-	if err := worktree.Recheck(ctx, worktree.Env{Exec: r.opts.Exec}, a.Path, a.Head); err != nil {
+	if err := worktree.Recheck(ctx, worktree.Env{Exec: r.opts.Exec, Walker: r.opts.Walker}, a.Path, a.Head); err != nil {
 		return refuse(err.Error())
 	}
 	out, err := r.opts.Exec.Run(ctx, plan.WorktreeRemoveCommand(a.Repo, a.Path))

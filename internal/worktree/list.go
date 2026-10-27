@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mandloideep/reclaim/internal/execx"
+	"github.com/mandloideep/reclaim/internal/fsx"
 )
 
 // Env carries what classification needs.
@@ -28,6 +29,9 @@ type Env struct {
 	// CodexHome is $CODEX_HOME or ~/.codex, for telling Codex worktrees
 	// apart. Empty means none.
 	CodexHome string
+	// Walker walks a worktree for the repositories inside it. Nil uses a
+	// walker of its own.
+	Walker *fsx.Walker
 }
 
 // ErrNotLinked means a path is not a linked worktree: it does not exist, is
@@ -255,9 +259,33 @@ func PruneCandidates(ctx context.Context, env Env, repo string) ([]PruneCandidat
 				c.Path = filepath.Dir(filepath.Clean(p))
 				_, statErr := os.Lstat(c.Path)
 				c.Gone = errors.Is(statErr, os.ErrNotExist) && reason == "gitdir file points to non-existent location"
+				if c.Gone && OnMissingVolume(c.Path) {
+					// The folder may come back with its drive.
+					c.Gone, c.Reason = false, "its volume is not mounted"
+				}
 			}
 		}
 		cands = append(cands, c)
 	}
 	return cands, nil
+}
+
+// OnMissingVolume reports whether path lies on a removable or network volume
+// that is not mounted now, such as /Volumes/External on macOS or
+// /media/me/disk on Linux: what was there may come back with the drive.
+func OnMissingVolume(path string) bool {
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	var depth int
+	switch {
+	case len(parts) > 1 && (parts[0] == "Volumes" || parts[0] == "mnt"):
+		depth = 2
+	case len(parts) > 2 && parts[0] == "media":
+		depth = 3
+	case len(parts) > 3 && parts[0] == "run" && parts[1] == "media":
+		depth = 4
+	default:
+		return false
+	}
+	_, err := os.Lstat("/" + strings.Join(parts[:depth], "/"))
+	return errors.Is(err, os.ErrNotExist)
 }

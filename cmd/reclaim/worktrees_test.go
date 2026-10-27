@@ -133,6 +133,8 @@ func TestRefusalCode(t *testing.T) {
 		{&apply.Refusal{Check: apply.CheckState, State: dirty}, 2},
 		{&apply.Refusal{Check: apply.CheckState}, 3},
 		{&apply.Refusal{Check: apply.CheckWorkdir}, 1},
+		{&apply.Refusal{Check: apply.CheckHead, State: merged}, 1},
+		{&apply.Refusal{Check: apply.CheckHead, State: dirty}, 2},
 		{&apply.Refusal{Check: apply.CheckRemove}, 2},
 		{fmt.Errorf("not removed: %w", &apply.Refusal{Check: apply.CheckWorkdir}), 1},
 		{errors.New("disk full"), 3},

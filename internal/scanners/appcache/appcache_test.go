@@ -21,6 +21,7 @@ import (
 	"github.com/mandloideep/reclaim/internal/plan"
 	"github.com/mandloideep/reclaim/internal/scan"
 	"github.com/mandloideep/reclaim/internal/scanners/caches"
+	"github.com/mandloideep/reclaim/internal/worktree"
 )
 
 var now = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
@@ -842,6 +843,7 @@ func tree(t *testing.T, root string) []string {
 }
 
 func TestOnMissingVolume(t *testing.T) {
+	onMissingVolume := worktree.OnMissingVolume
 	cases := map[string]bool{
 		"/Volumes/no-such-reclaim-test-drive/Code/app": true,
 		"/media/me/no-such-reclaim-test-drive/app":     true,

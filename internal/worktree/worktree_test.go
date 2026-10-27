@@ -371,10 +371,81 @@ func TestClassifyHiddenChanges(t *testing.T) {
 			require.Empty(t, f.Git(w, "status", "--porcelain"), "git status cannot see the change")
 			s, err := worktree.Classify(context.Background(), osEnv(), w)
 			require.NoError(t, err)
-			require.Contains(t, s.Unknown, "hidden")
-			require.Contains(t, s.Problem, "assume-unchanged or skip-worktree")
+			require.Contains(t, s.Unknown, "hidden-changes")
+			require.Contains(t, strings.Join(s.Blockers, "; "), "assume-unchanged or skip-worktree")
+			require.Contains(t, strings.Join(s.Reasons, "; "), "assume-unchanged or skip-worktree")
 			require.Equal(t, finding.VerdictAttention, s.Verdict)
 			require.Error(t, worktree.Recheck(context.Background(), osEnv(), w, s.Head))
 		})
 	}
+}
+
+// TestClassifyBlockers covers what git worktree remove would delete although
+// git status shows nothing: a repository inside an ignored artifact folder
+// with its own commit, change and untracked file, and a submodule, whose
+// repository git keeps inside the worktree's registration.
+func TestClassifyBlockers(t *testing.T) {
+	ctx := context.Background()
+	merged := func(f *worktreetest.Fixture, name string) string {
+		w := f.Worktree(name)
+		f.Commit(w, name+".txt", name+"\n")
+		f.Push(w, name)
+		f.MergeFF(name)
+		return w
+	}
+
+	t.Run("nested repository in node_modules", func(t *testing.T) {
+		f := worktreetest.New(t)
+		w := merged(f, "nested")
+		dep := filepath.Join(w, "node_modules", "dep")
+		f.Write(dep, "index.js", "v1\n")
+		f.Git(dep, "init", "-q")
+		f.Git(dep, "add", "-A")
+		f.Git(dep, "commit", "-q", "-m", "local only")
+		f.Write(dep, "index.js", "v2\n")
+		f.Write(dep, "new.js", "untracked\n")
+		s, err := worktree.Classify(ctx, osEnv(), w)
+		require.NoError(t, err)
+		require.Zero(t, s.Modified+s.Untracked+s.Ignored, "git status sees nothing")
+		require.Contains(t, s.Unknown, "nested-repositories")
+		require.Equal(t, []string{"nested repositories: node_modules/dep"}, s.Blockers)
+		require.Equal(t, finding.VerdictAttention, s.Verdict)
+		require.Contains(t, s.Reasons, "nested repositories: node_modules/dep")
+		require.Contains(t, worktree.Words(s), "nested repositories: node_modules/dep")
+		require.NotEmpty(t, s.ForceCommand)
+		require.Error(t, worktree.Recheck(ctx, osEnv(), w, s.Head))
+	})
+
+	t.Run("submodule", func(t *testing.T) {
+		f := worktreetest.New(t)
+		lib := filepath.Join(f.Dir, "lib")
+		f.Git(f.Dir, "init", "-q", "-b", "main", lib)
+		f.Commit(lib, "lib.txt", "lib\n")
+		w := f.Worktree("sub")
+		f.Git(w, "-c", "protocol.file.allow=always", "submodule", "add", "-q", lib, "lib")
+		f.Git(w, "commit", "-q", "-m", "add lib")
+		f.Push(w, "sub")
+		f.MergeFF("sub")
+		s, err := worktree.Classify(ctx, osEnv(), w)
+		require.NoError(t, err)
+		require.Contains(t, s.Unknown, "submodules")
+		require.Contains(t, s.Blockers, "holds 1 submodule; git worktree remove cannot remove it without --force")
+		require.Equal(t, finding.VerdictAttention, s.Verdict)
+		require.Contains(t, s.Hints, "git -C "+w+" submodule foreach git push")
+		require.Error(t, worktree.Recheck(ctx, osEnv(), w, s.Head))
+	})
+
+	t.Run("commits that undo each other", func(t *testing.T) {
+		f := worktreetest.New(t)
+		w := f.Worktree("revert")
+		f.Commit(w, "x.txt", "x\n")
+		f.Git(w, "rm", "-q", "x.txt")
+		f.Git(w, "commit", "-q", "-m", "undo")
+		f.Push(w, "revert")
+		s, err := worktree.Classify(ctx, osEnv(), w)
+		require.NoError(t, err)
+		require.Equal(t, finding.MergedNo, s.Merged)
+		require.Equal(t, "its commits add up to no change", s.MergeNote)
+		require.Equal(t, finding.VerdictPushed, s.Verdict)
+	})
 }

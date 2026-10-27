@@ -13,6 +13,7 @@ import (
 
 	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/fsx"
 )
 
 // Repo is a main repository with the facts every one of its worktrees shares.
@@ -173,6 +174,10 @@ func ClassifyEntry(ctx context.Context, env Env, repo *Repo, e Entry) *finding.W
 			s.Problem = err.Error()
 		}
 	}
+	block := func(part, why string) {
+		s.Unknown = append(s.Unknown, part)
+		s.Blockers = append(s.Blockers, why)
+	}
 	if e.Locked {
 		s.LockLive = lockLive(ctx, env, e.LockReason)
 	}
@@ -194,7 +199,20 @@ func ClassifyEntry(ctx context.Context, env Env, repo *Repo, e Entry) *finding.W
 	if n, err := countHidden(ctx, env, s.Path); err != nil {
 		unknown("hidden", err)
 	} else if n > 0 {
-		unknown("hidden", fmt.Errorf("%d tracked files are marked assume-unchanged or skip-worktree, so git status cannot see changes to them", n))
+		block(partHidden, hiddenWords(n))
+	}
+	if n, err := countSubmodules(ctx, env, s.Path); err != nil {
+		unknown("gitlinks", err)
+	} else if n > 0 {
+		block(partSubmodules, submoduleWords(n))
+	}
+	if nested, size, err := nestedRepos(ctx, env.Walker, s.Path); err != nil {
+		unknown("nested", err)
+	} else {
+		s.Size = size
+		if len(nested) > 0 {
+			block(partNested, nestedWords(nested))
+		}
 	}
 	if s.Head != "" {
 		if n, err := revCount(ctx, env, path, "HEAD", "--not", "--branches", "--remotes", "--tags"); err != nil {
@@ -274,6 +292,95 @@ func countHidden(ctx context.Context, env Env, dir string) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// The parts of Unknown that a blocker explains: git reported them, and what
+// it reported makes the worktree one reclaim never removes.
+const (
+	partHidden     = "hidden-changes"
+	partSubmodules = "submodules"
+	partNested     = "nested-repositories"
+)
+
+// blockedParts are the parts of Unknown that blockers explain.
+func blockedParts() []string { return []string{partHidden, partSubmodules, partNested} }
+
+// failedParts are the parts of Unknown that git could not report.
+func failedParts(s *finding.WorktreeState) []string {
+	return slices.DeleteFunc(slices.Clone(s.Unknown), func(p string) bool { return slices.Contains(blockedParts(), p) })
+}
+
+func hiddenWords(n int) string {
+	return fmt.Sprintf("%d tracked files are marked assume-unchanged or skip-worktree, so git status cannot see changes to them", n)
+}
+
+// countSubmodules counts the submodules of the worktree, the gitlinks of mode
+// 160000 in its index. git worktree remove refuses a worktree with
+// submodules unless forced, and forcing it deletes the submodules' own
+// repositories with any commit not pushed to their remotes.
+func countSubmodules(ctx context.Context, env Env, dir string) (int, error) {
+	out, err := env.git(ctx, dir, "ls-files", "-s", "-z")
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for rec := range strings.SplitSeq(out, "\x00") {
+		if strings.HasPrefix(rec, "160000 ") {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func submoduleWords(n int) string {
+	return "holds " + plural(n, "submodule", "submodules") + "; git worktree remove cannot remove it without --force"
+}
+
+// maxNested is how many nested repositories the words name.
+const maxNested = 3
+
+// NestedRepos returns the paths, relative to the worktree, of every folder
+// below it that holds a .git file or folder: another repository, a
+// submodule checkout or a worktree inside it, even inside an ignored
+// artifact folder such as node_modules. Its commits and changes live only
+// there, and git worktree remove deletes them without complaint. It walks
+// the whole worktree with the size walker, which never follows symbolic
+// links; a folder it cannot read or another filesystem mounted inside could
+// hide one, so either is an error.
+func NestedRepos(ctx context.Context, walker *fsx.Walker, root string) ([]string, error) {
+	nested, _, err := nestedRepos(ctx, walker, root)
+	return nested, err
+}
+
+// nestedRepos is NestedRepos that also returns the size the walk measured.
+func nestedRepos(ctx context.Context, walker *fsx.Walker, root string) ([]string, int64, error) {
+	if walker == nil {
+		walker = fsx.NewWalker(0)
+	}
+	res, err := walker.Size(ctx, root)
+	if err != nil {
+		return nil, 0, fmt.Errorf("look for repositories inside %s: %w", root, err)
+	}
+	switch {
+	case len(res.Unreadable) > 0:
+		return nil, 0, fmt.Errorf("look for repositories inside %s: %w", root, res.Unreadable[0])
+	case len(res.Mounts) > 0:
+		return nil, 0, fmt.Errorf("look for repositories inside %s: another filesystem is mounted at %s", root, res.Mounts[0])
+	}
+	out := make([]string, 0, len(res.Repos))
+	for _, r := range res.Repos {
+		rel, err := filepath.Rel(root, r)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, rel)
+	}
+	return out, res.Size, nil
+}
+
+func nestedWords(nested []string) string {
+	shown := nested[:min(len(nested), maxNested)]
+	return "nested repositories: " + strings.Join(shown, ", ") + more(len(nested), len(shown))
 }
 
 // maxIgnoredSample is how many ignored names the state keeps.
@@ -376,8 +483,9 @@ func mergeState(ctx context.Context, env Env, dir, def string) (finding.Merged, 
 		return finding.MergedUnknown, "", err
 	}
 	if strings.TrimSpace(tree) == strings.TrimSpace(baseTree) {
-		// The files at HEAD are those of a commit in the default branch.
-		return finding.MergedSquash, "its commits add up to no change since " + shortRef(def), nil
+		// Commits that undo each other match no commit of the default
+		// branch, so they are not merged; the other counts decide.
+		return finding.MergedNo, "its commits add up to no change", nil
 	}
 	// A synthetic commit holding the whole change since the merge base. It
 	// is written as a dangling object that no ref points at.
@@ -508,12 +616,22 @@ func inferTool(env Env, path, lockReason string) string {
 	return "manual"
 }
 
-// Recheck repeats, right before git acts, the cheap parts of the state that
-// git worktree remove itself does not guard: HEAD is still head, nothing is
-// modified, untracked or hidden from git status, and no ignored file outside
-// artifact folders appeared. The full classification ran moments earlier;
+// Recheck repeats, right before git acts, the parts of the state that git
+// worktree remove itself does not guard: no repository appeared inside it,
+// HEAD is still head, nothing is modified, untracked or hidden from git
+// status, no ignored file outside artifact folders appeared, and it holds
+// no submodule. The full classification ran moments earlier;
 // this closes the time it took to measure the worktree.
 func Recheck(ctx context.Context, env Env, path, head string) error {
+	// The walk for nested repositories is the slow part, so it goes first
+	// and the git checks run closest to the removal.
+	nested, err := NestedRepos(ctx, env.Walker, path)
+	if err != nil {
+		return err
+	}
+	if len(nested) > 0 {
+		return errors.New("since it was checked it gained " + nestedWords(nested))
+	}
 	now, err := env.git(ctx, path, "rev-parse", "HEAD")
 	if err != nil {
 		return err
@@ -534,6 +652,9 @@ func Recheck(ctx context.Context, env Env, path, head string) error {
 	}
 	if s.Modified+s.Untracked+s.Ignored+hidden > 0 {
 		return fmt.Errorf("since it was checked it gained %d modified, %d untracked, %d ignored and %d hidden files", s.Modified, s.Untracked, s.Ignored, hidden)
+	}
+	if n, err := countSubmodules(ctx, env, path); err != nil || n > 0 {
+		return errors.Join(err, fmt.Errorf("it %s", submoduleWords(n)))
 	}
 	return nil
 }

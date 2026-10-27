@@ -203,9 +203,9 @@ func TestApplyWorktreeRefusals(t *testing.T) {
 			change: func(_ *testing.T, s *setup) { s.f.Write(s.path, "notes.txt", "mine\n") }},
 		{name: "ignored .env after the plan was written", check: CheckState, detail: "ignored files",
 			change: func(_ *testing.T, s *setup) { s.f.Write(s.path, ".env", "SECRET=1\n") }},
-		{name: "received a commit after the plan was written", check: CheckLinked, detail: "the plan was made at",
+		{name: "received a commit after the plan was written", check: CheckState, detail: "commits on no remote",
 			change: func(_ *testing.T, s *setup) { s.f.Commit(s.path, "late.txt", "late\n") }},
-		{name: "received a pushed and merged commit", check: CheckLinked, detail: "the plan was made at",
+		{name: "received a pushed and merged commit", check: CheckHead, detail: "the plan was made at",
 			change: func(_ *testing.T, s *setup) {
 				s.f.Commit(s.path, "late.txt", "late\n")
 				s.f.Push(s.path, filepath.Base(s.path))
@@ -233,6 +233,14 @@ func TestApplyWorktreeRefusals(t *testing.T) {
 				f.Push(path, filepath.Base(path))
 			},
 			change: func(_ *testing.T, s *setup) { s.f.Git(s.f.Repo, "push", "-q", "origin", "--delete", "wt") }, hint: "push -u origin"},
+		{name: "a repository appears inside an ignored folder", check: CheckPath, detail: "nested repositories: node_modules/dep",
+			change: func(_ *testing.T, s *setup) {
+				dep := filepath.Join(s.path, "node_modules", "dep")
+				s.f.Write(dep, "index.js", "local work\n")
+				s.f.Git(dep, "init", "-q")
+				s.f.Git(dep, "add", "-A")
+				s.f.Git(dep, "commit", "-q", "-m", "local only")
+			}},
 		{name: "working directory inside it", check: CheckWorkdir, detail: "run it from the main checkout",
 			opts: func(o *Options, s *setup) {
 				o.Getwd = func() (string, error) { return filepath.Join(s.path, "sub"), nil }
@@ -433,6 +441,23 @@ func TestApplyRefusesToPruneAFolderThatStillExists(t *testing.T) {
 		require.DirExists(t, reg, "the registration of a folder that still exists stays")
 		require.FileExists(t, filepath.Join(orphan, "work.txt"))
 	}
+}
+
+// TestApplyRefusesToPruneOnAnUnmountedVolume refuses a prune of a
+// registration whose folder is on a volume that is not mounted: it may come
+// back with the drive, and the registration holds its HEAD.
+func TestApplyRefusesToPruneOnAnUnmountedVolume(t *testing.T) {
+	f := worktreetest.New(t)
+	e := env{root: f.Dir, home: filepath.Join(worktreetest.RealTempDir(t), "home", "me")}
+	wt := f.Worktree("away")
+	require.NoError(t, os.RemoveAll(wt))
+	away := "/Volumes/no-such-reclaim-test-drive/away"
+	reg := filepath.Join(f.Repo, ".git", "worktrees", "away")
+	require.NoError(t, os.WriteFile(filepath.Join(reg, "gitdir"), []byte(away+"/.git\n"), 0o644))
+	sum, _, err := run(t, e, newPlan([]string{f.Dir}, pruneAction(f.Repo, away)), gitRun(nil))
+	require.Error(t, err)
+	require.ErrorContains(t, sum.Outcomes[0].Err, "its volume is not mounted")
+	require.DirExists(t, reg)
 }
 
 // TestRemoveEmptyDir removes a folder planned to be removed once empty, and

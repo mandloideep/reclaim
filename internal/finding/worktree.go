@@ -100,6 +100,9 @@ type WorktreeState struct {
 	Origin string `json:"origin,omitempty"`
 	// Exists reports whether the worktree folder exists.
 	Exists bool `json:"exists"`
+	// Size is the size of the worktree folder, measured by the walk that
+	// looks for repositories inside it.
+	Size int64 `json:"size,omitempty"`
 	// Locked is set when git has a lock on the worktree.
 	Locked bool `json:"locked,omitempty"`
 	// LockReason is the reason recorded with the lock.
@@ -144,6 +147,10 @@ type WorktreeState struct {
 	Unknown []string `json:"unknown,omitempty"`
 	// Problem says why some of the state is unknown.
 	Problem string `json:"problem,omitempty"`
+	// Blockers say what makes the worktree impossible to remove safely
+	// although git reported on it, such as a nested repository or a
+	// submodule. Each also names a part in Unknown, so nothing removes it.
+	Blockers []string `json:"blockers,omitempty"`
 	// Verdict is what reclaim concludes from the state.
 	Verdict Verdict `json:"verdict"`
 	// Reasons say in words why the verdict is not removable, such as "58

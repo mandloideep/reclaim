@@ -165,7 +165,7 @@ the exit code judges the work and not the lock, because an agent's own running s
 
 `--remove --allow-unmerged` extends removal to tier B, for agents whose branches are reviewed elsewhere.
 With `--remove`, exit 0 means the worktree is gone.
-A refusal exits by the check that failed: 1 when the work is safe and only the removal was refused, as for a lock, the working directory or a path outside the roots; the code of the state computed again when the work changed since `done` classified it; 2 when git itself refused because of files to keep; and 3 when it is no longer a linked worktree or the failure is of another kind.
+A refusal exits by the check that failed: 1 when the work is safe and only the removal was refused, as for a lock, the working directory or a path outside the roots; the code of the state computed again when the work or `HEAD` changed since `done` classified it; 2 when git itself refused because of files to keep; and 3 when it is no longer a linked worktree or the failure is of another kind.
 A mistake on the command line exits 3, never 1.
 With `--json` the state goes to standard output and every other line to standard error.
 A path inside a worktree finds the worktree.
@@ -413,6 +413,11 @@ Every answer comes from read only git commands run through `execx.Runner`, so te
 Git runs with `GIT_OPTIONAL_LOCKS=0`, so even `git status` refreshes no index.
 Every command runs without the variables that point git at another repository, work tree, index or configuration, such as `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE`, which git hooks, `git rebase -x` and `git submodule foreach` set and which would make git describe the wrong worktree.
 - `hidden`: tracked files marked assume-unchanged or skip-worktree hide their changes from `git status`, and `git worktree remove` deletes those changes without complaint, so `git ls-files -v` finds them and any one makes the state unknown.
+- Nested repositories: any `.git` file or folder below the worktree other than its own, even inside an ignored artifact folder such as `node_modules`, is another repository whose commits and changes `git status` cannot see and `git worktree remove` deletes, so it makes the state unknown with the reason "nested repositories: <path>".
+The size walker records such folders on the way, so the worktree is walked once for both.
+A folder the walk cannot read, or another filesystem mounted inside, could hide one and makes the state unknown too.
+- Submodules: a gitlink, mode 160000 in `git ls-files -s`, makes the state unknown with the reason "holds submodules; git worktree remove cannot remove it without --force", because forcing it would delete the submodule's repository with any commit not pushed to its own remote; the hints say to push the submodules first.
+- `blockers`: the reasons, in words, for the parts of `unknown` that git did report but that make removal unsafe: nested repositories, submodules and hidden changes.
 `scan` never fetches.
 Merge state is as of the last fetch, which the report shows from the modification time of `FETCH_HEAD`.
 
@@ -437,6 +442,7 @@ An entry is an artifact when any folder in its path is one of `node_modules`, `.
 The checks run in that order because each is cheaper than the next.
 `git cherry` compares patch ids, which ignore whitespace, so a `rebase` or `squash` match is confirmed exactly: `git diff-tree -p --no-color --full-index <merge-base> HEAD` for a squash, or `<commit>^ <commit>` for each commit of a rebase, must be byte for byte equal to `git diff-tree -p --no-color --full-index C^ C` of a commit C of the default branch since the merge base that touches the same files.
 When it is not, `merged` is `no` and the state says "the branch's changes are not exactly in origin/main".
+A branch whose commits undo each other, so that `HEAD` has the tree of the merge base, matches no commit of the default branch: `merged` is `no` with the note "its commits add up to no change", and the other counts decide its tier.
 A branch with merge commits is left to the squash check, and more than 300 candidate commits count as no match.
 - `pr`: number, state and URL from GitHub when the lookup ran.
 - `fetched_at`, `default_branch` and `origin`.
@@ -475,6 +481,7 @@ Stale registrations, entries in `.git/worktrees` whose folder no longer exists, 
 They come from `git worktree prune --dry-run --verbose`, not from `git worktree list`, which leaves out a registration whose `gitdir` file is missing although `git worktree prune` removes it.
 The finding is offered only when every registration the dry run names points at a folder that does not exist; when one names a folder that still exists, or cannot be read, pruning could orphan a folder that holds work, so the finding is listed for attention.
 Apply runs the dry run again and refuses unless every registration it names is in the plan and points at a folder that is gone.
+A folder on a volume that is not mounted, under `/Volumes`, `/mnt`, `/media` or `/run/media`, is not gone: it may come back with its drive, and its registration holds its `HEAD`, so such a registration is listed for attention and never pruned.
 They free almost nothing but they let `git worktree add` reuse the paths and keep `git worktree list` honest.
 
 Findings are grouped by repository, then ordered by tool: Claude Code, Codex, other tools, manual, then stale registrations and other clones.
@@ -561,9 +568,10 @@ Apply refuses a prune when git would prune a registration the plan does not list
 Removing a worktree is the one case where an agent, through `done --remove`, can trigger a deletion without a person reading a checklist, so the proof is explicit and is checked twice: once when the plan is written and again by `apply` immediately before acting.
 Every check must pass, and the result of each is written to the log.
 
-1. The path is a linked worktree: its `.git` is a file naming a registration under `<repo>/.git/worktrees/`, and `git -C <repo> worktree list --porcelain` lists it at the recorded `head`.
+1. The path is a linked worktree: its `.git` is a file naming a registration under `<repo>/.git/worktrees/`, the registration points back at it, `git -C <repo> worktree list --porcelain` lists it, and no other registered worktree lies inside it.
+A `HEAD` that moved is left to check 4, after the state is computed again, so `done` can report what the worktree holds now.
 A directory holding a `.git` directory is never removed, so a main checkout or a project root cannot be, whatever the plan says.
-2. The path passes every `RemovePath` check: inside a recorded root, not protected, no symbolic link in it, not a mount point, the same object as at scan time.
+2. The path passes every `RemovePath` check: inside a recorded root, not protected, no symbolic link in it, not a mount point, the same object as at scan time; the walk that measures it finds no other filesystem and no nested repository inside it, a second guard after check 3.
 3. The state is recomputed with the same code the scanner uses, and `modified`, `untracked`, `loose`, `unpushed` and `ignored` are all zero, `merged` is `ancestor`, `rebase` or `squash`, and no lock holds it.
 `unpushed` may be above zero only when `merged` is `rebase` or `squash`, confirmed exactly, against a default branch under `refs/remotes/`.
 `--allow-unmerged`, or a tier B finding ticked in `select`, relaxes `merged` only, and `unpushed` must still be zero.
