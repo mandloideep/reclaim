@@ -97,6 +97,12 @@ func addFakeRepo(t *testing.T, r fakeRepo, out map[string]string) {
 		mark := "+ "
 		if w.merged == "squash" {
 			mark = "- "
+			// The squash commit on main has exactly the worktree's diff.
+			merge := "m" + w.head[1:]
+			out[git(w.path, "diff-tree -p --no-color --full-index "+base+" HEAD")] = "diff of " + w.name
+			out[git(w.path, "diff-tree -r --name-only -z "+base+" HEAD")] = "src/app.ts\x00"
+			out[git(w.path, "rev-list --no-merges "+base+".."+def+" -- src/app.ts")] = merge
+			out[git(w.path, "diff-tree -p --no-color --full-index "+merge+"^ "+merge)] = "diff of " + w.name
 		}
 		out[git(w.path, "cherry "+def+" "+squash+" "+base)] = mark + squash
 	}

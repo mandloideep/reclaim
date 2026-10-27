@@ -1,6 +1,9 @@
 package finding
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Merged says whether the commits of a worktree are in the default branch of
 // its repository, and how that was found.
@@ -27,6 +30,22 @@ const (
 // default branch.
 func (m Merged) Proven() bool {
 	return m == MergedAncestor || m == MergedRebase || m == MergedSquash
+}
+
+// MergedRemotely reports whether the worktree's changes are proven to be,
+// byte for byte, in a default branch that lives on a remote: an ancestor of
+// it, or rebase or squash merged into it. Its commits may then be on no
+// remote, as after GitHub deletes a merged branch, without any work being
+// lost.
+func (s *WorktreeState) MergedRemotely() bool {
+	return s.Merged.Proven() && strings.HasPrefix(s.DefaultRef, "refs/remotes/")
+}
+
+// UnpushedBlocks reports whether the commits on no remote hold work that
+// exists nowhere else: there are some, and the changes are not proven to be
+// in a default branch on a remote.
+func (s *WorktreeState) UnpushedBlocks() bool {
+	return s.Unpushed > 0 && !s.MergedRemotely()
 }
 
 // Verdict is what reclaim concludes about a linked worktree.
@@ -109,6 +128,12 @@ type WorktreeState struct {
 	// DefaultBranch is the branch Merged was checked against, such as
 	// origin/main.
 	DefaultBranch string `json:"default_branch,omitempty"`
+	// DefaultRef is the full ref of DefaultBranch, such as
+	// refs/remotes/origin/main.
+	DefaultRef string `json:"default_ref,omitempty"`
+	// MergeNote explains a merge state, such as a patch that git cherry
+	// matched but whose diff is not exactly in the default branch.
+	MergeNote string `json:"merge_note,omitempty"`
 	// FetchedAt is when the repository last fetched, from FETCH_HEAD. Merge
 	// state is as of then.
 	FetchedAt time.Time `json:"fetched_at,omitzero"`

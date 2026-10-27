@@ -141,7 +141,7 @@ func WorkVerdict(s *finding.WorktreeState) (finding.Verdict, []string) {
 	case s.Loose > 0:
 		reasons = append(reasons, plural(s.Loose, "commit", "commits")+" no branch holds")
 	}
-	if s.Unpushed > 0 {
+	if s.UnpushedBlocks() {
 		reasons = append(reasons, plural(s.Unpushed, "commit", "commits")+" on no remote")
 	}
 	if s.Ignored > 0 {
@@ -202,7 +202,7 @@ func hints(s *finding.WorktreeState) []string {
 	if s.Loose > 0 && s.Detached {
 		out = append(out, "git -C "+p+" branch "+Quote(name))
 	}
-	if s.Unpushed > 0 && s.Branch != "" {
+	if s.UnpushedBlocks() && s.Branch != "" {
 		out = append(out, "git -C "+p+" push -u origin "+Quote(s.Branch))
 	}
 	if s.Ignored > 0 {
@@ -288,17 +288,22 @@ func Words(s *finding.WorktreeState) string {
 	if s.Ignored > 0 {
 		parts = append(parts, plural(s.Ignored, "ignored file", "ignored files")+": "+strings.Join(s.IgnoredSample, ", ")+more(s.Ignored, len(s.IgnoredSample)))
 	}
+	pr := ""
+	if s.PR != nil {
+		pr = fmt.Sprintf(" in PR #%d", s.PR.Number)
+	}
 	switch {
 	case s.Loose > 0 && s.Detached:
 		parts = append(parts, "detached with "+plural(s.Loose, "commit", "commits")+" no branch holds")
+	case s.Unpushed > 0 && s.MergedRemotely():
+		// The branch was merged and then deleted on the remote, as GitHub
+		// does; its changes are proven to be in the default branch.
+		parts = append(parts, "merged by "+string(s.Merged)+" into "+s.DefaultBranch+pr+"; the branch is not on the remote")
+		return finishWords(s, parts)
 	case s.Unpushed > 0:
 		parts = append(parts, plural(s.Unpushed, "commit", "commits")+" on no remote")
 	case !slices.Contains(s.Unknown, "unpushed"):
 		parts = append(parts, "pushed")
-	}
-	pr := ""
-	if s.PR != nil {
-		pr = fmt.Sprintf(" in PR #%d", s.PR.Number)
 	}
 	switch {
 	case s.Merged.Proven() && s.PR != nil && s.PR.State == "MERGED":
@@ -314,6 +319,14 @@ func Words(s *finding.WorktreeState) string {
 	default:
 		parts = append(parts, "merge state unknown")
 	}
+	if s.MergeNote != "" {
+		parts = append(parts, s.MergeNote)
+	}
+	return finishWords(s, parts)
+}
+
+// finishWords adds the lock to the words and joins them.
+func finishWords(s *finding.WorktreeState, parts []string) string {
 	if s.Locked {
 		parts = append(parts, shortLockWords(s))
 	}
@@ -328,12 +341,12 @@ func shortLockWords(s *finding.WorktreeState) string {
 	}
 	switch {
 	case s.LockLive && pid != "":
-		return "locked by the running" + pid
+		return "in use by" + pid
 	case s.LockLive:
 		return "locked"
 	case pid != "":
-		return "locked by" + pid + ", which is no longer running"
+		return "stale lock," + pid + " gone"
 	default:
-		return "locked by a process that is no longer running"
+		return "stale lock"
 	}
 }

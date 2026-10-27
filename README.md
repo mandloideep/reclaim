@@ -67,6 +67,7 @@ They are never preselected.
 They come with a warning, a preset never selects them, a group toggle skips them, and you tick each one yourself.
 
 Git worktrees are tier A when every change is committed, every commit is pushed and the work is merged into the default branch, including squash and rebase merges, and tier B when they are pushed but not merged.
+A squash or rebase merge counts only when the merged diff is exactly the worktree's, so a branch the remote deleted after merging it is still tier A.
 A worktree that holds work that exists nowhere else is never offered: it is listed with the commands that save its work.
 
 Large files in Downloads that nobody touched for 90 days are listed under "Attention, never removed".
@@ -85,7 +86,7 @@ Only commands from a fixed list can run, so an edited plan cannot run anything e
 - reclaim never runs with elevated rights.
 Anything that needs `sudo` is printed as a command for you to run.
 - A plan whose scan is more than 24 hours old is refused unless you pass `--stale-ok`.
-- A git worktree is removed only with `git worktree remove`, never with `--force`, after `apply` checks again, right before acting, that it is a linked worktree at the commit the scan saw and that nothing in it is uncommitted, untracked, ignored outside build folders, on no branch or on no remote.
+- A git worktree is removed only with `git worktree remove`, never with `--force`, after `apply` checks again, right before acting, that it is a linked worktree at the commit the scan saw and that nothing in it is uncommitted, untracked, ignored outside build folders, on no branch, or on no remote without being exactly merged into the remote default branch.
 A worktree whose work exists nowhere else is never removed, whoever asks and whatever flags are given; reclaim prints the `--force` command for you instead.
 Branches are never deleted and nothing is ever pushed or fetched.
 - Every `apply` run writes a log of what it did and how much it freed.

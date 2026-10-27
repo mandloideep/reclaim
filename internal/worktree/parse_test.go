@@ -108,46 +108,76 @@ func TestMergeStateFake(t *testing.T) {
 	)
 	g := func(args string) string { return "git -C " + dir + " " + args }
 	commitTree := "git -C /w -c user.name=reclaim -c user.email=reclaim@localhost commit-tree tree-head -p 2222 -m reclaim squash merge check"
-	common := map[string]string{
-		g("rev-parse HEAD"):               head,
-		g("merge-base HEAD " + def):       base,
-		g("rev-parse HEAD^{tree}"):        "tree-head",
-		g("rev-parse 2222^{tree}"):        "tree-base",
-		commitTree:                        "3333",
-		g("cherry " + def + " 3333 2222"): "+ 3333",
+	// exact answers the commands that compare the diff from..to with the
+	// commits of the default branch that touch the same file, whose diff is
+	// upstream.
+	exact := func(from, to, diff, upstream string) map[string]string {
+		c := "u" + to
+		return map[string]string{
+			g("diff-tree -p --no-color --full-index " + from + " " + to): diff,
+			g("diff-tree -r --name-only -z " + from + " " + to):          "f-" + to + "\x00",
+			g("rev-list --no-merges 2222.." + def + " -- f-" + to):       "other " + c,
+			g("diff-tree -p --no-color --full-index other^ other"):       "unrelated diff",
+			g("diff-tree -p --no-color --full-index " + c + "^ " + c):    upstream,
+		}
 	}
-	with := func(over map[string]string) map[string]string {
+	common := map[string]string{
+		g("rev-parse HEAD"):                       head,
+		g("merge-base HEAD " + def):               base,
+		g("rev-parse HEAD^{tree}"):                "tree-head",
+		g("rev-parse 2222^{tree}"):                "tree-base",
+		commitTree:                                "3333",
+		g("cherry " + def + " 3333 2222"):         "+ 3333",
+		g("rev-list --count --merges 2222..HEAD"): "0",
+		g("rev-list --no-merges 2222..HEAD"):      "1111\n0000",
+	}
+	with := func(overs ...map[string]string) map[string]string {
 		out := maps.Clone(common)
-		for k, v := range over {
-			if v == "<fail>" {
-				delete(out, k)
-				continue
+		for _, over := range overs {
+			for k, v := range over {
+				if v == "<fail>" {
+					delete(out, k)
+					continue
+				}
+				out[k] = v
 			}
-			out[k] = v
 		}
 		return out
 	}
+	rebased := map[string]string{g("cherry " + def + " HEAD"): "- 1111\n- 0000\n"}
+	squashed := map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n", g("cherry " + def + " 3333 2222"): "- 3333\n"}
 	cases := []struct {
 		name    string
 		outputs map[string]string
 		want    finding.Merged
+		note    string
 		err     bool
 	}{
-		{"ancestor", with(map[string]string{g("merge-base HEAD " + def): head}), finding.MergedAncestor, false},
-		{"rebase", with(map[string]string{g("cherry " + def + " HEAD"): "- 1111\n- 0000\n"}), finding.MergedRebase, false},
-		{"partly rebased is not merged", with(map[string]string{g("cherry " + def + " HEAD"): "- 1111\n+ 0000\n"}), finding.MergedNo, false},
-		{"squash", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n", g("cherry " + def + " 3333 2222"): "- 3333\n"}), finding.MergedSquash, false},
-		{"no net change", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n", g("rev-parse 2222^{tree}"): "tree-head"}), finding.MergedSquash, false},
-		{"not merged", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n"}), finding.MergedNo, false},
-		{"unrelated histories", with(map[string]string{g("merge-base HEAD " + def): "<fail>"}), finding.MergedNo, false},
-		{"cherry fails", with(map[string]string{g("cherry " + def + " HEAD"): "<fail>"}), finding.MergedUnknown, true},
-		{"commit-tree fails", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n", commitTree: "<fail>"}), finding.MergedUnknown, true},
+		{"ancestor", with(map[string]string{g("merge-base HEAD " + def): head}), finding.MergedAncestor, "", false},
+		{"rebase, exactly", with(rebased, exact("1111^", "1111", "d1", "d1"), exact("0000^", "0000", "d0", "d0")), finding.MergedRebase, "", false},
+		{"rebase by patch id only falls to the squash check", with(rebased, exact("1111^", "1111", "d1", "d1"), exact("0000^", "0000", "d0", "d0 with other spacing")),
+			finding.MergedNo, "", false},
+		{"rebase with a merge commit falls to the squash check", with(rebased, map[string]string{g("rev-list --count --merges 2222..HEAD"): "1"},
+			squashed, exact("2222", "HEAD", "ds", "ds")), finding.MergedSquash, "", false},
+		{"partly rebased is not merged", with(map[string]string{g("cherry " + def + " HEAD"): "- 1111\n+ 0000\n"}), finding.MergedNo, "", false},
+		{"squash, exactly", with(squashed, exact("2222", "HEAD", "ds", "ds")), finding.MergedSquash, "", false},
+		{"squash by patch id only", with(squashed, exact("2222", "HEAD", "ds", "ds but whitespace differs")), finding.MergedNo,
+			"the branch's changes are not exactly in origin/main", false},
+		{"squash with no candidate commit", with(squashed, exact("2222", "HEAD", "ds", "ds"),
+			map[string]string{g("rev-list --no-merges 2222.." + def + " -- f-HEAD"): ""}), finding.MergedNo, "the branch's changes are not exactly in origin/main", false},
+		{"no net change", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n", g("rev-parse 2222^{tree}"): "tree-head"}), finding.MergedSquash, "", false},
+		{"not merged", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n"}), finding.MergedNo, "", false},
+		{"unrelated histories", with(map[string]string{g("merge-base HEAD " + def): "<fail>"}), finding.MergedNo, "", false},
+		{"cherry fails", with(map[string]string{g("cherry " + def + " HEAD"): "<fail>"}), finding.MergedUnknown, "", true},
+		{"commit-tree fails", with(map[string]string{g("cherry " + def + " HEAD"): "+ 1111\n", commitTree: "<fail>"}), finding.MergedUnknown, "", true},
+		{"exact diff fails", with(squashed), finding.MergedUnknown, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			env := Env{Exec: &execx.Fake{Tools: map[string]string{"git": "/usr/bin/git"}, Outputs: tc.outputs}}
-			got, err := mergeState(context.Background(), env, dir, def)
+			got, note, err := mergeState(context.Background(), env, dir, def)
 			require.Equal(t, tc.want, got)
+			require.Equal(t, tc.note, note)
 			require.Equal(t, tc.err, err != nil, "%v", err)
 		})
 	}

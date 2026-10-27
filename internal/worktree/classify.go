@@ -158,6 +158,7 @@ func ClassifyEntry(ctx context.Context, env Env, repo *Repo, e Entry) *finding.W
 		Locked:        e.Locked,
 		LockReason:    e.LockReason,
 		DefaultBranch: repo.DefaultBranch(),
+		DefaultRef:    repo.DefaultRef,
 		FetchedAt:     repo.FetchedAt,
 		Merged:        finding.MergedUnknown,
 	}
@@ -203,10 +204,10 @@ func ClassifyEntry(ctx context.Context, env Env, repo *Repo, e Entry) *finding.W
 		upstreamAndAhead(ctx, env, s)
 		if repo.DefaultRef == "" {
 			unknown("merged", fmt.Errorf("%s has no origin/HEAD, origin/main, origin/master, main or master branch", repo.Path))
-		} else if m, err := mergeState(ctx, env, path, repo.DefaultRef); err != nil {
+		} else if m, note, err := mergeState(ctx, env, path, repo.DefaultRef); err != nil {
 			unknown("merged", err)
 		} else {
-			s.Merged = m
+			s.Merged, s.MergeNote = m, note
 		}
 	}
 	Judge(s)
@@ -303,55 +304,143 @@ func upstreamAndAhead(ctx context.Context, env Env, s *finding.WorktreeState) {
 // mergeState runs the three merge checks in order, cheapest first: HEAD is
 // an ancestor of the default branch; every commit has an equivalent patch in
 // it, as after a rebase merge; or the whole change since the merge base is
-// one commit of it, as after a squash merge.
-func mergeState(ctx context.Context, env Env, dir, def string) (finding.Merged, error) {
+// one commit of it, as after a squash merge. git cherry compares patch ids,
+// which ignore whitespace, so a rebase or squash match is confirmed by
+// finding a commit of the default branch whose diff is exactly the same.
+// When that fails the note says so and the state is not merged.
+func mergeState(ctx context.Context, env Env, dir, def string) (finding.Merged, string, error) {
 	head, err := env.git(ctx, dir, "rev-parse", "HEAD")
 	if err != nil {
-		return finding.MergedUnknown, err
+		return finding.MergedUnknown, "", err
 	}
 	base, err := env.git(ctx, dir, "merge-base", "HEAD", def)
 	if err != nil {
 		// Unrelated histories have no merge base.
-		return finding.MergedNo, nil //nolint:nilerr // no merge base means not merged
+		return finding.MergedNo, "", nil //nolint:nilerr // no merge base means not merged
 	}
 	head, base = strings.TrimSpace(head), strings.TrimSpace(base)
 	if base == head {
-		return finding.MergedAncestor, nil
+		return finding.MergedAncestor, "", nil
 	}
+	notExact := "the branch's changes are not exactly in " + shortRef(def)
 	cherry, err := env.git(ctx, dir, "cherry", def, "HEAD")
 	if err != nil {
-		return finding.MergedUnknown, err
+		return finding.MergedUnknown, "", err
 	}
 	if allEquivalent(cherry) {
-		return finding.MergedRebase, nil
+		exact, err := rebaseExact(ctx, env, dir, def, base)
+		if err != nil {
+			return finding.MergedUnknown, "", err
+		}
+		if exact {
+			return finding.MergedRebase, "", nil
+		}
 	}
 	tree, err := env.git(ctx, dir, "rev-parse", "HEAD^{tree}")
 	if err != nil {
-		return finding.MergedUnknown, err
+		return finding.MergedUnknown, "", err
 	}
 	baseTree, err := env.git(ctx, dir, "rev-parse", base+"^{tree}")
 	if err != nil {
-		return finding.MergedUnknown, err
+		return finding.MergedUnknown, "", err
 	}
 	if strings.TrimSpace(tree) == strings.TrimSpace(baseTree) {
 		// The files at HEAD are those of a commit in the default branch.
-		return finding.MergedSquash, nil
+		return finding.MergedSquash, "", nil
 	}
 	// A synthetic commit holding the whole change since the merge base. It
 	// is written as a dangling object that no ref points at.
 	squash, err := env.Exec.Output(ctx, "git", "-C", dir, "-c", "user.name=reclaim", "-c", "user.email=reclaim@localhost",
 		"commit-tree", strings.TrimSpace(tree), "-p", base, "-m", "reclaim squash merge check")
 	if err != nil {
-		return finding.MergedUnknown, err
+		return finding.MergedUnknown, "", err
 	}
 	cherry, err = env.git(ctx, dir, "cherry", def, strings.TrimSpace(squash), base)
 	if err != nil {
-		return finding.MergedUnknown, err
+		return finding.MergedUnknown, "", err
 	}
-	if allEquivalent(cherry) {
-		return finding.MergedSquash, nil
+	if !allEquivalent(cherry) {
+		return finding.MergedNo, "", nil
 	}
-	return finding.MergedNo, nil
+	exact, err := inDefaultExactly(ctx, env, dir, def, base, base, "HEAD")
+	if err != nil {
+		return finding.MergedUnknown, "", err
+	}
+	if !exact {
+		return finding.MergedNo, notExact, nil
+	}
+	return finding.MergedSquash, "", nil
+}
+
+// rebaseExact confirms a rebase match: every commit of the branch since the
+// merge base has a commit in the default branch with exactly its diff. A
+// branch with merge commits is left to the squash check, which compares the
+// whole change.
+func rebaseExact(ctx context.Context, env Env, dir, def, base string) (bool, error) {
+	merges, err := revCount(ctx, env, dir, "--merges", base+"..HEAD")
+	if err != nil {
+		return false, err
+	}
+	if merges > 0 {
+		return false, nil
+	}
+	out, err := env.git(ctx, dir, "rev-list", "--no-merges", base+"..HEAD")
+	if err != nil {
+		return false, err
+	}
+	for c := range strings.FieldsSeq(out) {
+		exact, err := inDefaultExactly(ctx, env, dir, def, base, c+"^", c)
+		if err != nil || !exact {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// maxCandidates bounds the commits of the default branch compared byte for
+// byte with a change; more than that counts as no match, which never makes
+// work look merged.
+const maxCandidates = 300
+
+// inDefaultExactly reports whether a commit of the default branch since the
+// merge base has exactly the diff between from and to: the same files,
+// modes, blob ids and lines, compared byte for byte.
+func inDefaultExactly(ctx context.Context, env Env, dir, def, base, from, to string) (bool, error) {
+	want, err := env.git(ctx, dir, "diff-tree", "-p", "--no-color", "--full-index", from, to)
+	if err != nil {
+		return false, err
+	}
+	names, err := env.git(ctx, dir, "diff-tree", "-r", "--name-only", "-z", from, to)
+	if err != nil {
+		return false, err
+	}
+	paths := slices.DeleteFunc(strings.Split(names, "\x00"), func(p string) bool { return strings.TrimSpace(p) == "" })
+	if len(paths) == 0 || strings.TrimSpace(want) == "" {
+		return false, nil
+	}
+	out, err := env.git(ctx, dir, append([]string{"rev-list", "--no-merges", base + ".." + def, "--"}, paths...)...)
+	if err != nil {
+		return false, err
+	}
+	candidates := strings.Fields(out)
+	if len(candidates) > maxCandidates {
+		return false, nil
+	}
+	for _, c := range candidates {
+		got, err := env.git(ctx, dir, "diff-tree", "-p", "--no-color", "--full-index", c+"^", c)
+		if err != nil {
+			return false, err
+		}
+		if got == want {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// shortRef is a ref without refs/remotes/ or refs/heads/.
+func shortRef(ref string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(ref, "refs/remotes/"), "refs/heads/")
 }
 
 // allEquivalent reports whether git cherry printed at least one commit and

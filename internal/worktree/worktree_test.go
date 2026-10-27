@@ -269,3 +269,63 @@ func TestLocate(t *testing.T) {
 	_, err = worktree.Locate(odd)
 	require.ErrorIs(t, err, worktree.ErrNotLinked)
 }
+
+// TestSquashMergedExactly covers the squash merge after the remote deleted
+// the branch, as GitHub does: tier A only when the change is exactly in a
+// default branch on a remote. A whitespace only difference, which git
+// cherry's patch ids ignore, is not merged, and a local only default branch
+// never makes commits on no remote safe.
+func TestSquashMergedExactly(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("remote branch deleted after the squash merge", func(t *testing.T) {
+		f := worktreetest.New(t)
+		w := f.Worktree("gone-upstream")
+		f.Commit(w, "a.txt", "a\n")
+		f.Commit(w, "b.txt", "b\n")
+		f.Push(w, "gone-upstream")
+		f.MergeSquash("gone-upstream")
+		f.Git(f.Repo, "push", "-q", "origin", "--delete", "gone-upstream")
+		s, err := worktree.Classify(ctx, osEnv(), w)
+		require.NoError(t, err)
+		require.Equal(t, 2, s.Unpushed)
+		require.Equal(t, finding.MergedSquash, s.Merged)
+		require.True(t, s.MergedRemotely())
+		require.Equal(t, finding.VerdictRemovable, s.Verdict, "%v", s.Reasons)
+		require.Contains(t, worktree.Words(s), "merged by squash into origin/main; the branch is not on the remote")
+		require.NotContains(t, strings.Join(s.Hints, "\n"), "push")
+	})
+
+	t.Run("a whitespace only change after the squash merge", func(t *testing.T) {
+		f := worktreetest.New(t)
+		w := f.Worktree("spacing")
+		f.Commit(w, "a.txt", "one\ntwo\n")
+		f.Commit(w, "b.txt", "b\n")
+		f.Push(w, "spacing")
+		f.MergeSquash("spacing")
+		f.Commit(w, "a.txt", "one\n    two\n")
+		f.Push(w, "spacing")
+		s, err := worktree.Classify(ctx, osEnv(), w)
+		require.NoError(t, err)
+		require.Equal(t, finding.MergedNo, s.Merged)
+		require.Equal(t, "the branch's changes are not exactly in origin/main", s.MergeNote)
+		require.NotEqual(t, finding.VerdictRemovable, s.Verdict)
+		require.Contains(t, worktree.Words(s), "not exactly in origin/main")
+	})
+
+	t.Run("squash merged into a local only default branch", func(t *testing.T) {
+		f := worktreetest.NewLocal(t)
+		w := f.Worktree("local-squash")
+		f.Commit(w, "a.txt", "a\n")
+		f.Commit(w, "b.txt", "b\n")
+		f.Git(f.Repo, "merge", "-q", "--squash", "local-squash")
+		f.Git(f.Repo, "commit", "-q", "-m", "squash local-squash")
+		s, err := worktree.Classify(ctx, osEnv(), w)
+		require.NoError(t, err)
+		require.Equal(t, finding.MergedSquash, s.Merged)
+		require.Equal(t, "refs/heads/main", s.DefaultRef)
+		require.False(t, s.MergedRemotely())
+		require.Equal(t, finding.VerdictAttention, s.Verdict)
+		require.Contains(t, strings.Join(s.Reasons, "; "), "commits on no remote")
+	})
+}

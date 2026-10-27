@@ -160,7 +160,7 @@ It takes the path of a linked worktree, defaulting to the current directory, and
 1. classifies it exactly as the worktree scanner does, pull request lookup included;
 2. prints the state in plain words, such as "committed, pushed, merged in PR #3, 158 MB", and with `--json` as the same state object the scanner writes;
 3. exits 0 when the worktree is tier A, 1 when it is tier B, 2 when it holds work that exists nowhere else, printing the retrieval hints, and 3 when the path is not a linked worktree or the state could not be determined;
-the exit code judges the work and not the lock, because an agent's own running session holds the lock of its worktree, and the words say who holds a lock;
+the exit code judges the work and not the lock, because an agent's own running session holds the lock of its worktree, and the words say which lock it is, "in use by pid 30201" or "stale lock, pid 50949 gone";
 4. with `--remove`, removes a tier A worktree through the same plan, proof and apply path as everything else, writing the plan and the log to the reclaim cache folder, and refuses anything else with the reason.
 
 `--remove --allow-unmerged` extends removal to tier B, for agents whose branches are reviewed elsewhere.
@@ -415,6 +415,7 @@ Merge state is as of the last fetch, which the report shows from the modificatio
 State, per worktree, written to `--json` as `worktree` on the finding and carried into the plan:
 
 - `repo`, `tool`, `branch` or detached, `head`, `upstream`.
+- `default_ref` and `merge_note`: the full ref of the default branch, and why a patch id match was not confirmed.
 - `exists`, `locked`, `lock_reason`, `lock_live`: a lock is live only when the process it names is running and, when the reason records a start time as Claude Code's locks do, started at that time, because process ids are reused.
 The process table is read with `ps -o lstart= -p <pid>`.
 Claude Code records the start time in UTC and `ps` prints local time, so the two are compared as wall clock readings in both zones, within a second.
@@ -430,6 +431,9 @@ An entry is an artifact when any folder in its path is one of `node_modules`, `.
 `rebase` is `git cherry <default> HEAD` reporting nothing missing.
 `squash` is `git cherry` reporting a synthetic squash commit, `git commit-tree HEAD^{tree} -p <merge-base>`, as present in the default branch; it writes one dangling object that `git gc` collects and changes no ref and no file.
 The checks run in that order because each is cheaper than the next.
+`git cherry` compares patch ids, which ignore whitespace, so a `rebase` or `squash` match is confirmed exactly: `git diff-tree -p --no-color --full-index <merge-base> HEAD` for a squash, or `<commit>^ <commit>` for each commit of a rebase, must be byte for byte equal to `git diff-tree -p --no-color --full-index C^ C` of a commit C of the default branch since the merge base that touches the same files.
+When it is not, `merged` is `no` and the state says "the branch's changes are not exactly in origin/main".
+A branch with merge commits is left to the squash check, and more than 300 candidate commits count as no match.
 - `pr`: number, state and URL from GitHub when the lookup ran.
 - `fetched_at`, `default_branch` and `origin`.
 - `unknown` and `problem`: the parts git could not report and why; any of them makes the worktree one reclaim never removes.
@@ -449,11 +453,14 @@ It adds to the restore text, so such a finding says "merged in PR #18; fetch ori
 Tiers:
 
 - Tier A, preselected: the folder exists, `modified`, `untracked`, `loose` and `unpushed` are zero, `merged` is not `no` or `unknown`, and no live lock holds it.
+One exception: when `merged` is `rebase` or `squash` against a default branch on a remote, a ref under `refs/remotes/`, commits on no remote do not count, because their changes are proven to be, byte for byte, on that remote; this is the branch GitHub deletes after a squash merge.
+The state then says "merged by squash into origin/main; the branch is not on the remote".
+Against a local only default branch, commits on no remote always count.
 Restore: `git worktree add <path> <branch>`.
 - Tier B, never preselected: the same, except `merged` is `no`.
 The work is safe on the remote.
 - Listed for attention, with the `None` action, never removed by reclaim: anything else.
-That is any worktree with `modified`, `untracked`, `loose` or `unpushed` above zero, `merged` or any count `unknown`, or `ignored` files that are not artifacts.
+That is any worktree with `modified`, `untracked` or `loose` above zero, `unpushed` above zero outside the exception above, `merged` or any count `unknown`, or `ignored` files that are not artifacts.
 The warning says exactly what: "58 modified and 6 untracked files", "10 commits on no remote", "detached with 2 commits no branch holds", "2 ignored files: .env, local.sqlite".
 Under it, the finding carries retrieval hints as text that reclaim never runs: `git -C <path> add -A && git -C <path> commit` or `git -C <path> diff > <branch>.patch` for uncommitted changes, `git -C <path> push -u origin <branch>` for unpushed commits, `git -C <path> branch <name>` for commits on a detached `HEAD`, and the pull request URL or `gh pr create --head <branch>` for an unmerged pushed branch.
 It also carries the exact `git -C <repo> worktree remove --force <path>` command, so a user who has read the hints and wants the folder gone copies one line.
@@ -548,7 +555,8 @@ Every check must pass, and the result of each is written to the log.
 1. The path is a linked worktree: its `.git` is a file naming a registration under `<repo>/.git/worktrees/`, and `git -C <repo> worktree list --porcelain` lists it at the recorded `head`.
 A directory holding a `.git` directory is never removed, so a main checkout or a project root cannot be, whatever the plan says.
 2. The path passes every `RemovePath` check: inside a recorded root, not protected, no symbolic link in it, not a mount point, the same object as at scan time.
-3. The state is recomputed with the same code the scanner uses, and `modified`, `untracked`, `loose`, `unpushed` and `ignored` are all zero, `merged` is `ancestor`, `rebase` or `squash`, and no live lock holds it.
+3. The state is recomputed with the same code the scanner uses, and `modified`, `untracked`, `loose`, `unpushed` and `ignored` are all zero, `merged` is `ancestor`, `rebase` or `squash`, and no lock holds it.
+`unpushed` may be above zero only when `merged` is `rebase` or `squash`, confirmed exactly, against a default branch under `refs/remotes/`.
 `--allow-unmerged`, or a tier B finding ticked in `select`, relaxes `merged` only, and `unpushed` must still be zero.
 4. The recomputed `head` equals the recorded one, so a worktree that received commits since the scan is refused.
 5. The path does not contain the working directory of the reclaim process.
@@ -571,7 +579,7 @@ Only `apply` deletes, only from a plan, only after confirmation.
 - Running containers, their images and their volumes are never offered.
 - Anything that needs `sudo` is printed as a command and never executed.
 - Some findings are print only, whoever asks and whatever flags are given: reclaim shows the exact command and never runs it.
-They are anything that needs `sudo`, a worktree that holds work existing nowhere else, that is uncommitted changes, untracked files, commits on no remote or ignored files that are not artifacts, and a stale worktree lock.
+They are anything that needs `sudo`, a worktree that holds work existing nowhere else, that is uncommitted changes, untracked files, ignored files that are not artifacts, or commits on no remote whose changes are not exactly in a default branch on a remote, and a stale worktree lock.
 A person or an agent who has read the hints removes those by hand.
 - A worktree is removed only after the proof under "Removing a worktree" passes twice, at plan time and immediately before acting, and the main worktree of a repository is never removed.
 - `done --remove` is the only path on which an agent triggers a removal, it goes through the same plan, proof, apply and log as everything else, and it removes nothing but the one worktree it was given.

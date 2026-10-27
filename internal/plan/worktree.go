@@ -69,10 +69,16 @@ func RemovableState(s *finding.WorktreeState, tier finding.Tier) error {
 		n    int
 		what string
 	}{{s.Modified, "modified files"}, {s.Untracked, "untracked files"}, {s.Ignored, "ignored files outside artifact folders"},
-		{s.Loose, "commits no branch holds"}, {s.Unpushed, "commits on no remote"}} {
+		{s.Loose, "commits no branch holds"}} {
 		if c.n != 0 {
 			problems = append(problems, fmt.Sprintf("%d %s", c.n, c.what))
 		}
+	}
+	// Commits on no remote are work that exists nowhere else, unless their
+	// changes are proven to be, byte for byte, in a default branch on a
+	// remote, as when the remote deleted a merged branch.
+	if s.UnpushedBlocks() {
+		problems = append(problems, fmt.Sprintf("%d commits on no remote", s.Unpushed))
 	}
 	if s.Locked {
 		problems = append(problems, "it is locked")

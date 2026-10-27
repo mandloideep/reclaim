@@ -177,7 +177,7 @@ func (a *app) doneCommand(ctx context.Context, path string, f doneFlags) error {
 // and --remove refuses any lock anyway.
 func doneCode(s *finding.WorktreeState) int {
 	verdict, _ := worktree.WorkVerdict(s)
-	concrete := s.Modified > 0 || s.Untracked > 0 || s.Ignored > 0 || s.Loose > 0 || s.Unpushed > 0
+	concrete := s.Modified > 0 || s.Untracked > 0 || s.Ignored > 0 || s.Loose > 0 || s.UnpushedBlocks()
 	switch {
 	case concrete:
 		return doneHoldsWork

@@ -430,3 +430,24 @@ func TestRemoveEmptyDir(t *testing.T) {
 	require.Equal(t, StatusFailed, sum.Outcomes[1].Status)
 	require.True(t, exists(filepath.Join(full, "repo", "work.txt")))
 }
+
+// TestApplyRemovesSquashMergedWorktreeWithDeletedBranch removes a worktree
+// whose branch the remote deleted after a squash merge: its commits are on
+// no remote, but its change is exactly in origin/main.
+func TestApplyRemovesSquashMergedWorktreeWithDeletedBranch(t *testing.T) {
+	f := worktreetest.New(t)
+	e := env{root: f.Dir, home: filepath.Join(worktreetest.RealTempDir(t), "home", "me")}
+	path := f.Worktree("deleted")
+	f.Commit(path, "a.txt", "a\n")
+	f.Commit(path, "b.txt", "b\n")
+	f.Push(path, "deleted")
+	f.MergeSquash("deleted")
+	f.Git(f.Repo, "push", "-q", "origin", "--delete", "deleted")
+	a := worktreeAction(t, path, finding.TierA)
+	require.Equal(t, 2, a.Worktree.Unpushed)
+	sum, _, err := run(t, e, newPlan([]string{f.Dir}, a), gitRun(nil))
+	require.NoError(t, err)
+	require.Equal(t, StatusDone, sum.Outcomes[0].Status)
+	require.False(t, exists(path))
+	require.Equal(t, "deleted", f.Git(f.Repo, "branch", "--list", "deleted", "--format=%(refname:short)"), "the local branch stays")
+}

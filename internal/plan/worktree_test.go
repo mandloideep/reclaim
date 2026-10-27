@@ -62,6 +62,15 @@ func TestValidateWorktreeRemove(t *testing.T) {
 		{"ignored files", func(a *Action) { a.Worktree.Ignored = 1 }, "ignored files"},
 		{"loose commits", func(a *Action) { a.Worktree.Loose = 2 }, "commits no branch holds"},
 		{"unpushed commits", func(a *Action) { a.Worktree.Unpushed = 2 }, "commits on no remote"},
+		{"unpushed after a squash merge into origin/main", func(a *Action) {
+			a.Worktree.Unpushed, a.Worktree.DefaultRef = 2, "refs/remotes/origin/main"
+		}, ""},
+		{"unpushed after a squash merge into a local main", func(a *Action) {
+			a.Worktree.Unpushed, a.Worktree.DefaultRef = 2, "refs/heads/main"
+		}, "commits on no remote"},
+		{"unpushed and unmerged at tier B with a remote default", func(a *Action) {
+			a.Tier, a.Worktree.Merged, a.Worktree.Unpushed, a.Worktree.DefaultRef = finding.TierB, finding.MergedNo, 1, "refs/remotes/origin/main"
+		}, "commits on no remote"},
 		{"unpushed at tier B", func(a *Action) { a.Tier = finding.TierB; a.Worktree.Unpushed = 1 }, "commits on no remote"},
 		{"unknown parts", func(a *Action) { a.Worktree.Unknown = []string{"modified"} }, "could not report"},
 		{"locked", func(a *Action) { a.Worktree.Locked = true }, "locked"},
