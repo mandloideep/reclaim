@@ -31,6 +31,9 @@ reclaim scan [path...]   [--json] [--md] [--min-size 50MB] [--tier A,B] [--categ
 reclaim select           [--report report.json] [--preset safe|aggressive] [--out plan.json]
 reclaim apply plan.json  [--yes] [--log apply.log] [--keep-going] [--stale-ok]
 reclaim here [path]      [--depth 2] [--json] [--md] [--out report.json]
+reclaim worktrees [path...] [--json] [--md] [--out report.json]
+reclaim done [path]      [--json] [--remove] [--allow-unmerged]
+reclaim skill            # print the agent skill that tells an agent to run reclaim done
 reclaim scanners         # list registered scanners, what they look for and whether the config disables them
 reclaim completion bash|zsh|fish|powershell
 reclaim version
@@ -140,6 +143,34 @@ Project discovery still reads the folders outside artifacts a second time, which
 `--json` prints `{"version": 1, "path", "size", "children", "findings", "warnings", "notes"}`, where each child has `name`, `path`, `dir`, `size` and nested `children` down to `--depth`.
 `--md` prints the same breakdown and findings as Markdown tables.
 
+### worktrees
+
+`worktrees` runs only the worktree scanners, over the repositories under the given paths or under the configured roots, and prints one table per repository with every linked worktree, including the ones reclaim never offers, so the user sees the whole picture even when nothing is reclaimable.
+Columns: tool, branch or commit, uncommitted, unpushed, merged, pull request, lock, size, and the tier or a dash for a worktree that is listed only.
+`--json` prints the report with the full state of every worktree, `--md` prints Markdown, and `--out` saves a report that `select` reads, so `reclaim worktrees` followed by `reclaim select` cleans up worktrees alone.
+Like `scan`, it saves `last-report.json`.
+
+### done
+
+`done` is the one command an agent, or a person, runs at the end of a task in a worktree.
+It takes the path of a linked worktree, defaulting to the current directory, and:
+
+1. classifies it exactly as the worktree scanner does, pull request lookup included;
+2. prints the state in plain words, such as "committed, pushed, merged in PR #3, 158 MB", and with `--json` as the same state object the scanner writes;
+3. exits 0 when the worktree is tier A, 1 when it is tier B, 2 when it holds work that exists nowhere else, printing the retrieval hints, and 3 when the path is not a linked worktree or the state could not be determined;
+4. with `--remove`, removes a tier A worktree through the same plan, proof and apply path as everything else, writing the plan and the log to the reclaim cache folder, and refuses anything else with the reason.
+
+`--remove --allow-unmerged` extends removal to tier B, for agents whose branches are reviewed elsewhere.
+A worktree with work that exists nowhere else is never removed by `done`, whatever flags are given; `done` prints the retrieval hints and the `git worktree remove --force` command for the user to run by hand.
+`done` refuses to remove a worktree that contains its own working directory, so an agent runs it from the main checkout, and the message says so.
+It never deletes branches and never pushes.
+
+### skill
+
+`skill` prints `skills/reclaim/SKILL.md`, embedded in the binary, so `reclaim skill > ~/.claude/skills/reclaim/SKILL.md` installs it.
+The skill tells an agent to run `reclaim done --json` when its task is finished, read the exit code, push or open a pull request first when the state says so, and remove only after the work is merged.
+`docs/AGENTS.md` holds the same instructions as a snippet for the `AGENTS.md` or `CLAUDE.md` of other projects and for Codex.
+
 ## Architecture
 
 ```
@@ -152,6 +183,7 @@ internal/apply         Executors: filesystem removal, shell command, docker
 internal/dockerx       Thin wrapper over the Docker Engine API client
 internal/fsx           Fast concurrent directory size calculation, symlink and mount boundary handling
 internal/project       Project detection (markers, type, last activity)
+internal/worktree      Worktree discovery, state classification and the proof of safety shared by the scanner, done and apply
 internal/ui            Table rendering, Markdown rendering, interactive checklist
 internal/config        Config file loading
 ```
@@ -355,6 +387,84 @@ A zip must also hold an app bundle, a disk image or a package at its top level, 
 This rule wins over the installer rule, because the archive may be the only untouched copy.
 - `old-downloads`: any other file of at least 250 MB that has been neither modified nor read for 90 days, using the later of the modification and access times, listed under an "attention" group with the `None` action, so the user sees it without the tool offering to delete it.
 
+### Worktree scanners
+
+Coding agents and people create git worktrees and leave them behind.
+Claude Code puts them in `.claude/worktrees/agent-*` inside the repository, Codex in `$CODEX_HOME/worktrees/<task>/<repo>`, other tools in `.worktrees/` or `/tmp`.
+Each one is a full checkout plus its own `node_modules`, `.venv` or build cache.
+The scanners in category `worktree` live in `internal/scanners/worktrees` and use `internal/worktree` for discovery and classification, so `done` and `apply` reach the same answers from the same code.
+
+Discovery:
+
+- Every repository the project walk finds, a directory holding a `.git` directory, is asked for its linked worktrees with `git worktree list --porcelain`, which also reports registrations whose folder is gone and locks with their reasons.
+- A directory holding a `.git` file is a linked worktree; its main repository is read from that file and the worktree is reported under that repository even when the repository lies outside the roots.
+- Codex task folders are found as today, and each repository inside is classified like any other worktree.
+- The main worktree of a repository is never a finding.
+
+Every answer comes from read only git commands run through `execx.Runner`, so tests use fakes and the scan stays offline.
+`scan` never fetches.
+Merge state is as of the last fetch, which the report shows from the modification time of `FETCH_HEAD`.
+
+State, per worktree, written to `--json` as `worktree` on the finding and carried into the plan:
+
+- `repo`, `tool`, `branch` or detached, `head`, `upstream`.
+- `exists`, `locked`, `lock_reason`, `lock_live`: a lock is live only when the process it names is running and, when the reason records a start time as Claude Code's locks do, started at that time, because process ids are reused.
+- `modified`, `untracked`: counts from `git status --porcelain`.
+- `ignored`: ignored files outside recognized artifact folders, as a count and a sample, so `.env`, `*.local`, `*.sqlite` and the like are named; ignored artifact folders such as `node_modules` do not count.
+- `loose`: commits reachable from `HEAD` that no branch, remote or tag holds.
+- `unpushed`: commits reachable from `HEAD` that no remote ref holds, and `ahead` of the upstream when one is set.
+- `merged`: `ancestor`, `rebase`, `squash`, `no` or `unknown`, against the default branch, which is `refs/remotes/origin/HEAD`, else `origin/main`, else `origin/master`, else local `main` or `master`.
+`ancestor` is `git merge-base --is-ancestor`.
+`rebase` is `git cherry <default> HEAD` reporting nothing missing.
+`squash` is `git cherry` reporting a synthetic squash commit, `git commit-tree HEAD^{tree} -p <merge-base>`, as present in the default branch; it writes one dangling object that `git gc` collects and changes no ref and no file.
+The checks run in that order because each is cheaper than the next.
+- `pr`: number, state and URL from GitHub when the lookup ran.
+- `fetched_at`.
+
+The tool is inferred from the path and the lock reason: a lock reason starting with "claude agent" or a path under `.claude/worktrees` is `claude-code`; a path under `$CODEX_HOME/worktrees` is `codex`; a path under a `.worktrees` or `.conductor` folder is named after it; anything else is `manual`.
+
+Pull request state comes from `gh pr list --head <branch> --state all --json number,state,url`, once per branch, when `gh` is installed and signed in and the repository's origin is on GitHub.
+The lookups run concurrently with a bound and a short timeout.
+A failure, such as being offline or not signed in, is one warning in the report and leaves every finding as it was.
+`[worktrees] github = false` turns the lookups off.
+The lookup never changes a tier: a branch whose pull request is merged but whose commits are not detected in the default branch stays tier B, because the commit based check is the one that proves the work exists locally.
+It adds to the restore text, so such a finding says "merged in PR #18; fetch origin to see it locally".
+
+Tiers:
+
+- Tier A, preselected: the folder exists, `modified`, `untracked`, `loose` and `unpushed` are zero, `merged` is not `no` or `unknown`, and no live lock holds it.
+Restore: `git worktree add <path> <branch>`.
+- Tier B, never preselected: the same, except `merged` is `no`.
+The work is safe on the remote.
+- Listed for attention, with the `None` action, never removed by reclaim: anything else.
+That is any worktree with `modified`, `untracked`, `loose` or `unpushed` above zero, `merged` or any count `unknown`, or `ignored` files that are not artifacts.
+The warning says exactly what: "58 modified and 6 untracked files", "10 commits on no remote", "detached with 2 commits no branch holds", "2 ignored files: .env, local.sqlite".
+Under it, the finding carries retrieval hints as text that reclaim never runs: `git -C <path> add -A && git -C <path> commit` or `git -C <path> diff > <branch>.patch` for uncommitted changes, `git -C <path> push -u origin <branch>` for unpushed commits, `git -C <path> branch <name>` for commits on a detached `HEAD`, and the pull request URL or `gh pr create --head <branch>` for an unmerged pushed branch.
+It also carries the exact `git -C <repo> worktree remove --force <path>` command, so a user who has read the hints and wants the folder gone copies one line.
+- Never shown as a finding: a worktree held by a live lock, which is in use, and the main worktree.
+A stale lock, one whose process is gone, is listed for attention with the `git worktree unlock` command.
+
+Stale registrations, entries in `.git/worktrees` whose folder no longer exists, are one tier A finding per repository, "14 stale worktree registrations", with action `GitWorktreePrune`.
+They free almost nothing but they let `git worktree add` reuse the paths and keep `git worktree list` honest.
+
+Findings are grouped by repository, then by tool.
+The repository row shows its origin, default branch, last fetch time and how many worktrees it has in each state.
+Two clones of the same origin under the roots are listed for attention under the repository group as "another clone of this origin", never offered, because reclaim cannot know which one the user wants.
+`here` inside a repository marks linked worktrees in the breakdown with their state words.
+
+Removal is action `GitWorktreeRemove`: `git -C <repo> worktree remove <path>`, never with `--force`, then `git -C <repo> worktree prune`.
+`RemovePath` would leave the registration behind, and git's own refusal to remove a dirty worktree is a second guard worth keeping.
+Branches are never deleted; the restore text of a merged worktree names the `git branch -d` command for the user.
+Codex task folders become one `GitWorktreeRemove` per repository inside, then `RemovePath` on the empty task folder.
+
+### Agent session leftovers
+
+- Claude Code session folders under `~/.claude/projects/<slug>` whose project folder no longer exists.
+The slug replaces `/` with `-`, which is lossy, so the scanner reads the `cwd` field from the first line of a session file instead of decoding the name.
+Tier B after 30 days, with the warning that Claude Code cannot resume those sessions.
+- `$CODEX_HOME/.tmp/plugins-backup-*`, tier A.
+- Codex sessions, archived sessions and Claude desktop VM bundles are covered by the app cache scanners.
+
 ## Handling long lists
 
 The checklist is a tree, not a flat list, built with bubbletea and bubbles.
@@ -399,6 +509,26 @@ For users who never want a screen, `--preset` and `--json` piped through `jq` gi
 
 `apply` validates the schema, refuses unknown actions, and refuses paths outside the roots recorded at scan time.
 
+A `GitWorktreeRemove` action also records `repo`, the main repository, `head`, the commit the worktree was at, and `worktree`, the full state the scanner found, which is the proof that removal is safe.
+A `GitWorktreePrune` action records `repo` and the registrations it covers.
+
+### Removing a worktree
+
+Removing a worktree is the one case where an agent, through `done --remove`, can trigger a deletion without a person reading a checklist, so the proof is explicit and is checked twice: once when the plan is written and again by `apply` immediately before acting.
+Every check must pass, and the result of each is written to the log.
+
+1. The path is a linked worktree: its `.git` is a file naming a registration under `<repo>/.git/worktrees/`, and `git -C <repo> worktree list --porcelain` lists it at the recorded `head`.
+A directory holding a `.git` directory is never removed, so a main checkout or a project root cannot be, whatever the plan says.
+2. The path passes every `RemovePath` check: inside a recorded root, not protected, no symbolic link in it, not a mount point, the same object as at scan time.
+3. The state is recomputed with the same code the scanner uses, and `modified`, `untracked`, `loose`, `unpushed` and `ignored` are all zero, `merged` is `ancestor`, `rebase` or `squash`, and no live lock holds it.
+`--allow-unmerged`, or a tier B finding ticked in `select`, relaxes `merged` only, and `unpushed` must still be zero.
+4. The recomputed `head` equals the recorded one, so a worktree that received commits since the scan is refused.
+5. The path does not contain the working directory of the reclaim process.
+6. `git worktree remove` runs without `--force`, so git's own check for untracked and modified files is the last guard.
+
+A worktree that fails any check is refused with the check that failed and, when work would be lost, the retrieval hints and the `--force` command for the user.
+Reclaim never runs that command.
+
 ## Safety rules
 
 - No command deletes anything by default.
@@ -409,6 +539,11 @@ Only `apply` deletes, only from a plan, only after confirmation.
 - The tool never deletes a path shorter than four components or any path in a hard coded denylist such as `/`, `/Users`, `/Users/*`, `~/Library`, `~/Documents`, `~/Desktop`.
 - Running containers, their images and their volumes are never offered.
 - Anything that needs `sudo` is printed as a command and never executed.
+- Some findings are print only, whoever asks and whatever flags are given: reclaim shows the exact command and never runs it.
+They are anything that needs `sudo`, a worktree that holds work existing nowhere else, that is uncommitted changes, untracked files, commits on no remote or ignored files that are not artifacts, and a stale worktree lock.
+A person or an agent who has read the hints removes those by hand.
+- A worktree is removed only after the proof under "Removing a worktree" passes twice, at plan time and immediately before acting, and the main worktree of a repository is never removed.
+- `done --remove` is the only path on which an agent triggers a removal, it goes through the same plan, proof, apply and log as everything else, and it removes nothing but the one worktree it was given.
 - Every `apply` run writes a log with timestamps, actions and results.
 
 ## Configuration
@@ -425,6 +560,9 @@ stale = "60d"
 
 [scanners]
 disable = ["ollama"]
+
+[worktrees]
+github = true
 ```
 
 Every key is optional, and an unknown key is an error that names it, so a typo never silently changes what a scan covers.
@@ -436,6 +574,7 @@ An exclude that does not exist gets a warning, because it protects nothing.
 - `min_size` and `stale` are the defaults for `--min-size` and `--stale`.
 - `[scanners] disable` takes scanner names, categories or ecosystems, like `--category`; an unknown one is an error.
 Disabled scanners do not run, and `reclaim scanners` marks them disabled.
+- `[worktrees] github`, default true, lets the worktree scanners and `done` ask `gh` for pull request state; `false` keeps a machine offline.
 
 Flags override the config file: `--min-size` and `--stale` replace the file's values, paths given to `scan` replace its roots, and `--category` runs exactly the scanners it selects, disabled or not.
 
@@ -461,6 +600,12 @@ Build time labels passed through the API are not used, because the classic build
 The build cache prune is covered by unit tests against a fake client only, because a real prune cannot be limited to labeled records.
 Without `RECLAIM_DOCKER_TESTS=1` the tests skip, and the scanner and the Docker executors are unit tested against an in-memory fake of the client interface in `internal/dockerx`.
 - An end-to-end test runs `scan` on a fixture tree, writes a plan with `--preset safe`, runs `apply --yes`, and asserts that only the expected paths are gone.
+- Worktree tests build fixture repositories with real git in temp directories, skipped when git is missing, one per state: clean merged, clean squash merged, clean rebase merged, clean pushed unmerged, modified, untracked only, ignored `.env` only, detached with loose commits, unpushed on a branch, locked by a dead pid, locked by the test's own pid, stale registration, and no remote.
+The remote is a bare repository in the same temp directory, so nothing touches the network.
+Parsing tests with the fake runner cover every git output the classifier reads, and the GitHub lookup is tested with a fake `gh`.
+- An apply test proves `GitWorktreeRemove` removes only the worktree folder and its registration, leaves every other worktree, every branch and the main checkout untouched, and refuses a worktree that was modified, received a commit or lost its remote after the plan was written.
+A prune test proves stale registrations go and live ones stay.
+A `done` test proves each exit code, that `--remove` removes a tier A worktree and nothing else, that it refuses tier B without `--allow-unmerged`, and that no flag removes a worktree with work that exists nowhere else.
 A second one scans a whole fake machine, with projects, package and app caches, installed apps and a Downloads folder, applies `--preset aggressive`, and asserts that only the tier A and B paths are gone while the archive with an extracted copy and the attention file remain.
 - The checklist is tested by feeding key messages to its `Update` method and asserting on the selection and on `View`.
 - Shell completion is tested through cobra's hidden completion command, and `reclaim version` through a function that takes the stamped version and the build info as arguments.
@@ -476,12 +621,22 @@ The formula installs the bash, zsh and fish completions from the binary and test
 There is no `CHANGELOG.md`; the release notes are the change log.
 GoReleaser and freeze run through `go run` and are not dependencies in `go.mod`.
 [RELEASING.md](RELEASING.md) has the steps, the token the tap needs and how to verify a release.
+Without the tap token the workflow still publishes the GitHub release and skips the formula.
+
+### Installing
+
+Three install paths, in the README in this order: `brew install mandloideep/tap/reclaim`, `scripts/install.sh` and `go install`.
+`scripts/install.sh` is for Linux machines and CI runners without Homebrew: it detects the operating system and architecture, downloads the matching archive of the latest release, or of the tag given with `--version`, checks it against `checksums.txt`, installs `reclaim` into `~/.local/bin` or the folder given with `--bin-dir`, and prints the completion command for the shell it finds.
+It is POSIX sh, needs only `curl` or `wget` and `tar`, never uses `sudo`, and fails with a clear message when the checksum does not match.
+The README gives the one line `curl -fsSL https://raw.githubusercontent.com/mandloideep/reclaim/main/scripts/install.sh | sh`.
+CI tests the script against a snapshot build served from a local folder through `--base-url`.
 
 ## Phases
 
 Phase 1 delivered `scan`, `here`, `select --preset`, `apply`, the project scanners, the package cache scanners, the Docker scanner, JSON and table output, and the test suite.
 Phase 2 delivered the interactive checklist, the app cache scanners, the Downloads scanner, Markdown output, the config file, report provenance, Docker grouping, the location check before clean commands and the Docker integration test in CI.
 Phase 3 delivered GoReleaser and the release workflow, the Homebrew tap, shell completion values, the README with screenshots rendered from a fixture, `docs/RELEASING.md`, Xcode's custom DerivedData location, the Linux system wide Ollama models, a blank tier column for attention findings and the release tag in `reclaim version`.
+Phase 4 delivers the worktree scanners and their proof of safety, the `worktrees`, `done` and `skill` commands, the agent skill and `docs/AGENTS.md`, the agent session leftovers, `scripts/install.sh`, and worktrees in `here`.
 
 Each phase is a pull request or a short series of pull requests.
 Every pull request passes CI and includes tests for what it adds.
@@ -491,3 +646,4 @@ Every pull request passes CI and includes tests for what it adds.
 On the reference machine, `reclaim scan` completes in under two minutes over 165 GB of projects and reports, within 5 percent, the following that were measured by hand: 57 GB of project artifacts, about 109 GB of reclaimable Docker data and about 40 GB of package caches.
 `reclaim here` in a project folder shows the breakdown within one second for a folder up to 20 GB.
 `reclaim apply` on the end-to-end fixture removes exactly the planned paths and nothing else.
+`reclaim worktrees` on the reference machine classifies its two dozen linked worktrees in under five seconds without the GitHub lookup and under fifteen with it, reports the three squash merged Claude Code worktrees of this repository as tier A, and lists the Codex `webtools` worktree with its modified files for attention only.
