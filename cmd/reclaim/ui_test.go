@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -125,6 +126,11 @@ func (d *driver) run(cmd tea.Cmd) {
 	case tea.QuitMsg:
 		d.quit = true
 	default:
+		// The cursor's blink, the spinner and the clock tick forever in a
+		// running program; here they are dropped so the drive ends.
+		if name := fmt.Sprintf("%T", msg); strings.HasPrefix(name, "cursor.") || strings.HasPrefix(name, "spinner.") || name == "tui.tickMsg" {
+			return
+		}
 		d.mu.Lock()
 		sent := d.sent
 		d.sent = nil
@@ -217,7 +223,10 @@ func TestUIScreenOverTheFixtureMachine(t *testing.T) {
 	require.Contains(t, scanned.Scope.Args, "--min-size=10MB")
 
 	d.key("c")
-	require.True(t, d.quit)
+	require.Contains(t, d.m.View(), "Type yes to remove these")
+	d.key("q")
+	require.True(t, d.quit, "quitting on Confirm removes nothing")
+
 	res := d.m.Result()
 	require.Equal(t, tui.OutcomePlanSaved, res.Outcome)
 	require.Equal(t, filepath.Join(a.stateDir, "plans", "plan-20261005T093000Z.json"), res.Plan.Path)

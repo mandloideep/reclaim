@@ -19,6 +19,7 @@ import (
 	"github.com/mandloideep/reclaim/internal/config"
 	"github.com/mandloideep/reclaim/internal/dockerx"
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/fsx"
 	"github.com/mandloideep/reclaim/internal/plan"
 	"github.com/mandloideep/reclaim/internal/scan"
 	"github.com/mandloideep/reclaim/internal/scanners"
@@ -151,6 +152,8 @@ func (a *app) uiSummary(ctx context.Context, res tui.Result, out string) error {
 	switch res.Outcome {
 	case tui.OutcomeWrite:
 		return a.writePlan(ctx, res.Report, res.Selected, out)
+	case tui.OutcomeApplied:
+		a.appliedSummary(res)
 	case tui.OutcomePlanSaved:
 		p := res.Plan
 		for _, msg := range p.LeftOut {
@@ -246,6 +249,8 @@ type uiBackend struct {
 	// categories are the --category selectors, which pick the scanners of
 	// the categories they touch.
 	categories []string
+	// save writes a plan file, plan.Save when nil; tests make it fail.
+	save func(path string, p *plan.Plan) error
 }
 
 var _ tui.Backend = (*uiBackend)(nil)
@@ -455,10 +460,54 @@ func (b *uiBackend) SavePlan(ctx context.Context, r *finding.Report, selected []
 	if err != nil {
 		return tui.SavedPlan{}, err
 	}
-	if err := plan.Save(path, pl); err != nil {
+	save := b.save
+	if save == nil {
+		save = plan.Save
+	}
+	if err := save(path, pl); err != nil {
+		releasePlanPath(path)
 		return tui.SavedPlan{}, err
 	}
 	return tui.SavedPlan{Path: path, Plan: pl, LeftOut: leftOut}, nil
+}
+
+// releasePlanPath removes the name newPlanPath reserved when the plan could
+// not be written into it: the file, only while it is still the empty
+// regular file the reservation created, so nothing else is ever removed.
+func releasePlanPath(path string) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+// Apply runs the plan file at path as reclaim apply --keep-going does,
+// with the configuration's exclude entries refused, a new log in the
+// reclaim folder, and progress at both edges of every action. With dryRun
+// it runs every check and removes nothing.
+func (b *uiBackend) Apply(ctx context.Context, path string, dryRun bool, progress apply.Progress) (apply.Summary, error) {
+	a := b.a
+	pl, err := plan.Load(path)
+	if err != nil {
+		return apply.Summary{}, err
+	}
+	if err := pl.CheckAge(a.now(), false); err != nil {
+		return apply.Summary{}, err
+	}
+	logFile, logPath, err := a.openLog("", dryRun)
+	if err != nil {
+		return apply.Summary{}, err
+	}
+	defer func() { _ = logFile.Close() }()
+	opts := a.applyOptions(b.cfg, path, logFile, logPath)
+	opts.KeepGoing, opts.DryRun, opts.Progress = true, dryRun, progress
+	return apply.Run(ctx, pl, opts)
+}
+
+// FreeSpace reports the free bytes of the volume holding path.
+func (b *uiBackend) FreeSpace(path string) (int64, error) {
+	return fsx.FreeSpace(path)
 }
 
 // newPlanPath reserves a plan file name under the reclaim folder that no
@@ -491,4 +540,32 @@ func (a *app) newPlanPath() (string, error) {
 			return "", fmt.Errorf("reserve %s: %w", path, err)
 		}
 	}
+}
+
+// appliedSummary prints what the screen applied: the freed total, the
+// count of each outcome, the commands that need administrator rights in
+// full, the log and the plan.
+func (a *app) appliedSummary(res tui.Result) {
+	sum := res.Summary
+	counts := map[apply.Status]int{}
+	var sudo []string
+	for _, o := range sum.Outcomes {
+		counts[o.Status]++
+		if o.Status == apply.StatusManual {
+			sudo = append(sudo, "sudo "+strings.Join(o.Action.Command, " "))
+		}
+	}
+	a.sayf("Freed %s: %d removed, %d already gone, %d failed, %d not run, %d for you to run.\n",
+		units.FormatSize(sum.Freed), counts[apply.StatusDone], counts[apply.StatusGone], counts[apply.StatusFailed],
+		counts[apply.StatusNotRun], counts[apply.StatusManual])
+	if len(sudo) > 0 {
+		a.sayf("%s\n", "These need administrator rights. Run them yourself if you want them:")
+		for _, c := range sudo {
+			a.sayf("  %s\n", c)
+		}
+	}
+	if sum.LogPath != "" {
+		a.sayf("Log: %s\n", sum.LogPath)
+	}
+	a.sayf("Plan: %s\n", res.Plan.Path)
 }

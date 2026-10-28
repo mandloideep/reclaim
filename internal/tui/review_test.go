@@ -189,7 +189,8 @@ func TestReviewContinueSavesAPlan(t *testing.T) {
 	require.Equal(t, []string{"Scan"}, h.calls())
 
 	h.press("a", "c")
-	require.True(t, h.quit)
+	require.False(t, h.quit)
+	require.Equal(t, screenConfirm, h.m.screen, "c continues to Confirm")
 	require.Equal(t, []string{"Scan", "SavePlan"}, h.calls(), "the screen scans and saves a plan, and calls nothing else")
 	ids := make([]string, 0, len(h.be.selected[0]))
 	for _, f := range h.be.selected[0] {
@@ -246,7 +247,7 @@ func TestHelpOnEveryScreen(t *testing.T) {
 	check("stop the scan and review what was found so far")
 	h.press("esc")
 	h.settle()
-	check("select nothing", "reclaim skill", "save the plan for reclaim apply")
+	check("select nothing", "reclaim skill", "continue to Confirm", "scroll the details")
 }
 
 func TestProtectedList(t *testing.T) {
@@ -281,6 +282,30 @@ func TestQuitWaitsForThePlan(t *testing.T) {
 	h.press("q", "ctrl+c")
 	require.False(t, h.quit)
 	h.settle()
+	require.Equal(t, screenConfirm, h.m.screen)
+	h.press("q")
 	require.True(t, h.quit)
 	require.Equal(t, OutcomePlanSaved, h.m.Result().Outcome)
+}
+
+// TestDetailsScroll checks that J and K scroll the details pane in a short
+// window, so the hints of a worktree that holds work can always be read.
+func TestDetailsScroll(t *testing.T) {
+	h := reviewHarness(t, 80, 26)
+	h.moveTo("~/Code/storefront")
+	h.press("enter")
+	h.moveTo("detached a5e1d0c9")
+	require.Contains(t, h.view(), "... J scrolls down")
+	require.NotContains(t, h.flat(), "worktree remove --force ~/.codex/worktrees/5e1d/storefront")
+	for range 30 {
+		h.press("J")
+	}
+	require.Contains(t, h.flat(), "worktree remove --force ~/.codex/worktrees/5e1d/storefront")
+	for range 30 {
+		h.press("K")
+	}
+	require.Zero(t, h.m.review.detailOffset)
+	require.Contains(t, h.flat(), "codex detached")
+	h.press("J", "down")
+	require.Zero(t, h.m.review.detailOffset, "moving the cursor starts the details at the top")
 }

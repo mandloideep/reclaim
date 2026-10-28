@@ -22,7 +22,7 @@ import (
 func screenImports() []string {
 	return []string{
 		"context", "errors", "fmt", "io", "path/filepath", "slices", "strconv", "strings", "time",
-		"github.com/charmbracelet/bubbles/textinput", "github.com/charmbracelet/bubbles/viewport",
+		"github.com/charmbracelet/bubbles/spinner", "github.com/charmbracelet/bubbles/textinput", "github.com/charmbracelet/bubbles/viewport",
 		"github.com/charmbracelet/bubbletea", "github.com/charmbracelet/lipgloss",
 		"github.com/mandloideep/reclaim/internal/apply", "github.com/mandloideep/reclaim/internal/finding",
 		"github.com/mandloideep/reclaim/internal/plan", "github.com/mandloideep/reclaim/internal/scan",
@@ -53,8 +53,9 @@ func TestScreensCannotRemoveAnything(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, nested, "internal/tui has no sub-packages")
 	allowed := map[string][]string{
-		"apply": {"ProtectedEntry", "ProtectedSource", "ProtectedSystem", "ProtectedHome", "ProtectedRule", "ProtectedRoot", "ProtectedExclude"},
-		"plan":  {"Plan", "FromFinding"},
+		"apply": {"ProtectedEntry", "Progress", "Summary", "Outcome", "Check", "Status",
+			"StatusDone", "StatusGone", "StatusManual", "StatusFailed", "StatusNotRun", "StatusChecked", "StatusRefused"},
+		"plan": {"Plan", "Action", "FromFinding"},
 	}
 	fset := token.NewFileSet()
 	checked := 0
@@ -99,12 +100,20 @@ func TestScreensCannotRemoveAnything(t *testing.T) {
 	}
 	require.Positive(t, checked)
 
-	// The backend scans, renders the protected list and saves a plan;
-	// none of that removes anything.
+	// The backend scans, renders the protected list, saves a plan, reads
+	// the free space and applies a plan. The only method that removes
+	// anything is Apply, and the only thing it takes besides the context,
+	// the dry run flag and the progress callbacks is the path of a plan.
 	backend := reflect.TypeFor[Backend]()
 	methods := make([]string, 0, backend.NumMethod())
 	for i := range backend.NumMethod() {
 		methods = append(methods, backend.Method(i).Name)
 	}
-	require.Equal(t, []string{"Protected", "SavePlan", "Scan"}, methods)
+	require.Equal(t, []string{"Apply", "FreeSpace", "Protected", "SavePlan", "Scan"}, methods)
+	applyMethod, _ := backend.MethodByName("Apply")
+	in := make([]string, 0, applyMethod.Type.NumIn())
+	for i := range applyMethod.Type.NumIn() {
+		in = append(in, applyMethod.Type.In(i).String())
+	}
+	require.Equal(t, []string{"context.Context", "string", "bool", "apply.Progress"}, in)
 }

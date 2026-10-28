@@ -203,6 +203,7 @@ func NewTree(r *finding.Report, opts TreeOptions) *Tree {
 	in := textinput.New()
 	in.Prompt = "/"
 	in.Placeholder = "filter by name, path, scanner or project"
+	StyleInput(&in, re)
 	t := &Tree{
 		opts:     opts,
 		findings: Ordered(Sections(r.Findings, shortener(opts.Home))),
@@ -893,4 +894,16 @@ func (t *Tree) tierText(tier finding.Tier) string {
 	default:
 		return t.styles.tierC.Render(string(tier))
 	}
+}
+
+// StyleInput gives a text input styles from the renderer of the screen
+// it is drawn on, instead of the default renderer, so its cursor and
+// placeholder follow the same color rules as everything around them.
+func StyleInput(in *textinput.Model, re *lipgloss.Renderer) {
+	in.PromptStyle = re.NewStyle()
+	in.TextStyle = re.NewStyle()
+	in.PlaceholderStyle = re.NewStyle().Faint(true)
+	in.CompletionStyle = re.NewStyle().Faint(true)
+	in.Cursor.Style = re.NewStyle()
+	in.Cursor.TextStyle = re.NewStyle()
 }

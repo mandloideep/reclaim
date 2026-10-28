@@ -83,6 +83,7 @@ func newStart(m *Model) *startScreen {
 	in := textinput.New()
 	in.Prompt = "folder: "
 	in.Placeholder = "~/Code/app"
+	ui.StyleInput(&in, m.opts.Renderer)
 	s.input = in
 	return s
 }

@@ -24,8 +24,11 @@ type reviewScreen struct {
 	tree        *ui.Tree
 	interrupted bool
 	showDetails bool
-	status      string
-	saving      bool
+	// detailOffset is how far J has scrolled the details pane; it starts
+	// again at the top when the cursor moves.
+	detailOffset int
+	status       string
+	saving       bool
 }
 
 func newReview(m *Model, r *finding.Report, interrupted bool) *reviewScreen {
@@ -49,8 +52,9 @@ func reviewHelp() [][2]string {
 		{"a", "select every visible tier A item"},
 		{"n", "select nothing"},
 		{"i", "show or hide the details"},
+		{"J/K", "scroll the details down and up, one line each"},
 		{"w", "write the plan to the --out file and quit, to read or edit it first"},
-		{"c", "continue: save the plan for reclaim apply"},
+		{"c", "continue to Confirm: save the plan, read it, check it and type yes"},
 	}
 }
 
@@ -60,12 +64,17 @@ func (s *reviewScreen) key(msg tea.KeyMsg) tea.Cmd {
 	}
 	s.status = ""
 	if handled, cmd := s.tree.HandleKey(msg); handled {
+		s.detailOffset = 0
 		return cmd
 	}
 	switch msg.String() {
 	case "n":
 		n := s.tree.SelectNone()
 		s.status = "cleared " + plural(n, "item", "items")
+	case "J":
+		s.detailOffset++
+	case "K":
+		s.detailOffset = max(s.detailOffset-1, 0)
 	case "i":
 		s.showDetails = !s.showDetails
 	case "w":
@@ -94,18 +103,18 @@ func (s *reviewScreen) key(msg tea.KeyMsg) tea.Cmd {
 }
 
 // planSaved ends the screen once the plan is saved, or says why it was not.
-func (s *reviewScreen) planSaved(msg planSavedMsg) tea.Cmd {
+func (s *reviewScreen) planSaved(msg planSavedMsg) {
 	s.saving = false
 	switch {
 	case msg.err != nil:
 		s.status = "The plan was not saved: " + msg.err.Error()
-		return nil
+		return
 	case msg.plan.Path == "":
 		s.status = "Nothing is left to remove: " + strings.Join(msg.plan.LeftOut, "; ")
-		return nil
+		return
 	}
-	s.m.result = Result{Outcome: OutcomePlanSaved, Report: s.report, Plan: msg.plan, Scanned: s.m.result.Scanned}
-	return s.m.quit()
+	s.m.result.Outcome, s.m.result.Report = OutcomePlanSaved, s.report
+	s.m.openConfirm(msg.plan)
 }
 
 // layout returns the size of the list and of the details pane, which sits
@@ -201,10 +210,13 @@ func (s *reviewScreen) pane(width, height int) []string {
 			out = append(out, w)
 		}
 	}
+	// J and K scroll; the last line says there is more and how to see it.
+	s.detailOffset = min(s.detailOffset, max(len(out)-height, 0))
+	out = out[s.detailOffset:]
 	if len(out) > height {
 		out = out[:height]
 		if height > 0 {
-			out[height-1] = st.dim.Render("...")
+			out[height-1] = st.dim.Render("... J scrolls down")
 		}
 	}
 	for len(out) < height {

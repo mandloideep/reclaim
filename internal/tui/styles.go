@@ -10,11 +10,12 @@ import (
 )
 
 // styles are the colors of the screen, from the 16 ANSI colors the tables
-// use: done green like tier A, warnings yellow, and none at all under
+// use: done green like tier A, failures red like tier C, warnings yellow,
+// and none at all under
 // NO_COLOR, which the renderer detects. The findings tree colors the tiers
 // itself, A green, B yellow and C red.
 type styles struct {
-	title, bold, dim, warn, good, cursor, key lipgloss.Style
+	title, bold, dim, warn, good, bad, cursor, key lipgloss.Style
 }
 
 func newStyles(re *lipgloss.Renderer) styles {
@@ -24,6 +25,7 @@ func newStyles(re *lipgloss.Renderer) styles {
 		dim:    re.NewStyle().Faint(true),
 		warn:   re.NewStyle().Foreground(lipgloss.Color("3")),
 		good:   re.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),
+		bad:    re.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
 		cursor: re.NewStyle().Reverse(true),
 		key:    re.NewStyle().Bold(true),
 	}

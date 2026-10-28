@@ -91,6 +91,9 @@ type Summary struct {
 // Progress reports a run at both edges of every action, so a caller can show
 // the action that is running. Either function may be nil.
 type Progress struct {
+	// Begin is called once before the first action with the log the run
+	// writes, Options.LogPath, so a screen can name it while the run lasts.
+	Begin func(logPath string)
 	// Starting is called right before an action is checked and run.
 	Starting func(index int, a plan.Action)
 	// Finished is called with the outcome of an action, including the
@@ -180,6 +183,9 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (Summary, error) {
 	defer r.closeDocker()
 
 	r.log(logEntry{Event: "start", DryRun: opts.DryRun, Plan: opts.PlanPath, Actions: len(p.Actions)})
+	if opts.Progress.Begin != nil {
+		opts.Progress.Begin(opts.LogPath)
+	}
 	sum := Summary{Outcomes: make([]Outcome, 0, len(p.Actions)), DryRun: opts.DryRun, LogPath: opts.LogPath}
 	stopped := false
 	for i := range p.Actions {
