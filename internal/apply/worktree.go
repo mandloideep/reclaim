@@ -237,6 +237,9 @@ func checkWorktreePath(ctx context.Context, opts Options, roots []string, a *pla
 	if err := checkProtected(a.Path, opts.Home, a.Repo, roots); err != nil {
 		return nil, 0, err
 	}
+	if err := checkExcluded(a.Path, opts.Protected); err != nil {
+		return nil, 0, err
+	}
 	info, err := os.Lstat(a.Path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("inspect %s: %w", a.Path, err)
@@ -290,6 +293,11 @@ func (r *runner) removeWorktree(ctx context.Context, p *plan.Plan, a *plan.Actio
 		return o
 	}
 	checks := proof.Checks
+	// A dry run proves checks 1 to 5 and stops before the last look and
+	// git, which are what removes the worktree.
+	if r.opts.DryRun {
+		return Outcome{Checks: checks}
+	}
 	if r.opts.Exec == nil {
 		return Outcome{Checks: checks, Err: errors.New("no command runner configured")}
 	}
@@ -369,40 +377,49 @@ func (r *runner) afterRemove(ctx context.Context, a *plan.Action) string {
 // folder that is gone, so a registration whose folder still holds work is
 // never orphaned.
 func (r *runner) pruneWorktrees(ctx context.Context, a *plan.Action) Outcome {
+	var c checks
 	info, err := os.Lstat(filepath.Join(a.Repo, ".git"))
 	if errors.Is(err, fs.ErrNotExist) {
-		return Outcome{Err: errGone}
+		return c.gone(CheckRepo, a.Repo+" no longer holds a .git directory")
 	}
 	if err != nil || !info.IsDir() {
-		return Outcome{Err: fmt.Errorf("refusing to prune %s: it has no .git directory", a.Repo)}
+		return c.fail(CheckRepo, fmt.Errorf("refusing to prune %s: it has no .git directory", a.Repo))
 	}
 	if resolved, err := filepath.EvalSymlinks(a.Repo); err != nil || resolved != a.Repo {
-		return Outcome{Err: fmt.Errorf("refusing to prune %s: the path goes through a symbolic link", a.Repo)}
+		return c.fail(CheckRepo, fmt.Errorf("refusing to prune %s: the path goes through a symbolic link", a.Repo))
 	}
+	if err := checkExcluded(a.Repo, r.opts.Protected); err != nil {
+		return c.fail(CheckRepo, err)
+	}
+	c.pass(CheckRepo, "a repository, no symbolic link in its path, not excluded")
 	if r.opts.Exec == nil {
-		return Outcome{Err: errors.New("no command runner configured")}
+		return c.fail(CheckRegistrations, errors.New("no command runner configured"))
 	}
 	cands, err := worktree.PruneCandidates(ctx, worktree.Env{Exec: r.opts.Exec}, a.Repo)
 	if err != nil {
-		return Outcome{Err: err}
+		return c.fail(CheckRegistrations, err)
 	}
 	if len(cands) == 0 {
-		return Outcome{Err: errGone}
+		return c.gone(CheckRegistrations, "git would prune nothing")
 	}
-	for _, c := range cands {
+	for _, cand := range cands {
 		switch {
-		case !slices.Contains(a.Registrations, c.Path):
-			return Outcome{Err: fmt.Errorf("refusing to prune %s: git would also prune the registration of %s, which the plan does not list; scan again", a.Repo, c.Path)}
-		case !c.Gone:
-			return Outcome{Err: fmt.Errorf("refusing to prune %s: git would prune the registration of %s (%s), whose folder may still hold work", a.Repo, c.Path, c.Reason)}
+		case !slices.Contains(a.Registrations, cand.Path):
+			return c.fail(CheckRegistrations, fmt.Errorf("refusing to prune %s: git would also prune the registration of %s, which the plan does not list; scan again", a.Repo, cand.Path))
+		case !cand.Gone:
+			return c.fail(CheckRegistrations, fmt.Errorf("refusing to prune %s: git would prune the registration of %s (%s), whose folder may still hold work", a.Repo, cand.Path, cand.Reason))
 		}
+	}
+	c.pass(CheckRegistrations, fmt.Sprintf("git would prune %d registrations, all in the plan, all of folders that are gone", len(cands)))
+	if r.opts.DryRun {
+		return c.done(Outcome{})
 	}
 	out, err := r.opts.Exec.Run(ctx, plan.WorktreePruneCommand(a.Repo))
 	o := Outcome{Output: truncate(string(out)), Freed: a.Size, Estimated: true}
 	if err != nil {
 		o.Err = err
 	}
-	return o
+	return c.done(o)
 }
 
 func firstLineOf(s string) string {

@@ -5,6 +5,9 @@
 // os.RemoveAll on the exact path in the plan after the safety checks in
 // safety.go. Clean commands are limited to a fixed allowlist. Docker removals
 // never force and are refused when a running container uses the target.
+//
+// Every outcome carries the checks that ran, each with its result, and a dry
+// run runs all of them and stops right before anything would change.
 package apply
 
 import (
@@ -16,13 +19,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
-
-	"github.com/docker/docker/api/types/build"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
 
 	"github.com/mandloideep/reclaim/internal/dockerx"
 	"github.com/mandloideep/reclaim/internal/execx"
@@ -46,6 +44,12 @@ const (
 	StatusFailed Status = "failed"
 	// StatusNotRun means an earlier failure stopped the run before this action.
 	StatusNotRun Status = "not-run"
+	// StatusChecked means a dry run passed every check of the action and
+	// stopped right before acting.
+	StatusChecked Status = "checked"
+	// StatusRefused means a check of a dry run failed, so a real run would
+	// refuse the action.
+	StatusRefused Status = "refused"
 )
 
 // Outcome is the result of one action.
@@ -59,12 +63,12 @@ type Outcome struct {
 	// Estimated is true when Freed is the scan time size rather than a
 	// measurement, as for Docker objects.
 	Estimated bool
-	// Err is set when Status is StatusFailed.
+	// Err is set when Status is StatusFailed or StatusRefused.
 	Err error
 	// Output is the output of a clean command, truncated.
 	Output string
-	// Checks are the results of the proof that removing a worktree is safe,
-	// for GitWorktreeRemove actions.
+	// Checks are the checks that ran before acting, in order, each with
+	// its result. When one failed it is the last.
 	Checks []Check
 	// Refusal is set when a worktree was refused because a check failed.
 	Refusal *Refusal
@@ -76,8 +80,22 @@ type Summary struct {
 	Outcomes []Outcome
 	// Freed is the total number of bytes freed.
 	Freed int64
-	// Failed counts failed actions.
+	// Failed counts failed actions, or refused ones in a dry run.
 	Failed int
+	// DryRun is set when the run removed nothing by design.
+	DryRun bool
+	// LogPath is the log the run wrote, as Options.LogPath named it.
+	LogPath string
+}
+
+// Progress reports a run at both edges of every action, so a caller can show
+// the action that is running. Either function may be nil.
+type Progress struct {
+	// Starting is called right before an action is checked and run.
+	Starting func(index int, a plan.Action)
+	// Finished is called with the outcome of an action, including the
+	// actions an earlier failure or a canceled context kept from running.
+	Finished func(index int, o Outcome)
 }
 
 // Options configure a run.
@@ -103,14 +121,22 @@ type Options struct {
 	// Log receives one JSON object per line for the start, every action and
 	// the end of the run.
 	Log io.Writer
+	// LogPath is where Log writes, recorded in the summary.
+	LogPath string
 	// PlanPath is recorded in the log.
 	PlanPath string
 	// KeepGoing continues after a failed action instead of stopping.
 	KeepGoing bool
+	// DryRun runs every check of every action and removes nothing: it stops
+	// right before each action would change anything. It implies KeepGoing.
+	DryRun bool
+	// Protected are the user's exclude entries. Apply refuses a target that
+	// is, lies under or contains one, whatever the plan says.
+	Protected []string
 	// Now returns the current time. Nil uses time.Now.
 	Now func() time.Time
-	// Progress, when set, is called after every action.
-	Progress func(index int, o Outcome)
+	// Progress reports the run at both edges of every action.
+	Progress Progress
 	// Getwd returns the working directory of the process, which apply never
 	// removes a worktree around. Nil uses os.Getwd.
 	Getwd func() (string, error)
@@ -120,6 +146,7 @@ type Options struct {
 type logEntry struct {
 	Time      time.Time      `json:"time"`
 	Event     string         `json:"event"`
+	DryRun    bool           `json:"dry_run,omitempty"`
 	Plan      string         `json:"plan,omitempty"`
 	Actions   int            `json:"actions,omitempty"`
 	ID        string         `json:"id,omitempty"`
@@ -137,7 +164,8 @@ type logEntry struct {
 }
 
 // Run executes the plan's actions in order. The returned error is non nil
-// when any action failed or ctx was canceled; the summary is always valid.
+// when any action failed or was refused, or ctx was canceled; the summary is
+// always valid. With DryRun it removes nothing.
 func Run(ctx context.Context, p *plan.Plan, opts Options) (Summary, error) {
 	r := &runner{opts: opts}
 	if r.opts.Now == nil {
@@ -146,10 +174,13 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (Summary, error) {
 	if r.opts.Walker == nil {
 		r.opts.Walker = fsx.NewWalker(0)
 	}
+	if r.opts.DryRun {
+		r.opts.KeepGoing = true
+	}
 	defer r.closeDocker()
 
-	r.log(logEntry{Event: "start", Plan: opts.PlanPath, Actions: len(p.Actions)})
-	sum := Summary{Outcomes: make([]Outcome, 0, len(p.Actions))}
+	r.log(logEntry{Event: "start", DryRun: opts.DryRun, Plan: opts.PlanPath, Actions: len(p.Actions)})
+	sum := Summary{Outcomes: make([]Outcome, 0, len(p.Actions)), DryRun: opts.DryRun, LogPath: opts.LogPath}
 	stopped := false
 	for i := range p.Actions {
 		a := p.Actions[i]
@@ -161,6 +192,9 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (Summary, error) {
 			o = Outcome{Action: a, Status: StatusNotRun}
 			stopped = true
 		default:
+			if opts.Progress.Starting != nil {
+				opts.Progress.Starting(i, a)
+			}
 			o = r.one(ctx, p, &a)
 		}
 		if o.Status != StatusNotRun {
@@ -172,22 +206,25 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (Summary, error) {
 		}
 		sum.Outcomes = append(sum.Outcomes, o)
 		sum.Freed += o.Freed
-		if o.Status == StatusFailed {
+		if o.Status == StatusFailed || o.Status == StatusRefused {
 			sum.Failed++
-			if !opts.KeepGoing {
+			if !r.opts.KeepGoing {
 				stopped = true
 			}
 		}
-		if opts.Progress != nil {
-			opts.Progress(i, o)
+		if opts.Progress.Finished != nil {
+			opts.Progress.Finished(i, o)
 		}
 	}
-	r.log(logEntry{Event: "end", Freed: &sum.Freed, Failed: sum.Failed})
+	r.log(logEntry{Event: "end", DryRun: opts.DryRun, Freed: &sum.Freed, Failed: sum.Failed})
 
 	if err := ctx.Err(); err != nil {
 		return sum, fmt.Errorf("apply interrupted: %w", err)
 	}
 	if sum.Failed > 0 {
+		if opts.DryRun {
+			return sum, fmt.Errorf("%d of %d actions would be refused", sum.Failed, len(p.Actions))
+		}
 		return sum, fmt.Errorf("%d of %d actions failed", sum.Failed, len(p.Actions))
 	}
 	return sum, nil
@@ -213,34 +250,41 @@ func (r *runner) log(e logEntry) {
 }
 
 func (r *runner) one(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome {
-	if !a.Action.Applicable() {
-		return Outcome{Action: *a, Status: StatusFailed, Err: fmt.Errorf("refusing %s: action %q cannot be applied", a.Label(), a.Action)}
-	}
-	if a.NeedsSudo {
-		return Outcome{Action: *a, Status: StatusManual}
-	}
 	var o Outcome
-	switch a.Action {
-	case finding.ActionRemovePath:
-		o = r.removePath(ctx, p, a)
-	case finding.ActionRunCommand:
-		o = r.runCommand(ctx, a)
-	case finding.ActionGitWorktreeRemove:
-		o = r.removeWorktree(ctx, p, a)
-	case finding.ActionGitWorktreePrune:
-		o = r.pruneWorktrees(ctx, a)
-	case finding.ActionDockerRemoveContainer, finding.ActionDockerRemoveImage,
-		finding.ActionDockerRemoveVolume, finding.ActionDockerPruneBuildCache:
-		o = r.dockerAction(ctx, a)
+	switch {
+	case !a.Action.Applicable():
+		err := fmt.Errorf("refusing %s: action %q cannot be applied", a.Label(), a.Action)
+		o = Outcome{Err: err, Checks: []Check{{Name: CheckAction, Detail: err.Error()}}}
+	case a.NeedsSudo:
+		return Outcome{Action: *a, Status: StatusManual,
+			Checks: []Check{{Name: CheckSudo, OK: true, Detail: "needs administrator rights: printed for you, never run"}}}
 	default:
-		o = Outcome{Err: fmt.Errorf("unknown action %q", a.Action)}
+		switch a.Action {
+		case finding.ActionRemovePath:
+			o = r.removePath(ctx, p, a)
+		case finding.ActionRunCommand:
+			o = r.runCommand(ctx, a)
+		case finding.ActionGitWorktreeRemove:
+			o = r.removeWorktree(ctx, p, a)
+		case finding.ActionGitWorktreePrune:
+			o = r.pruneWorktrees(ctx, a)
+		case finding.ActionDockerRemoveContainer, finding.ActionDockerRemoveImage,
+			finding.ActionDockerRemoveVolume, finding.ActionDockerPruneBuildCache:
+			o = r.dockerAction(ctx, a)
+		default:
+			o = Outcome{Err: fmt.Errorf("unknown action %q", a.Action)}
+		}
 	}
 	o.Action = *a
 	switch {
 	case errors.Is(o.Err, errGone):
 		o.Status, o.Err = StatusGone, nil
+	case o.Err != nil && r.opts.DryRun:
+		o.Status = StatusRefused
 	case o.Err != nil:
 		o.Status = StatusFailed
+	case r.opts.DryRun:
+		o.Status = StatusChecked
 	default:
 		o.Status = StatusDone
 	}
@@ -248,23 +292,52 @@ func (r *runner) one(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome 
 }
 
 func (r *runner) removePath(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome {
-	checked, err := verifyPath(a, r.opts.Home, p.Roots)
-	if err != nil {
-		return Outcome{Err: err}
-	}
-	before, err := r.opts.Walker.Size(ctx, a.Path)
-	if err != nil {
-		return Outcome{Err: err}
-	}
-	if len(before.Mounts) > 0 {
-		return Outcome{Err: fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, before.Mounts[0])}
+	var c checks
+	if err := checkProtected(a.Path, r.opts.Home, a.Project, p.Roots); err != nil {
+		return c.fail(CheckRules, err)
 	}
 	root := containingRoot(a.Path, p.Roots)
-	if a.Kind == finding.KindEmptyDir {
+	c.pass(CheckRules, "inside the root "+root+"; not protected, not a root or the project root")
+	if err := checkExcluded(a.Path, r.opts.Protected); err != nil {
+		return c.fail(CheckExcluded, err)
+	}
+	c.pass(CheckExcluded, "not one of your exclude entries, inside one or holding one")
+	checked, err := os.Lstat(a.Path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return c.gone(CheckObject, a.Path+" no longer exists")
+	}
+	if err != nil {
+		return c.fail(CheckObject, fmt.Errorf("inspect %s: %w", a.Path, err))
+	}
+	if err := checkObject(a, checked); err != nil {
+		return c.fail(CheckObject, err)
+	}
+	c.pass(CheckObject, "still a "+kindWords(a.Kind)+", no symbolic link in its path, not a mount point, no .git entry or project manifest")
+	before, err := r.opts.Walker.Size(ctx, a.Path)
+	if err != nil {
+		return c.fail(CheckMounts, err)
+	}
+	if len(before.Mounts) > 0 {
+		return c.fail(CheckMounts, fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, before.Mounts[0]))
+	}
+	c.pass(CheckMounts, "no other filesystem inside; "+fmt.Sprint(before.Size)+" bytes now")
+	emptyOnly := a.Kind == finding.KindEmptyDir
+	if err := checkInRoot(root, a.Path, checked, emptyOnly); err != nil {
+		return c.fail(CheckLastLook, err)
+	}
+	detail := "the same object, no symbolic link, seen through the root"
+	if emptyOnly {
+		detail += "; empty"
+	}
+	c.pass(CheckLastLook, detail)
+	if r.opts.DryRun {
+		return c.done(Outcome{})
+	}
+	if emptyOnly {
 		if err := removeEmptyInRoot(root, a.Path, checked); err != nil {
-			return Outcome{Err: fmt.Errorf("remove %s: %w", a.Path, err)}
+			return c.done(Outcome{Err: fmt.Errorf("remove %s: %w", a.Path, err)})
 		}
-		return Outcome{Freed: before.Size}
+		return c.done(Outcome{Freed: before.Size})
 	}
 	err = removeInRoot(root, a.Path, checked)
 	if err != nil && errors.Is(err, fs.ErrPermission) && a.Kind == finding.KindDir {
@@ -273,14 +346,14 @@ func (r *runner) removePath(ctx context.Context, p *plan.Plan, a *plan.Action) O
 		// writable by their owner, check again for mounts that unreadable
 		// folders may have hidden, and try once more.
 		if werr := makeDirsWritable(ctx, root, a.Path); werr != nil {
-			return Outcome{Err: fmt.Errorf("remove %s: %w", a.Path, werr)}
+			return c.done(Outcome{Err: fmt.Errorf("remove %s: %w", a.Path, werr)})
 		}
 		again, serr := r.opts.Walker.Size(ctx, a.Path)
 		if serr != nil {
-			return Outcome{Err: serr}
+			return c.done(Outcome{Err: serr})
 		}
 		if len(again.Mounts) > 0 {
-			return Outcome{Err: fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, again.Mounts[0])}
+			return c.fail(CheckMounts, fmt.Errorf("refusing %s: another filesystem is mounted inside it at %s", a.Path, again.Mounts[0]))
 		}
 		err = removeInRoot(root, a.Path, checked)
 	}
@@ -290,9 +363,20 @@ func (r *runner) removePath(ctx context.Context, p *plan.Plan, a *plan.Action) O
 		freed = max(before.Size-after.Size, 0)
 	}
 	if err != nil {
-		return Outcome{Freed: freed, Err: fmt.Errorf("remove %s: %w", a.Path, err)}
+		return c.done(Outcome{Freed: freed, Err: fmt.Errorf("remove %s: %w", a.Path, err)})
 	}
-	return Outcome{Freed: freed}
+	return c.done(Outcome{Freed: freed})
+}
+
+func kindWords(k finding.Kind) string {
+	switch k {
+	case finding.KindFile:
+		return "file"
+	case finding.KindEmptyDir:
+		return "folder removed once empty"
+	default:
+		return "folder"
+	}
 }
 
 // makeDirsWritable adds owner read, write and search permission to every
@@ -339,20 +423,46 @@ func makeDirsWritable(ctx context.Context, root, target string) error {
 const maxOutput = 4096
 
 func (r *runner) runCommand(ctx context.Context, a *plan.Action) Outcome {
+	var c checks
+	cmdline := strings.Join(a.Command, " ")
 	if !plan.AllowedCommand(a.Command) {
-		return Outcome{Err: fmt.Errorf("refusing command %q: not an allowed clean command", strings.Join(a.Command, " "))}
+		return c.fail(CheckAllowed, fmt.Errorf("refusing command %q: not an allowed clean command", cmdline))
+	}
+	c.pass(CheckAllowed, cmdline)
+	if a.Path != "" {
+		if err := checkExcluded(a.Path, r.opts.Protected); err != nil {
+			return c.fail(CheckExcluded, err)
+		}
+		c.pass(CheckExcluded, "the folder it cleans is not one of your exclude entries, inside one or holding one")
 	}
 	if r.opts.Exec == nil {
-		return Outcome{Err: errors.New("no command runner configured")}
+		return c.fail(CheckTool, errors.New("no command runner configured"))
 	}
-	if _, err := r.opts.Exec.LookPath(a.Command[0]); err != nil {
-		return Outcome{Err: err}
+	tool, err := r.opts.Exec.LookPath(a.Command[0])
+	if err != nil {
+		return c.fail(CheckTool, err)
 	}
-	if err := r.relocate(ctx, a); err != nil {
-		return Outcome{Err: err}
+	c.pass(CheckTool, tool)
+	if _, _, ok := plan.LocateQuery(a.Command); ok {
+		if err := r.relocate(ctx, a); err != nil {
+			if errors.Is(err, errGone) {
+				return c.gone(CheckLocation, a.Path+" no longer exists")
+			}
+			return c.fail(CheckLocation, err)
+		}
+		c.pass(CheckLocation, "the tool still reports "+a.Path)
 	}
 	if err := r.verifyArgument(ctx, a); err != nil {
-		return Outcome{Err: err}
+		if errors.Is(err, errGone) {
+			return c.gone(CheckTarget, "the target no longer exists")
+		}
+		return c.fail(CheckTarget, err)
+	}
+	if detail := argumentWords(a); detail != "" {
+		c.pass(CheckTarget, detail)
+	}
+	if r.opts.DryRun {
+		return c.done(Outcome{})
 	}
 	var before int64
 	measured := false
@@ -373,7 +483,7 @@ func (r *runner) runCommand(ctx context.Context, a *plan.Action) Outcome {
 	if err != nil {
 		o.Err = err
 	}
-	return o
+	return c.done(o)
 }
 
 // relocate asks the tool again where its cache lives, right before running
@@ -422,175 +532,6 @@ func truncate(s string) string {
 		return s
 	}
 	return s[:maxOutput] + "\n[output truncated]"
-}
-
-func (r *runner) client() (dockerx.API, error) {
-	if !r.dockerSet {
-		r.dockerSet = true
-		if r.opts.Docker == nil {
-			r.dockerErr = errors.New("no Docker client configured")
-		} else {
-			r.docker, r.dockerErr = r.opts.Docker()
-		}
-	}
-	return r.docker, r.dockerErr
-}
-
-func (r *runner) closeDocker() {
-	if r.docker != nil {
-		_ = r.docker.Close()
-	}
-}
-
-func (r *runner) dockerAction(ctx context.Context, a *plan.Action) Outcome {
-	cli, err := r.client()
-	if err != nil {
-		return Outcome{Err: err}
-	}
-	switch a.Action {
-	case finding.ActionDockerRemoveContainer:
-		err = removeContainer(ctx, cli, a.Target)
-	case finding.ActionDockerRemoveImage:
-		err = removeImage(ctx, cli, a.Target, a.Tags)
-	case finding.ActionDockerRemoveVolume:
-		err = removeVolume(ctx, cli, a.Target)
-	case finding.ActionDockerPruneBuildCache:
-		rep, perr := cli.BuildCachePrune(ctx, build.CachePruneOptions{All: true})
-		if perr != nil {
-			return Outcome{Err: fmt.Errorf("prune build cache: %w", perr)}
-		}
-		return Outcome{Freed: int64(min(rep.SpaceReclaimed, uint64(1<<62)))}
-	}
-	if err != nil {
-		return Outcome{Err: err}
-	}
-	return Outcome{Freed: a.Size, Estimated: true}
-}
-
-func removeContainer(ctx context.Context, cli dockerx.API, id string) error {
-	info, err := cli.ContainerInspect(ctx, id)
-	if dockerx.IsNotFound(err) {
-		return errGone
-	}
-	if err != nil {
-		return fmt.Errorf("inspect container %s: %w", id, err)
-	}
-	if info.ContainerJSONBase == nil || info.State == nil {
-		return fmt.Errorf("inspect container %s: no state returned", id)
-	}
-	if dockerx.IsActiveState(info.State.Status) || info.State.Running || info.State.Paused || info.State.Restarting {
-		return fmt.Errorf("refusing container %s: it is %s now", id, info.State.Status)
-	}
-	if err := cli.ContainerRemove(ctx, id, container.RemoveOptions{}); err != nil {
-		if dockerx.IsNotFound(err) {
-			return errGone
-		}
-		return fmt.Errorf("remove container %s: %w", id, err)
-	}
-	return nil
-}
-
-// removeImage removes an image that no container uses. It removes each tag
-// first and then the image id, never forcing, so the daemon refuses anything
-// still referenced.
-func removeImage(ctx context.Context, cli dockerx.API, id string, planned []string) error {
-	img, err := cli.ImageInspect(ctx, id)
-	if dockerx.IsNotFound(err) {
-		return errGone
-	}
-	if err != nil {
-		return fmt.Errorf("inspect image %s: %w", id, err)
-	}
-	containers, err := cli.ContainerList(ctx, container.ListOptions{All: true})
-	if err != nil {
-		return fmt.Errorf("list containers: %w", err)
-	}
-	for _, c := range containers {
-		if c.ImageID == img.ID {
-			return fmt.Errorf("refusing image %s: container %s uses it now", id, strings.TrimPrefix(firstOr(c.Names, c.ID), "/"))
-		}
-	}
-	if current := realTags(img.RepoTags); !slices.Equal(current, sortedTags(planned)) {
-		return fmt.Errorf("refusing image %s: its tags changed since the scan, from %v to %v", id, sortedTags(planned), current)
-	}
-	// An image with child images only loses its tags when removed, which
-	// frees nothing and leaves it untagged, so it is refused up front.
-	images, err := cli.ImageList(ctx, image.ListOptions{All: true})
-	if err != nil {
-		return fmt.Errorf("list images: %w", err)
-	}
-	for _, other := range images {
-		if other.ParentID == img.ID {
-			return fmt.Errorf("refusing image %s: image %s is built on it", id, other.ID)
-		}
-	}
-	// PruneChildren stays off so untagged parent images, which the plan
-	// does not list, are never removed along with this one.
-	opts := image.RemoveOptions{}
-	for _, tag := range img.RepoTags {
-		if tag == "" || tag == "<none>:<none>" {
-			continue
-		}
-		if _, err := cli.ImageRemove(ctx, tag, opts); err != nil && !dockerx.IsNotFound(err) {
-			return fmt.Errorf("remove image %s tag %s: %w", id, tag, err)
-		}
-	}
-	if _, err := cli.ImageInspect(ctx, img.ID); dockerx.IsNotFound(err) {
-		return nil
-	}
-	if _, err := cli.ImageRemove(ctx, img.ID, opts); err != nil && !dockerx.IsNotFound(err) {
-		return fmt.Errorf("remove image %s: %w", id, err)
-	}
-	return nil
-}
-
-// realTags returns the sorted tags of an image, without placeholders.
-func realTags(tags []string) []string {
-	out := slices.DeleteFunc(slices.Clone(tags), func(t string) bool { return t == "" || t == "<none>:<none>" })
-	slices.Sort(out)
-	return out
-}
-
-func sortedTags(tags []string) []string {
-	out := slices.Clone(tags)
-	slices.Sort(out)
-	return out
-}
-
-func removeVolume(ctx context.Context, cli dockerx.API, name string) error {
-	if _, err := cli.VolumeInspect(ctx, name); dockerx.IsNotFound(err) {
-		return errGone
-	} else if err != nil {
-		return fmt.Errorf("inspect volume %s: %w", name, err)
-	}
-	containers, err := cli.ContainerList(ctx, container.ListOptions{All: true})
-	if err != nil {
-		return fmt.Errorf("list containers: %w", err)
-	}
-	for _, c := range containers {
-		if !dockerx.IsActiveState(c.State) {
-			continue
-		}
-		for _, m := range c.Mounts {
-			if m.Name == name {
-				return fmt.Errorf("refusing volume %s: running container %s uses it", name, strings.TrimPrefix(firstOr(c.Names, c.ID), "/"))
-			}
-		}
-	}
-	if err := cli.VolumeRemove(ctx, name, false); err != nil {
-		if dockerx.IsNotFound(err) {
-			return errGone
-		}
-		return fmt.Errorf("remove volume %s: %w", name, err)
-	}
-	return nil
-}
-
-func firstOr(xs []string, def string) string {
-	if len(xs) > 0 {
-		return xs[0]
-	}
-	return def
 }
 
 func errString(err error) string {

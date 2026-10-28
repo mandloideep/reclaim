@@ -68,28 +68,6 @@ func wrapText(s string, width int) []string {
 	return lines
 }
 
-// pack lays items out in lines of at most width columns, separated by sep,
-// never breaking an item, such as a path with a space in it, across lines.
-func pack(items []string, sep string, width int) []string {
-	var lines []string
-	line := ""
-	for _, it := range items {
-		switch {
-		case line == "":
-			line = it
-		case lipgloss.Width(line+sep+it) <= width:
-			line += sep + it
-		default:
-			lines = append(lines, line)
-			line = it
-		}
-	}
-	if line != "" {
-		lines = append(lines, line)
-	}
-	return lines
-}
-
 // thousands writes n with commas between groups of three digits.
 func thousands(n int) string {
 	s := strconv.Itoa(n)

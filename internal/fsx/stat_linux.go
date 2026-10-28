@@ -3,6 +3,7 @@
 package fsx
 
 import (
+	"fmt"
 	"io/fs"
 	"syscall"
 	"time"
@@ -32,3 +33,13 @@ func AccessTime(fi fs.FileInfo) (time.Time, bool) {
 // openDirFlags makes opening a directory fail instead of following a symbolic
 // link that replaced it after it was inspected.
 const openDirFlags = syscall.O_NOFOLLOW | syscall.O_DIRECTORY
+
+// FreeSpace reports the bytes available to an unprivileged user on the
+// volume holding path, as df reports them.
+func FreeSpace(path string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, fmt.Errorf("statfs %s: %w", path, err)
+	}
+	return int64(min(st.Bavail*uint64(st.Bsize), uint64(1<<62))), nil
+}

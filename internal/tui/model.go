@@ -475,7 +475,7 @@ func (m *Model) frame(f frame) string {
 // footer lays out the keys of a screen in as many lines as the window
 // needs, so a narrow window still shows every key.
 func (m *Model) footer(parts []string) []string {
-	return pack(parts, "  ", m.width)
+	return ui.Pack(parts, "  ", m.width)
 }
 
 // closing is the sentence every help overlay ends with.
@@ -519,69 +519,6 @@ func (m *Model) helpText() string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-// protectedText renders the protected list, grouped by where each entry
-// comes from.
-func (m *Model) protectedText() string {
-	var b strings.Builder
-	for _, l := range wrapText("reclaim never removes what the built in rules and the scanned roots protect, whatever a plan says: apply checks every target against them right before removing it. Your exclude entries keep the scan out of those folders, so nothing in them is offered.", m.width) {
-		b.WriteString(l + "\n")
-	}
-	width := max(m.width-4, 20)
-	for i := 0; i < len(m.protected); {
-		src := m.protected[i].Source
-		j := i
-		for j < len(m.protected) && m.protected[j].Source == src {
-			j++
-		}
-		b.WriteString("\n" + m.st.bold.Render(sourceTitle(src)) + "\n")
-		// Paths that share a rule are listed together under it; rules that
-		// name no path are listed one per line.
-		var texts []string
-		paths := map[string][]string{}
-		for _, e := range m.protected[i:j] {
-			if e.Path == "" {
-				for k, l := range wrapText(e.Text, width-2) {
-					bullet := "- "
-					if k > 0 {
-						bullet = "  "
-					}
-					b.WriteString("  " + bullet + l + "\n")
-				}
-				continue
-			}
-			if _, seen := paths[e.Text]; !seen {
-				texts = append(texts, e.Text)
-			}
-			paths[e.Text] = append(paths[e.Text], m.path(e.Path))
-		}
-		for _, text := range texts {
-			b.WriteString("  " + m.st.dim.Render(text) + "\n")
-			for _, l := range pack(paths[text], "   ", width) {
-				b.WriteString("    " + l + "\n")
-			}
-		}
-		i = j
-	}
-	return strings.TrimSuffix(b.String(), "\n")
-}
-
-func sourceTitle(s apply.ProtectedSource) string {
-	switch s {
-	case apply.ProtectedSystem:
-		return "System paths (built in)"
-	case apply.ProtectedHome:
-		return "Folders of your home folder (built in)"
-	case apply.ProtectedRule:
-		return "Rules (built in)"
-	case apply.ProtectedRoot:
-		return "Scanned roots"
-	case apply.ProtectedExclude:
-		return "Your exclude entries (config file), which the scan skips"
-	default:
-		return string(s)
-	}
-}
-
 // sizeText formats a size.
 func sizeText(n int64) string { return units.FormatSize(n) }
 
@@ -592,4 +529,11 @@ func (m *Model) ago(t time.Time) string {
 		return "just now"
 	}
 	return age + " ago"
+}
+
+// protectedText renders the protected list with the same code reclaim
+// apply --dry-run prints it with.
+func (m *Model) protectedText() string {
+	p := ui.NewWithRenderer(nil, m.opts.Renderer, m.opts.Home, m.opts.Now())
+	return strings.Join(p.ProtectedLines(m.protected, m.width), "\n")
 }

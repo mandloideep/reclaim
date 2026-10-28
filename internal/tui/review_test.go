@@ -258,7 +258,7 @@ func TestProtectedList(t *testing.T) {
 		"Never removed", "System paths (built in)", "/Users", "/System",
 		"Folders of your home folder (built in)", "~/Documents", "~/Desktop", "~/Library",
 		"Rules (built in)", "nothing inside a .git directory",
-		"Scanned roots", "~/Code", "Your exclude entries (config file), which the scan skips", "~/Code/archive",
+		"Scanned roots", "~/Code", "Your exclude entries (config file)", "apply refuses any target that is it", "~/Code/archive",
 	} {
 		require.Contains(t, view, want)
 	}

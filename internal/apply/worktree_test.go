@@ -517,3 +517,42 @@ func TestApplyRefusesToPruneAFolderWithoutItsGitFile(t *testing.T) {
 	require.DirExists(t, filepath.Join(f.Repo, ".git", "worktrees", "kept"))
 	require.FileExists(t, filepath.Join(kept, "notes.md"))
 }
+
+// TestDryRunProvesWorktreesAndRemovesNone runs checks 1 to 5 of the proof
+// for a merged and a dirty worktree, reports the first checked and the
+// second refused at the state check, and leaves both and their
+// registrations untouched.
+func TestDryRunProvesWorktreesAndRemovesNone(t *testing.T) {
+	f := worktreetest.New(t)
+	e := env{root: f.Dir, home: filepath.Join(worktreetest.RealTempDir(t), "home", "me")}
+	merged := f.Worktree("merged")
+	f.Commit(merged, "m.txt", "m\n")
+	f.Push(merged, "merged")
+	f.MergeFF("merged")
+	dirty := f.Worktree("dirty")
+	f.Commit(dirty, "d.txt", "d\n")
+	f.Push(dirty, "dirty")
+	f.MergeFF("dirty")
+	a, b := worktreeAction(t, merged, finding.TierA), worktreeAction(t, dirty, finding.TierA)
+	f.Write(dirty, "README.md", "changed after the plan\n")
+	before := snapshot(t, f.Dir)
+
+	sum, log, err := run(t, e, newPlan([]string{f.Dir}, a, b), gitRun(func(o *Options) { o.DryRun = true }))
+	require.ErrorContains(t, err, "1 of 2 actions would be refused")
+	require.Equal(t, StatusChecked, sum.Outcomes[0].Status)
+	names := make([]string, 0, 5)
+	for _, c := range sum.Outcomes[0].Checks {
+		require.True(t, c.OK, c.Name)
+		names = append(names, c.Name)
+	}
+	require.Equal(t, []string{CheckLinked, CheckPath, CheckState, CheckHead, CheckWorkdir}, names, "checks 1 to 5, and never git")
+	require.Equal(t, StatusRefused, sum.Outcomes[1].Status)
+	last := sum.Outcomes[1].Checks[len(sum.Outcomes[1].Checks)-1]
+	require.Equal(t, CheckState, last.Name)
+	require.False(t, last.OK)
+	require.NotNil(t, sum.Outcomes[1].Refusal)
+	require.Equal(t, before, withoutGitBookkeeping(snapshot(t, f.Dir), before), "nothing was removed")
+	require.DirExists(t, merged)
+	require.DirExists(t, filepath.Join(f.Repo, ".git", "worktrees", "merged"))
+	require.Equal(t, true, log[0]["dry_run"])
+}

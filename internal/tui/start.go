@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/ui"
 	"github.com/mandloideep/reclaim/internal/units"
 )
 
@@ -292,7 +293,7 @@ func (s *startScreen) view() frame {
 	}
 	line("")
 	indent := strings.Repeat(" ", 13)
-	for k, l := range pack(s.scannerRow(), "  ", s.m.width-13) {
+	for k, l := range ui.Pack(s.scannerRow(), "  ", s.m.width-13) {
 		if k == 0 {
 			line("  " + pad("Scanners", 11) + l)
 		} else {
@@ -304,7 +305,7 @@ func (s *startScreen) view() frame {
 			line(indent + st.dim.Render(l))
 		}
 	}
-	for _, l := range pack(s.settings(), "     ", s.m.width-2) {
+	for _, l := range ui.Pack(s.settings(), "     ", s.m.width-2) {
 		line("  " + l)
 	}
 	line("")

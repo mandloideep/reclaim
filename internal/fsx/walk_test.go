@@ -238,3 +238,11 @@ func TestSizeFindsRepositories(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{filepath.Join(root, "a", "b", "c"), filepath.Join(root, "node_modules", "dep"), filepath.Join(root, "sub")}, res.Repos)
 }
+
+func TestFreeSpace(t *testing.T) {
+	free, err := FreeSpace(t.TempDir())
+	require.NoError(t, err)
+	require.Positive(t, free)
+	_, err = FreeSpace(filepath.Join(t.TempDir(), "missing"))
+	require.Error(t, err)
+}

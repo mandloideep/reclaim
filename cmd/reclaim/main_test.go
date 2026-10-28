@@ -467,3 +467,76 @@ func TestDefaultRoots(t *testing.T) {
 	got := a.defaultRoots()
 	require.Equal(t, []string{filepath.Join(a.home, "Code"), filepath.Join(a.home, "work"), filepath.Join(a.home, "Downloads")}, got)
 }
+
+// TestDryRunRemovesNothing proves that apply --dry-run over the end to end
+// fixture removes nothing, needs no confirmation, prints the protected list,
+// reports the same refusals a real run makes, and writes a log marked as a
+// dry run. It is the test the brief asks for before any dry run on a real
+// machine.
+func TestDryRunRemovesNothing(t *testing.T) {
+	a, out := testApp(t, "")
+	root := filepath.Join(a.home, "Code")
+	fixtureTree(t, root)
+	work := t.TempDir()
+	reportPath := filepath.Join(work, "report.json")
+	planPath := filepath.Join(work, "plan.json")
+	require.NoError(t, execute(a, "scan", root, "--json", "--min-size", "0", "--out", reportPath))
+	require.NoError(t, execute(a, "select", "--preset", "aggressive", "--report", reportPath, "--out", planPath))
+	// After the plan, web/dist gains a package.json, so it now looks like a
+	// project and every run must refuse it.
+	writeTree(t, filepath.Join(root, "web", "dist"), map[string]string{"package.json": "{}"})
+	before := snapshot(t, a.home)
+
+	out.Reset()
+	err := execute(a, "apply", planPath, "--dry-run")
+	require.ErrorContains(t, err, "1 of 7 actions would be refused")
+	dry := out.String()
+	require.Contains(t, dry, "System paths (built in)", "the protected list comes first")
+	require.Less(t, strings.Index(dry, "System paths"), strings.Index(dry, "[1/7]"))
+	require.Equal(t, 6, strings.Count(dry, "] checked"))
+	require.Contains(t, dry, "] refused")
+	require.Contains(t, dry, "it contains package.json, so it is a project")
+	require.Contains(t, dry, "Dry run: 6 checked, 1 refused; nothing was removed.")
+	require.NotContains(t, dry, "Type yes", "a dry run asks nothing")
+	require.Equal(t, before, snapshot(t, a.home), "a dry run removes nothing")
+
+	// The log is marked as a dry run, with a status and checks per action.
+	logs, err := filepath.Glob(filepath.Join(a.stateDir, "logs", "dry-run-*.log"))
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	data, err := os.ReadFile(logs[0])
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 9)
+	var start map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &start))
+	require.Equal(t, true, start["dry_run"])
+	var dryRefused []string
+	for _, l := range lines[1:8] {
+		var e map[string]any
+		require.NoError(t, json.Unmarshal([]byte(l), &e))
+		require.Contains(t, []any{"checked", "refused"}, e["status"])
+		require.NotEmpty(t, e["checks"])
+		if e["status"] == "refused" {
+			dryRefused = append(dryRefused, e["error"].(string))
+		}
+	}
+
+	// A real run refuses the same action with the same reason.
+	out.Reset()
+	logPath := filepath.Join(work, "apply.log")
+	require.Error(t, execute(a, "apply", planPath, "--yes", "--keep-going", "--log", logPath))
+	data, err = os.ReadFile(logPath)
+	require.NoError(t, err)
+	var realFailed []string
+	for _, l := range strings.Split(strings.TrimSpace(string(data)), "\n")[1:8] {
+		var e map[string]any
+		require.NoError(t, json.Unmarshal([]byte(l), &e))
+		if e["status"] == "failed" {
+			realFailed = append(realFailed, e["error"].(string))
+		}
+	}
+	require.Equal(t, dryRefused, realFailed)
+	require.FileExists(t, filepath.Join(root, "web", "dist", "app.js"), "the refused folder stays")
+	require.NoDirExists(t, filepath.Join(root, "web", "node_modules"), "the real run removed what the dry run checked")
+}

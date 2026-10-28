@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -876,15 +877,18 @@ func TestCanceledRunDoesNothing(t *testing.T) {
 
 func TestProgressIsReported(t *testing.T) {
 	e := newEnv(t)
-	var seen []int
+	var seen []string
 	_, _, err := run(t, e, newPlan([]string{e.root},
 		removeAction(filepath.Join(e.root, "p", "a"), finding.KindDir),
 		removeAction(filepath.Join(e.root, "p", "b"), finding.KindDir),
 	), func(o *Options) {
-		o.Progress = func(i int, _ Outcome) { seen = append(seen, i) }
+		o.Progress = Progress{
+			Starting: func(i int, a plan.Action) { seen = append(seen, fmt.Sprintf("start %d %s", i, filepath.Base(a.Path))) },
+			Finished: func(i int, o Outcome) { seen = append(seen, fmt.Sprintf("end %d %s", i, o.Status)) },
+		}
 	})
 	require.NoError(t, err)
-	require.Equal(t, []int{0, 1}, seen)
+	require.Equal(t, []string{"start 0 a", "end 0 gone", "start 1 b", "end 1 gone"}, seen, "both edges of every action")
 }
 
 func TestRemoveInRootRefusesReplacedTargets(t *testing.T) {

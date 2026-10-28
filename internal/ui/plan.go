@@ -63,7 +63,8 @@ func (p *Printer) ActionLine(a *plan.Action) string {
 // Outcome prints one line of apply progress: the position, the result, the
 // bytes freed and what the action did, with the error below a failure. The
 // result is done, gone (the target no longer existed), failed, manual (needs
-// sudo, printed instead of run) or skipped (an earlier failure stopped the run).
+// sudo, printed instead of run) or skipped (an earlier failure stopped the run),
+// and in a dry run checked (every check passed) or refused (a check failed).
 func (p *Printer) Outcome(index, total int, o apply.Outcome) {
 	width := len(strconv.Itoa(total))
 	prefix := fmt.Sprintf("[%*d/%d] ", width, index+1, total)
@@ -81,6 +82,10 @@ func (p *Printer) Outcome(index, total int, o apply.Outcome) {
 		status = p.warn.Render("manual")
 	case apply.StatusFailed:
 		status = p.tierC.Render("failed")
+	case apply.StatusChecked:
+		status = p.tierA.Render("checked")
+	case apply.StatusRefused:
+		status = p.tierC.Render("refused")
 	default:
 		status = p.dim.Render("skipped")
 	}
