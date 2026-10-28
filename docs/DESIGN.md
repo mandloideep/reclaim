@@ -25,11 +25,14 @@ Items that need `sudo` are reported with the exact command for the user to run.
 ## Command surface
 
 ```
+reclaim                  # in a terminal, the same as reclaim ui; otherwise prints the help
+reclaim ui [path...]     [--min-size 50MB] [--category docker,node] [--stale 90d] [--depth 2]
+                         [--all] [--docker-label key=value] [--report report.json] [--out plan.json]
 reclaim scan [path...]   [--json] [--md] [--min-size 50MB] [--tier A,B] [--category docker,node]
                          [--stale 90d] [--depth 2] [--out report.json] [--all]
                          [--docker-label key=value]
 reclaim select           [--report report.json] [--preset safe|aggressive] [--out plan.json]
-reclaim apply plan.json  [--yes] [--log apply.log] [--keep-going] [--stale-ok]
+reclaim apply plan.json  [--yes] [--log apply.log] [--keep-going] [--stale-ok] [--dry-run]
 reclaim here [path]      [--depth 2] [--json] [--md] [--out report.json]
 reclaim worktrees [path...] [--json] [--md] [--out report.json]
 reclaim done [path]      [--json] [--remove] [--allow-unmerged]
@@ -54,6 +57,18 @@ Values carry a short description, which zsh and fish show.
 `version` prints `reclaim <version> <go version> <os>/<arch>`.
 A release build is stamped with `-X main.version=<version>`, which GoReleaser fills with the tag without its `v`; reclaim adds the `v` back, so a release prints its tag, such as `v0.1.0`.
 A `go install` build prints the module version from the build info, which is the tag or a pseudo version, and a build from a checkout prints `(devel)`.
+
+### ui
+
+`ui` opens one interactive screen that walks through `scan`, `select` and `apply`, described under "Interactive mode".
+It takes the scan flags with the same meaning, so `reclaim ui ~/Code/app` looks at project artifacts under that folder and `--all` adds the caches, Docker and Downloads, exactly as `scan` does.
+The flags prefill the start screen and the user can still change them there.
+`--report` opens the review screen on an existing report and skips the start and scanning screens, the way `select --report` does.
+`--out` names the plan file the `w` key writes, default `plan.json`, as for `select`.
+`ui` refuses to run when standard input or standard output is not a terminal and says which commands to use instead.
+Bare `reclaim` with no arguments runs `ui` when both are terminals and prints the help otherwise, so `reclaim | cat` and `reclaim > file` keep printing the help.
+`reclaim --help` lists `ui` first and describes it as the interactive way through `scan`, `select` and `apply`.
+Every other command keeps working unchanged, so scripts, cron and agents are not affected.
 
 ### scan
 
@@ -115,6 +130,14 @@ The log is JSON lines: one entry when the run starts, one per action with its ti
 The default log is a new file in the reclaim folder under the user cache directory.
 A plan made on another host is applied with a warning, because host names on macOS change with the network.
 A plan action with the `None` action, which marks a finding listed for attention only, fails validation, so a hand edited plan cannot apply one, and apply refuses it again on its own.
+
+`--dry-run` runs every verification of every action and removes nothing: the path checks, the checks right before removal, checks 1 to 5 of the worktree proof, the Docker use checks, the cache location query and the `sudo` marking.
+It needs no confirmation, prints the protected list first, then one line per action with `checked`, `gone`, `manual` or `refused` and the reason, and writes a log whose start entry carries `"dry_run": true` and whose action entries carry those statuses.
+The outcome of every action carries the checks that ran, each with its name, its result and a detail, as worktree outcomes do since phase 4, and the log entry of every action lists them.
+`apply` refuses a target that is, lies under or contains an `exclude` path of the configuration or an entry of the ignore list, whatever the plan says, so the user's own protected paths hold at removal time and not only at scan time.
+`apply.ProtectedList` renders in words the tables the path checks use: the system paths, the protected home folders, the four component rule, the `.git` and project root rules, the recorded roots of the plan, and the user's `exclude` and ignore entries, each marked with where it comes from.
+The interactive screen shows it and `--dry-run` prints it, so what the user sees cannot drift from what the checks do.
+Progress is reported at both edges of every action, when it starts and when it finishes, so a caller can show the running action; `reclaim apply` keeps printing one line per outcome.
 
 `RunCommand` actions are limited to a fixed list.
 The package cache clean commands are exact argument lists.
@@ -193,7 +216,8 @@ internal/dockerx       Thin wrapper over the Docker Engine API client
 internal/fsx           Fast concurrent directory size calculation, symlink and mount boundary handling
 internal/project       Project detection (markers, type, last activity)
 internal/worktree      Worktree discovery and state classification shared by the scanners, done and apply
-internal/ui            Table rendering, Markdown rendering, interactive checklist
+internal/ui            Table rendering, Markdown rendering, the findings tree and the interactive checklist
+internal/tui           The interactive mode: one bubbletea model per screen and a root model that switches between them
 internal/config        Config file loading
 ```
 
@@ -201,6 +225,33 @@ Scanners are registered in an explicit list in `internal/scanners/all.go`.
 Hidden registration via `init` makes the set of scanners harder to see.
 Scanners are grouped by family in `internal/scanners/projects`, `internal/scanners/caches`, `internal/scanners/docker`, `internal/scanners/appcache` and `internal/scanners/downloads` instead of one package per scanner.
 Every rule is still its own scanner with its own name, but the project scanners share one walk of the roots and the cache scanners share their location helpers, so a package per scanner would only add boilerplate.
+
+`internal/tui` holds the interactive screen: one bubbletea model per screen and a root model that switches between them.
+It depends on `finding`, `plan`, `apply` for its outcome and check types, `ui` for styles, sections and the findings tree, and `units`.
+It imports neither `os` nor `os/exec`, keeps no global state, and receives everything through a `Backend` interface that `cmd/reclaim` implements:
+
+```go
+type Backend interface {
+    // Scan runs the scanners the request names and reports progress through events.
+    Scan(ctx context.Context, req ScanRequest, progress func(scan.Event)) (*finding.Report, error)
+    // Apply runs the plan file at path and reports progress through the callbacks.
+    // With dryRun it runs every check and removes nothing.
+    Apply(ctx context.Context, path string, dryRun bool, progress apply.Progress) (apply.Summary, error)
+    // Protected returns the protected list in words, built by apply from the tables its checks use.
+    Protected(roots []string) []apply.ProtectedEntry
+    // SavePlan builds a plan from a report and the selected findings, saves it under the state folder and returns its path.
+    SavePlan(r *finding.Report, selected []finding.Finding) (string, error)
+    // FreeSpace reports the free bytes of the volume holding path.
+    FreeSpace(path string) (int64, error)
+    // Ignore adds paths or targets to the ignore list.
+    Ignore(entries []string) error
+}
+```
+
+`ScanRequest` carries the mode, whole machine, one folder or worktrees, the paths, the categories, the minimum size, the stale window, the depth, the `--all` and Docker label flags and whether the GitHub lookup runs.
+The only backend method that removes anything takes a plan path, so a review can see that no screen removes anything itself.
+Tests give the screens a fake backend and drive them with key messages, as the checklist tests do.
+`fsx.FreeSpace` reads `statfs` in `stat_darwin.go` and `stat_linux.go` and reports not supported elsewhere.
 
 ### Scanner interface
 
@@ -221,6 +272,9 @@ type Scanner interface {
 
 `Env` carries the roots, the home directory, the OS, the time the scan started, the folders holding installed applications, the models folder of a system wide Ollama service on Linux, an environment variable reader, a command runner for asking tools where their caches live, a Docker client that may be nil, the Docker label filter, the size walker, the shared project walk, sizes already measured in the same run, a logger and a diagnostics sink for warnings and notes.
 Everything a scanner needs comes from `Env` so tests can substitute fakes.
+`Env` also carries `Progress`, a function that receives scan events, nil to discard them like `Log` and `Diag`.
+The runner emits `ScannerStarted` and `ScannerFinished`, the latter with the finding count, the size and the error, and a scanner emits `Step` with a short text for a long phase, such as asking GitHub about branches or listing Docker images.
+The shared project walk reports the folders it has visited and the projects it has found through a callback in `project.Options`, at most ten times a second, which the project scanners forward as `Step` events.
 There is no general filesystem abstraction.
 The walker needs device ids, inodes and link counts, which an in-memory filesystem would have to fake, so scanner tests build real fixtures in temp directories instead.
 Scanners run concurrently with a bounded worker count.
@@ -533,6 +587,240 @@ The footer always shows the selected count and total size and the plan path that
 Only the rows that fit in the window are rendered, so the checklist stays responsive with thousands of findings.
 The plan file is JSON and `select` tells the user where it was written, so editing it by hand is always an option.
 For users who never want a screen, `--preset` and `--json` piped through `jq` give the same result.
+The tree is `ui.Tree`: it holds the findings, the selection, the expansion state, the filters, the sort and the cursor, builds its rows from the shared grouping and renders only the visible ones.
+The checklist of `select` and the review screen of the interactive mode embed the same tree, so there is one implementation and one set of tests; the checklist keeps its keys, outcome and footer, and the review screen adds the details pane, the tabs and its own keys.
+
+## Interactive mode
+
+`reclaim ui`, and bare `reclaim` in a terminal, is one screen that walks through the whole flow: Start, Scanning, Review, Confirm, Removing and Done.
+It exists so that a person who has never read the README can run `reclaim`, understand what it found, choose what goes, and get the space back without leaving the screen, and so that a two minute scan or a ten gigabyte removal never looks hung.
+It is a front end over the same `scan`, `plan` and `apply` code and gains no way to remove anything that `reclaim apply plan.json` does not already have.
+The only removal path is `plan.New` to `plan.Save` to `apply.Run` on the saved file, the same three calls `select` and `apply` make.
+
+The screen runs in the alternate buffer, like the checklist.
+When it exits, it prints a short plain summary to standard output, the plan path or the freed total, the log path and any `sudo` commands, so the terminal scrollback keeps a record after the alternate screen closes.
+Every screen has the same frame: a title line with the screen name and the key facts on the right, the content, and a footer with the keys that matter on that screen.
+`?` opens a help overlay with every key of the current screen, and the overlay of every screen ends with the same sentence: nothing is removed until `yes` is typed on the Confirm screen, and `P` shows what reclaim never removes.
+`q` quits from any screen except Removing, where `ctrl+c` stops after the current action, and `esc` goes back one screen where that makes sense.
+Every size is decimal, every path under the home directory starts with `~`, and the colors are the ones the tables use, tier A green, B yellow, C red, warnings yellow, from the 16 ANSI colors only and none under `NO_COLOR`.
+The screen never captures the mouse, because terminals that do lose text selection, and the screen shows commands such as `git worktree remove --force` that the user copies by selecting them.
+Progress is per action, never per file: `apply` removes a target through `os.Root.RemoveAll`, and streaming per file would mean a hand written deletion walk in the most safety critical path.
+Windows and truecolor themes are out of scope.
+
+### Start
+
+```
+reclaim                                                                    v0.3.0
+
+  What to look at
+  > Whole machine   ~/Code, ~/Developer, ~/Downloads, package caches, Docker, app caches, worktrees
+    This folder     ~/Code/storefront
+    Worktrees       linked git worktrees of the repositories under ~/Code, ~/Developer
+
+  Scanners   [x] Project artifacts  [x] Worktrees  [x] Package caches  [x] Docker  [x] App caches  [x] Downloads
+  Hide findings under 10 MB     Stale projects only: off     Ask GitHub about pull requests: on     Ignored: 2
+
+  Last report: reclaim scan, 2 hours ago, 25 findings, 25.9 GB reclaimable
+  Never removed: your home folder, ~/Documents, ~/Desktop, project roots, .git folders, anything outside the scanned roots.  P shows the full list
+
+enter scan   space toggle   m min size   s stale   g github   p path   o open last report   x ignored   P protected   ? help   q quit
+```
+
+- The three modes map to `scan`, `here` and `worktrees`.
+"Whole machine" uses the roots the configuration or the defaults give, "This folder" takes a path, default the current directory, and "Worktrees" runs the three worktree scanners alone, with no minimum size and with worktrees held by a live lock listed too, exactly as `reclaim worktrees` does.
+Paths given on the command line select "This folder" for one path, or the `scan path...` behavior for several.
+- The scanner row toggles whole categories, which is what `--category` does with a category name.
+Scanners the configuration disables start unticked and say so.
+- `m` cycles the minimum size through 0, 10 MB, 50 MB, 100 MB and 1 GB, and `s` cycles the stale filter through off, 30 days, 90 days, 180 days and a year.
+These are the completion choices of the flags, so the screen and the shell agree.
+- `g` toggles the GitHub lookup for this run, which `[worktrees] github` sets by default; off keeps the scan offline.
+- `p` edits the path of "This folder".
+- `o` opens the review screen on the last report without scanning, with the provenance line that says where it came from.
+- `x` opens the persistent ignore list, described below, where `d` removes the entry under the cursor after a one line confirmation.
+- The "Never removed" line names the kinds of folders reclaim never removes, and `P`, here and on every other screen, opens the protected list that `apply.ProtectedList` renders, with the user's own `exclude` and ignore entries under the built in rules, each marked with where it comes from.
+
+### Scanning
+
+```
+Scanning the whole machine                                             0:07 elapsed
+
+  done      Project artifacts   57 projects in 3,412 folders        9 findings   8.7 GB
+  running   Worktrees           asking GitHub about 4 branches
+  done      Package caches                                           4 findings   5.8 GB
+  running   Docker              listing images
+  done      App caches                                               5 findings   5.2 GB
+  done      Downloads                                                3 findings   1.1 GB
+
+  Found so far: 21 findings, 20.8 GB reclaimable
+
+esc stops the scan and shows what was found so far
+```
+
+- One row per category, not per scanner, because thirty scanner rows say less than six category rows.
+The row shows the scanner running inside it and what it is doing when the scanner reports a step.
+- The project row shows the folders the shared walk has visited and the projects it has found.
+- A scanner that fails shows `warning` with the message, which also lands in the report's warnings as it does today.
+The GitHub lookup failing, because `gh` is missing, signed out or offline, is one such warning, and the worktree row keeps going without it, since the lookup only decorates.
+- `esc` cancels the context.
+`scan.Run` returns the findings collected so far with a warning that the scan was interrupted, and the review screen opens on them with that warning visible.
+- When the scan finishes, the report is saved as `last-report.json`, exactly as `scan`, `here` and `worktrees` do, so `reclaim select` afterwards sees the same report.
+
+### Review
+
+```
+Review   reclaim scan, just now: 25 findings and 1 for attention, 25.9 GB reclaimable
+filter: (none)   sort: size   tier: all
+
+  [-] ▾ Project artifacts  8.7 GB  9 items, 8 selected                  │ ~/Code/ripgrep-fork/target
+    [x] ▾ ~/Code/ripgrep-fork  3.9 GB  1 item, 1 selected               │ 3.9 GB, tier A, rust-target
+  >   [x] A    3.9 GB  target  rust-target  used 21w ago                 │ Rebuilds itself on the next build.
+    [x] ▸ ~/Code/ml-pipeline  2.4 GB  2 items, 2 selected               │ Restore: cargo build
+  [-] ▾ Worktrees  280.8 MB  3 items, 2 selected                         │ Project active 21w ago.
+    [-] ▾ ~/Code/storefront  1 removable, 1 pushed, 1 work, 1 in use    │
+      [x] A  184.0 MB  claude-code  fix/checkout-rounding  squash, #41  │ In root ~/Code, project
+      [ ] B   96.0 MB  claude-code  feat/gift-cards  pushed, #44 open   │ ~/Code/ripgrep-fork.
+       -     88.0 MB  claude-code  chore/upgrade-next  in use, pid 4242 │ Apply checks before removing:
+       -    231.0 MB  codex  detached a5e1d0c9  12 modified, 3 untracked│ inside the root, not a project
+      [x] A  800.2 kB  2 stale worktree registrations                   │ root, no .git entry, no symbolic
+       -      -        ~/Code/personal/storefront  another clone        │ link, still a folder.
+  [-] ▾ Package caches  5.8 GB  4 items, 2 selected                      │
+  ...                                                                    │
+  ▸ Warnings and notes (3)                                               │
+
+Selected: 16 items, 18.1 GB
+space toggle  enter open  / filter  t tier  s sort  a all tier A  n none  x ignore  i details  w save plan  c continue  ? help
+```
+
+- The tree is the checklist's tree, so everything under "Handling long lists" holds: categories, then projects, repositories, Docker kinds or scanners, then findings, with aggregate size, count and selected count on every node, tier A preselected, group toggles that never touch tier C, attention rows that cannot be ticked, a text filter, a tier filter, three sort orders, and only the visible rows rendered.
+- The details pane shows the row under the cursor in full.
+For every finding: the full path or target, the size, the tier and what it means in words, the scanner, the restore text, the last use, the warning, the recorded root that covers it and the project that owns it, which are the two facts the path checks use, one line saying what apply will check before removing it, and the exact thing apply will do, which is the `ActionLine` of the plan printer, with "printed, never run" for anything that needs `sudo`.
+For a worktree: the verdict in words, the reasons, repository, tool, branch, head, upstream, uncommitted, untracked, hidden and ignored counts with the ignored sample, unpushed and loose commits, the merge method with its note, the pull request, the lock with its process, when the repository was last fetched and against which default branch, what git could not report, the retrieval hints and the `git worktree remove --force` command for an attention row.
+These are the `verdict`, `reasons`, `hints` and `force_command` the scanner writes, so the pane repeats no rule.
+For a Docker object: its kind, tags, when it last ran and what uses it.
+For a repository row: the full origin URL, the default branch, the fetch time with a note that merge state is as of that fetch, and the counts of worktrees in each state.
+For a Claude session row: that Claude Code cannot resume those sessions and which project folder is gone.
+The pane sits to the right when the window is at least 120 columns wide and below the list otherwise, and `i` hides it to give the list the whole window.
+- `n` clears the selection, the counterpart of `a`.
+- `x` adds the finding or every path below the group to the ignore list after a one line confirmation that names the path and says how to undo it, and drops the rows from the tree.
+- `w` writes the plan to `--out` and quits, saying where it was written and how to apply it, exactly as `select` does, for people who want to read or edit the plan first.
+- `c` continues to Confirm.
+With nothing selected it says so and stays.
+- Warnings and notes are the last node of the tree, closed by default, never selectable, with the full text in the details pane.
+- In "This folder" mode a second tab, reached with `tab`, shows the folder breakdown of `here`: the entries by size down to `--depth`, with the reclaimable bytes inside each, the tier of entries that are findings and the state words of linked worktrees.
+A row that is a finding can be ticked there too, and the selection is shared with the findings tab.
+- The help overlay points an agent at `reclaim skill`; `done` and `skill` stay command line only, because they are for an agent at the end of a task and the screen is for a person.
+
+Worktrees keep the shape the tables and the checklist have: grouped by repository, the tool as a column, in the order Claude Code, Codex, other tools, manual, then stale registrations and other clones.
+Every worktree row shows its verdict in the words the scanner writes, such as `squash, PR #41 merged`, `pushed, PR #44 open`, `in use, pid 4242`, `12 modified, 3 untracked`, `stale lock, pid 50949 gone`, `outside the scanned roots` or `another clone of this origin`, and rows that are listed only cannot be ticked.
+The repository row shows the counts per verdict, "1 removable, 1 pushed, 1 holding work, 1 in use".
+A Codex task folder shows under its worktrees as the row that goes last, "task folder, removed once empty", and the Confirm list orders it after them, as the plan does.
+Selected totals count a finding inside another selected finding once, as the report totals do, so the footer, the Confirm screen and the table agree.
+
+### Confirm
+
+```
+Confirm                                                      16 items, 18.1 GB
+
+Plan written to ~/Library/Caches/reclaim/plans/plan-20261027T153012Z.json
+
+  1. A    3.9 GB  remove ~/Code/ripgrep-fork/target                       rust-target
+  2. A    2.3 GB  remove ~/Code/ml-pipeline/.venv                         python-venv
+  ...
+ 12. B    1.8 GB  run npm cache clean --force                             cleans ~/.npm/_cacache
+ 13. A    3.2 GB  docker prune build cache
+ 14. A  184.0 MB  git -C ~/Code/storefront worktree remove .claude/worktrees/agent-3f9c1e2a
+ 15. B  870.0 MB  you run: sudo xcrun simctl runtime delete iOS-17-0      printed, never run
+
+By tier: A 14.2 GB in 13 items, B 3.9 GB in 3 items.
+Every target is checked again right before it is removed: inside a scanned root, not a protected folder,
+not a project root, no symbolic link, still the same thing. Nothing is deleted until you confirm.
+
+Type yes to remove these 16 items (18.1 GB): █          d checks everything without removing   esc back
+```
+
+- Entering this screen builds the plan with `plan.New`, which validates it, and saves it with `plan.Save` as `plans/plan-<timestamp>.json` under the reclaim folder in the user cache directory.
+The plan file is the only thing the next screen reads, and it is written before confirmation, so the log and the plan match and a crash between the two leaves a plan the user can inspect.
+A worktree that fails checks 1 to 5 of the proof is left out of the plan, as `select` leaves it out, and the screen names the ones it left out.
+- The list is the plan printer's output, the same lines `reclaim apply` prints, with the warnings of tier C and worktree actions under their rows.
+- Confirmation is the word `yes` typed into a text input, as `apply` asks for it; a single key would be too easy to press by accident on a screen that deletes things.
+- `d` runs `apply --dry-run` on the plan file and marks each row `ok`, `gone`, `manual` or `refused` with the reason, so the user sees the proof before typing `yes`; a worktree row lists the checks of the proof by name with their results.
+- `esc` returns to Review with the selection intact.
+The plan file stays on disk and the Done screen names it.
+
+### Removing
+
+```
+Removing   7 of 16                           freed 9.4 GB of 18.1 GB   ████████████░░░░░░░░ 52%   0:41
+
+  done      3.9 GB  remove ~/Code/ripgrep-fork/target                         rust-target
+  done      2.3 GB  remove ~/Code/ml-pipeline/.venv                           python-venv
+  gone         -    remove ~/Code/ml-pipeline/.mypy_cache                     mypy-cache
+  done      1.7 GB  remove ~/Code/storefront/node_modules                     node_modules
+  failed       -    docker remove image acme/api:old
+                    image is used by stopped container api-1; remove the container first
+  done     48.0 MB  docker remove container compose-web-1
+  ⠋ removing ~/.npm/_cacache via npm cache clean --force, 1.8 GB expected
+            9 more waiting
+
+Disk free on /: 41.2 GB when this started, 50.6 GB now
+ctrl+c stops after the current action      log: ~/Library/Caches/reclaim/logs/apply-20261027T153045Z.log
+```
+
+- The screen calls `apply.Run` on the plan file written by Confirm, with the options `reclaim apply` passes and keep going on, because a person watching wants every action tried and the failures listed together at the end; `reclaim apply` keeps stopping at the first failure unless asked.
+- The row of the running action shows a spinner, its path and its expected size while it runs, and its outcome when it is done.
+- A refused row says which check failed, as in `refused: it contains package.json, so it is a project`, and the details of a done row list the checks that passed; a worktree action shows its six checks as they pass, and a refusal names the failed check with the hints and the `--force` command, which are also in the log.
+- The freed total is the sum of the outcomes so far, and the bar is freed over planned.
+Docker sizes are estimates, marked with `~` as the outcome printer marks them.
+- The disk line uses `fsx.FreeSpace` on the volume holding the first root, read before the run starts and after every action.
+Under OrbStack the report's note says that host space returns later, and the line repeats it.
+- `ctrl+c` cancels the context.
+`apply.Run` checks it between actions, so the current action finishes and the rest are marked not run, and the footer says so while it waits.
+
+### Done
+
+```
+Done                                                                freed 17.9 GB in 1:23
+
+14 removed, 1 already gone, 1 failed, 1 needs you
+Disk free on /: 41.2 GB before, 59.1 GB now
+
+Needs administrator rights, run it yourself if you want it:
+  sudo xcrun simctl runtime delete com.apple.CoreSimulator.SimRuntime.iOS-17-0
+
+Failed:
+  docker remove image acme/api:old: image is used by stopped container api-1; remove the container first
+
+Log: ~/Library/Caches/reclaim/logs/apply-20261027T153045Z.log
+Plan: ~/Library/Caches/reclaim/plans/plan-20261027T153012Z.json
+
+r scan again   q quit
+```
+
+- The `sudo` commands are printed in full so they can be selected and copied.
+- A refused worktree shows the check that failed and, when work would be lost, the retrieval hints and the `--force` command, exactly as `apply` prints them.
+- `r` goes back to Start with the same options, because a second pass often finds more: images freed by a removed container, or a worktree whose pull request merged.
+- On `q` the plain summary printed to standard output is the freed total, the log path and the `sudo` commands.
+
+### Safety on the screen
+
+A person who sees a tool offer to delete 18 GB wants to know what it will never touch before typing `yes`, so the screen states the safety rules in words and shows the result of every check:
+
+- The Start screen names the kinds of folders reclaim never removes, and `P` on every screen opens the full protected list, rendered by `apply` from the same tables its checks use.
+- The details pane names the root and the project that cover a finding and says what apply will check before removing it.
+- The Confirm screen states the checks under the list, and `d` runs them all without removing anything, so a refusal is seen before `yes`.
+- The Removing screen shows every refusal with the check that failed, and the Done screen repeats them with the hints.
+- The help overlay of every screen says that nothing is removed until `yes` is typed and where the protected list is.
+
+The screen keeps every rule under "Safety rules": confirmation is the typed word `yes`, attention findings cannot be ticked, tier C findings are ticked one at a time, nothing runs with `sudo`, worktrees go through the proof twice, and the ignore list only ever removes findings from view and adds refusals to apply.
+
+### Ignore list
+
+Ticking decides one run.
+Some things should never be offered again: a `dist` the user keeps on purpose, a project whose `node_modules` must not be touched, a Docker volume with data.
+The `x` key on the Review screen adds a finding's path, or every path below a group, to the persistent ignore list described under "Configuration", and the Start screen opens the list so entries can be removed.
+Docker objects and other non path findings are ignored by their target, written as `docker:<id>` or `ollama:<model>`.
+Every command treats the entries exactly as `exclude` entries, and `apply` refuses them at removal time as well.
+
 
 ## Plan file
 
@@ -602,6 +890,9 @@ A person or an agent who has read the hints removes those by hand.
 - A worktree is removed only after the proof under "Removing a worktree" passes twice, at plan time and immediately before acting, and the main worktree of a repository is never removed.
 - `done --remove` is the only path on which an agent triggers a removal, it goes through the same plan, proof, apply and log as everything else, and it removes nothing but the one worktree it was given.
 - Every `apply` run writes a log with timestamps, actions and results.
+- What reclaim never removes is shown on request: `P` on every screen of the interactive mode and `apply --dry-run` print the protected list, rendered from the same tables the checks use, so it cannot drift from the code.
+- `exclude` paths and ignore list entries are dropped at scan time and refused by `apply` at removal time, whatever a plan says.
+- The interactive screen removes nothing itself: it writes a plan with the same code as `select` and applies it with the same code as `apply`, after the typed `yes`.
 
 ## Configuration
 
@@ -632,6 +923,13 @@ An exclude that does not exist gets a warning, because it protects nothing.
 - `[scanners] disable` takes scanner names, categories or ecosystems, like `--category`; an unknown one is an error.
 Disabled scanners do not run, and `reclaim scanners` marks them disabled.
 - `[worktrees] github`, default true, lets the worktree scanners and `done` ask `gh` for pull request state; `false` keeps a machine offline.
+
+An `exclude` entry may also name a non path target, `docker:<id>` or `ollama:<model>`, which drops the finding with that target.
+
+A second optional file, `ignore` next to `config.toml`, holds the persistent ignore list the interactive screen writes: one entry per line, a path starting with `~/` or absolute, or a target such as `docker:<id>`, with `#` comments and blank lines ignored.
+It is a separate file and not a key of `config.toml` because reclaim cannot rewrite a TOML file the user edits by hand without losing their comments and layout.
+reclaim writes it atomically, through a temporary file and a rename, and it can be edited by hand.
+Every command treats its entries exactly as `exclude` entries, `apply` refuses them at removal time, and `reclaim scanners` says how many entries it holds and where it is.
 
 Flags override the config file: `--min-size` and `--stale` replace the file's values, paths given to `scan` replace its roots, and `--category` runs exactly the scanners it selects, disabled or not.
 
@@ -668,6 +966,16 @@ A second one scans a whole fake machine, with projects, package and app caches, 
 - Shell completion is tested through cobra's hidden completion command, and `reclaim version` through a function that takes the stamped version and the build info as arguments.
 - `TestScreenshots` runs `scan`, `here`, `worktrees` and the checklist in color over a fixture machine with fake tools, scripted git, `ps` and `gh` answers for a repository with worktrees, and a fake Docker daemon, at a fixed time, and compares the output with the files in `cmd/reclaim/testdata/screenshots`.
 `scripts/screenshots.sh` rewrites those files and renders them with freeze as the SVGs in `docs/screenshots` that the README shows, so the screenshots never come from a real machine and cannot drift from the code.
+- Every screen of the interactive mode is a model tested by sending messages to `Update` and asserting on `View` and on the calls to a fake backend: the start screen's request after toggles, the scanning screen after a sequence of events, the review screen's selection and details, the confirm screen refusing anything but `yes`, the removing screen after starting and finished events, and the done screen's summary.
+- A test proves that the review, confirm and removing screens together call exactly `SavePlan` and then `Apply` with the path `SavePlan` returned, and nothing else that could remove anything.
+- An end to end test runs the screens with the real backend over the fixture machine the existing end to end test builds, drives them with keys through to Done, and asserts that only the ticked paths are gone, the same assertion the `--preset safe` test makes, reached through the screen.
+- The tree tests move to `tree_test.go` with the component and stay green for `select`.
+- Scan progress is tested with a fake scanner that emits steps, and apply progress with the existing fake executors.
+- A dry run test proves that `apply --dry-run` over the end to end fixture removes nothing, reports the same refusals a real run would, and writes a log marked as a dry run.
+- A test renders the protected list and asserts that every path of the system and home denylists appears in it, so the overlay cannot drift from the tables.
+- The ignore list has a test proving an ignored path is dropped by every scanner, never enters a plan, and is refused by apply when a hand edited plan names it, and the same for an `exclude` path.
+- The review screen test includes the worktree fixture repository and asserts on the verdict words, the listed only rows and the repository row counts.
+- `TestScreenshots` also renders the six screens from the fixture machine at the fixed time, and `scripts/screenshots.sh` renders them as `docs/screenshots/ui-*.svg`; the README leads with the review screen.
 - CI runs `go test -race` on macOS and Linux and `golangci-lint`, and a separate job on `ubuntu-latest` runs the Docker integration test against the runner's daemon with `RECLAIM_DOCKER_TESTS=1`, failing if the test skips.
 
 ## Releasing
@@ -695,6 +1003,7 @@ Phase 1 delivered `scan`, `here`, `select --preset`, `apply`, the project scanne
 Phase 2 delivered the interactive checklist, the app cache scanners, the Downloads scanner, Markdown output, the config file, report provenance, Docker grouping, the location check before clean commands and the Docker integration test in CI.
 Phase 3 delivered GoReleaser and the release workflow, the Homebrew tap, shell completion values, the README with screenshots rendered from a fixture, `docs/RELEASING.md`, Xcode's custom DerivedData location, the Linux system wide Ollama models, a blank tier column for attention findings and the release tag in `reclaim version`.
 Phase 4 delivered `internal/worktree` with the classification, the merge checks and the GitHub lookup, the `git-worktrees`, `codex-worktrees` and `worktree-registrations` scanners, the `GitWorktreeRemove` and `GitWorktreePrune` actions with plan validation and the six checks in apply, the `worktrees`, `done` and `skill` commands, the agent skill and `docs/AGENTS.md`, the `claude-sessions` and `codex-plugin-backups` scanners, `scripts/install.sh` with its CI job, worktrees in `here`, and the `worktrees` screenshot.
+Phase 5 delivers the interactive mode: `reclaim ui` and bare `reclaim`, scan progress events and the project walk progress, the findings tree shared with `select`, the six screens, `apply --dry-run`, checks on every outcome, the protected list in words, progress at both edges of every action, `fsx.FreeSpace`, plans saved under the reclaim folder, the ignore list, `exclude` and ignored entries refused at removal time, target entries in `exclude`, and screenshots of every screen.
 
 Each phase is a pull request or a short series of pull requests.
 Every pull request passes CI and includes tests for what it adds.
@@ -705,3 +1014,4 @@ On the reference machine, `reclaim scan` completes in under two minutes over 165
 `reclaim here` in a project folder shows the breakdown within one second for a folder up to 20 GB.
 `reclaim apply` on the end-to-end fixture removes exactly the planned paths and nothing else.
 `reclaim worktrees` on the reference machine classifies its two dozen linked worktrees in under five seconds without the GitHub lookup and under fifteen with it, reports the three squash merged Claude Code worktrees of this repository as tier A, and lists the Codex `webtools` worktree with its modified files for attention only.
+`reclaim` in a terminal on the reference machine opens the screen, scans the whole machine with live progress in the time `reclaim scan` takes and with the same totals, and a dry run of a tier A selection reports every check and removes nothing.
