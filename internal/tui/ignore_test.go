@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -12,12 +13,12 @@ import (
 )
 
 // ignoreHarness scans the fixture with be and opens the Review screen.
-func ignoreHarness(t *testing.T, be *fakeBackend, edit func(*Options)) *harness {
+func ignoreHarness(t *testing.T, be *fakeBackend) *harness {
 	t.Helper()
 	if be.report == nil {
 		be.report = fixtureReport()
 	}
-	h := newHarnessWith(t, be, defaultStart(), 140, 40, edit)
+	h := newHarness(t, be, defaultStart(), 140, 40)
 	h.press("enter")
 	require.Equal(t, screenReview, h.m.screen)
 	return h
@@ -34,7 +35,7 @@ func shown(h *harness, path string) bool {
 // selection included.
 func TestReviewIgnoresAFinding(t *testing.T) {
 	be := &fakeBackend{}
-	h := ignoreHarness(t, be, nil)
+	h := ignoreHarness(t, be)
 	const target = "/Users/me/Code/ripgrep-fork/target"
 	require.True(t, h.m.review.tree.IsSelected(finding.MakeID("rust-target", target)), "tier A starts selected")
 	h.moveTo("~/Code/ripgrep-fork")
@@ -61,7 +62,7 @@ func TestReviewIgnoresAFinding(t *testing.T) {
 // finding below it, and on a Docker object, which adds its target entry.
 func TestReviewIgnoresAGroupAndTargets(t *testing.T) {
 	be := &fakeBackend{}
-	h := ignoreHarness(t, be, nil)
+	h := ignoreHarness(t, be)
 	h.moveTo("Unused images")
 	h.press("enter", "down", "x")
 	require.Contains(t, h.flat(), "Ignore image node:20 (docker:sha256:node20) from now on?")
@@ -90,11 +91,57 @@ func TestReviewIgnoresAGroupAndTargets(t *testing.T) {
 	require.Contains(t, h.flat(), "x ignores a finding, or every finding of a group; move to one first.")
 }
 
+// TestReviewIgnoreSaysWhatElseGoes checks that the question names the
+// findings a path entry also stops offering, here the worktree that holds
+// the node_modules being ignored, that q quits nothing while the list is
+// written, and that the cursor stays where it was.
+func TestReviewIgnoreSaysWhatElseGoes(t *testing.T) {
+	r := fixtureReport()
+	wt := "/Users/me/Code/storefront/.claude/worktrees/agent-3f9c1e2a"
+	nm := finding.Finding{Scanner: "node_modules", Category: finding.CategoryProject, Tier: finding.TierA, Path: wt + "/node_modules",
+		Kind: finding.KindDir, Target: wt + "/node_modules", Project: wt, Size: 50 * MB, Action: finding.ActionRemovePath}
+	nm.ID = finding.MakeID(nm.Scanner, nm.Target)
+	r.Findings = append(r.Findings, nm)
+	finding.Sort(r.Findings)
+	be := &fakeBackend{report: r}
+	h := ignoreHarness(t, be)
+	h.moveTo("agent-3f9c1e2a")
+	h.press("enter", "down")
+	before := h.cursorRow()
+	require.Contains(t, before, "node_modules")
+	h.press("x")
+	require.Contains(t, h.flat(), "It also stops offering 1 other finding that holds it.")
+	h.m.review.writing = true
+	h.press("q")
+	require.False(t, h.quit, "no key acts while the list is written")
+	h.m.review.writing = false
+	h.press("y")
+	require.Contains(t, h.flat(), "2 findings no longer offered")
+	require.NotEqual(t, 0, h.m.review.tree.Current().Count, "the cursor stays on a row")
+	require.NotContains(t, h.cursorRow(), "Project artifacts", "and does not jump to the top")
+}
+
+// TestTabWhileFiltering checks that tab does not leave a filter half typed:
+// it switches tabs only once the filter is closed.
+func TestTabWhileFiltering(t *testing.T) {
+	be := &fakeBackend{}
+	be.report, be.folder = fixtureReport(), fixtureFolder()
+	start := defaultStart()
+	start.Paths = []string{"/Users/me/Code"}
+	h := newHarness(t, be, start, 140, 40)
+	h.press("enter", "/", "c", "a", "tab")
+	require.False(t, h.m.review.onFolder)
+	require.True(t, h.m.review.tree.Filtering())
+	require.Equal(t, screenReview, h.m.screen, "c was typed, not a continue")
+	h.press("enter", "tab")
+	require.True(t, h.m.review.onFolder)
+}
+
 // TestReviewIgnoreFails checks that a list that cannot be written changes
 // nothing on the screen and says why.
 func TestReviewIgnoreFails(t *testing.T) {
 	be := &fakeBackend{ignoreErr: errors.New("read-only file system")}
-	h := ignoreHarness(t, be, nil)
+	h := ignoreHarness(t, be)
 	h.moveTo("~/Code/ripgrep-fork")
 	h.press("enter", "down", "x", "y")
 	require.Contains(t, h.flat(), "The ignore list was not written: read-only file system")
@@ -136,13 +183,36 @@ func TestStartIgnoreList(t *testing.T) {
 	require.True(t, slices.ContainsFunc(h.m.review.tree.Findings(), func(f finding.Finding) bool { return f.Target == "sha256:node20" }))
 }
 
+// TestStartIgnoreListScrolls checks a list longer than the window: the
+// cursor stays in view and d takes off the entry under it.
+func TestStartIgnoreListScrolls(t *testing.T) {
+	list := make([]string, 0, 40)
+	for i := range 40 {
+		list = append(list, fmt.Sprintf("/Users/me/Code/app%02d/dist", i))
+	}
+	be := &fakeBackend{ignore: slices.Clone(list)}
+	h := newHarnessWith(t, be, defaultStart(), 100, 20, func(o *Options) { o.Ignore = slices.Clone(list) })
+	h.press("x")
+	require.Contains(t, h.flat(), "> ~/Code/app00/dist")
+	require.Contains(t, h.flat(), "up and down scroll")
+	require.LessOrEqual(t, strings.Count(h.view(), "\n")+1, 20)
+	for range 30 {
+		h.press("down")
+	}
+	require.Contains(t, h.flat(), "> ~/Code/app30/dist")
+	require.NotContains(t, h.flat(), "app00")
+	h.press("d", "y")
+	require.Equal(t, []string{"-/Users/me/Code/app30/dist"}, be.ignores)
+	require.LessOrEqual(t, strings.Count(h.view(), "\n")+1, 20)
+}
+
 // TestStartIgnoreListEmpty checks the empty list and d on it.
 func TestStartIgnoreListEmpty(t *testing.T) {
 	h := newHarness(t, &fakeBackend{}, defaultStart(), 140, 40)
 	h.press("x")
 	require.Contains(t, h.flat(), "The ignore list is empty.")
 	h.press("d")
-	require.Contains(t, h.flat(), "The ignore list is empty.")
+	require.Contains(t, h.flat(), "There is nothing to take off; x on the Review screen adds to the list.")
 	h.press("x")
 	require.Contains(t, h.flat(), "What to look at")
 }

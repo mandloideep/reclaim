@@ -382,7 +382,7 @@ func (m *Model) applyMsg(msg tea.Msg) {
 func (m *Model) key(msg tea.KeyMsg) tea.Cmd {
 	// While the plan is being saved no key acts, not even q, so the screen
 	// never ends with a plan written that nobody was told about.
-	if m.screen == screenReview && m.review.saving {
+	if m.screen == screenReview && (m.review.saving || m.review.writing) || m.screen == screenStart && m.start.writing {
 		return nil
 	}
 	// While the plan is removed, q does nothing and ctrl+c stops after the

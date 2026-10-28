@@ -424,7 +424,8 @@ func (b *uiBackend) measure(ctx context.Context, sreq *scanRequest, req tui.Scan
 	opts := fsx.TreeOptions{Depth: treeDepth, DirSizes: true}
 	if progress != nil {
 		opts.Progress = func(dirs int64) {
-			progress(scan.Event{Kind: scan.Step, Category: finding.CategoryProject, Text: "measuring the folder, " + plural(int(dirs), "folder", "folders")})
+			progress(scan.Event{Kind: scan.Step, Category: finding.CategoryProject, Folders: int(dirs),
+				Text: "measuring the folder, " + plural(int(dirs), "folder", "folders")})
 		}
 	}
 	walker := fsx.NewWalker(0)

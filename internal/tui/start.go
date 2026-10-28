@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -63,6 +64,9 @@ type startScreen struct {
 	// and writing is set while the list is written.
 	listing    bool
 	listCursor int
+	// listOffset is the first entry shown when the list is longer than
+	// the window.
+	listOffset int
 	asking     string
 	writing    bool
 }
@@ -235,7 +239,7 @@ func (s *startScreen) listKey(msg tea.KeyMsg) tea.Cmd {
 		s.listCursor = max(min(s.listCursor+1, len(s.m.ignore)-1), 0)
 	case "d":
 		if len(s.m.ignore) == 0 {
-			s.status = "The ignore list is empty."
+			s.status = "There is nothing to take off; x on the Review screen adds to the list."
 			return nil
 		}
 		s.asking = s.m.ignore[s.listCursor]
@@ -269,23 +273,39 @@ func (s *startScreen) listView() frame {
 		b = append(b, "  "+st.dim.Render(l))
 	}
 	b = append(b, "")
+	var tail []string
+	if s.status != "" {
+		tail = append(tail, "")
+		for _, l := range wrapText(s.status, s.m.width-2) {
+			tail = append(tail, "  "+st.warn.Render(l))
+		}
+	}
+	footer := s.m.footer(st.keys("up/down", "move", "d", "take off the list", "esc", "back", "?", "help", "q", "quit"))
 	if len(s.m.ignore) == 0 {
 		b = append(b, "  The ignore list is empty.")
 	}
-	for i, e := range s.m.ignore {
+	// A long list scrolls with the cursor; the last line says where it is.
+	entries := s.m.ignore
+	room := max(s.m.bodyHeight(len(footer))-len(b)-len(tail), 1)
+	scrolls := len(entries) > room
+	if scrolls {
+		room = max(room-1, 1)
+		s.listOffset = min(max(s.listOffset, s.listCursor-room+1), s.listCursor, len(entries)-room)
+	} else {
+		s.listOffset = 0
+	}
+	shown := entries[s.listOffset:min(s.listOffset+room, len(entries))]
+	for i, e := range shown {
 		marker := "    "
-		if i == s.listCursor {
+		if s.listOffset+i == s.listCursor {
 			marker = "  " + st.cursor.Render(">") + " "
 		}
 		b = append(b, marker+s.m.path(e))
 	}
-	if s.status != "" {
-		b = append(b, "")
-		for _, l := range wrapText(s.status, s.m.width-2) {
-			b = append(b, "  "+st.warn.Render(l))
-		}
+	if scrolls {
+		b = append(b, st.dim.Render(fmt.Sprintf("    entries %d to %d of %d; up and down scroll", s.listOffset+1, s.listOffset+len(shown), len(entries))))
 	}
-	footer := s.m.footer(st.keys("up/down", "move", "d", "take off the list", "esc", "back", "?", "help", "q", "quit"))
+	b = append(b, tail...)
 	return frame{title: "reclaim", facts: s.m.opts.Version, body: strings.Join(b, "\n"), footer: footer}
 }
 

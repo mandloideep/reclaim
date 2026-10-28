@@ -144,6 +144,8 @@ Anything else still there is refused, as in the real run.
 Unlike canceling the context, which also cuts off the command or Docker call in progress, it never leaves an action half done.
 The outcome of every action carries the checks that ran, each with its name, its result and a detail, as worktree outcomes do since phase 4, and the log entry of every action lists them.
 `apply` refuses a target that is, lies under or contains an `exclude` path of the configuration or an entry of the ignore list, whatever the plan says, so the user's own protected paths hold at removal time and not only at scan time.
+It refuses a target a target entry names the same way, and a `sudo` command whose path or target an entry names is refused rather than printed for the user to run.
+A prune of stale worktree registrations touches only the registrations under `.git`, so it is refused when the repository is or lies inside an entry, and an entry inside the repository does not stop it; scans drop the prune finding by the same rule.
 `apply.ProtectedList` renders in words the tables the path checks use: the system paths, the protected home folders, the four component rule, the `.git` and project root rules, the recorded roots of the plan, and the user's `exclude` and ignore entries, each marked with where it comes from.
 The interactive screen shows it and `--dry-run` prints it, so what the user sees cannot drift from what the checks do.
 Progress is reported at both edges of every action, when it starts and when it finishes, so a caller can show the running action, and once before the first action with the path of the log the run writes; `reclaim apply` keeps printing one line per outcome.
@@ -748,6 +750,8 @@ With nothing selected it says so and stays, and with a report older than `apply`
 - In "This folder" mode a second tab, reached with `tab`, shows the folder breakdown of `here`: the entries by size down to `--depth`, with the reclaimable bytes inside each, the tier of entries that are findings and the state words of linked worktrees.
 A row that is a finding can be ticked there too, and the selection is shared with the findings tab.
 `enter` and the arrows open and close folders, and the details pane shows a finding's details or, for any other entry, its size and what is reclaimable below it.
+Only a finding whose target is its own path is an entry with a tick box; findings that share a folder, such as Ollama's models, count inside that folder.
+`tab` switches tabs only while no filter is being typed.
 - The help overlay points an agent at `reclaim skill`; `done` and `skill` stay command line only, because they are for an agent at the end of a task and the screen is for a person.
 
 Worktrees keep the shape the tables and the checklist have: grouped by repository, the tool as a column, in the order Claude Code, Codex, other tools, manual, then stale registrations and other clones.
@@ -968,13 +972,15 @@ Disabled scanners do not run, and `reclaim scanners` marks them disabled.
 - `[worktrees] github`, default true, lets the worktree scanners and `done` ask `gh` for pull request state; `false` keeps a machine offline.
 
 An `exclude` entry may also name a non path target, `docker:<id>` or `ollama:<model>`, which drops the finding with that target.
-A Docker entry names a container or image by its id or the first 12 or more hex digits of it, a volume by its name, and the build cache as `docker:docker-build-cache`; an Ollama entry without a tag names the model's `latest` tag.
+A Docker entry names a container or image by its id or the first 12 or more hex digits of it in either case, an image also by one of its tags, a repository without a tag meaning `latest`, a volume by its name, and the build cache as `docker:docker-build-cache`; an Ollama entry without a tag names the model's `latest` tag.
 `apply` refuses an action whose target such an entry names, as it refuses a path under an `exclude` path.
 
 A second optional file, `ignore` next to `config.toml`, holds the persistent ignore list the interactive screen writes: one entry per line, a path starting with `~/` or absolute, or a target such as `docker:<id>`, with `#` comments and blank lines ignored.
+With `--config` naming a file of another name, the list is that name with the extension `.ignore`, so `~/dotfiles/reclaim.toml` goes with `~/dotfiles/reclaim.ignore` and never with an unrelated file.
 It is a separate file and not a key of `config.toml` because reclaim cannot rewrite a TOML file the user edits by hand without losing their comments and layout.
 reclaim writes it atomically, through a temporary file and a rename, and it can be edited by hand; a file reclaim creates starts with three comment lines that say what it is.
 Paths are written starting with `~/` when they lie under the home folder, so the file reads the way the screen shows paths.
+A list that is a symbolic link is written where the link points, so the link stays, and an existing file keeps its permissions.
 A line that is neither a comment, a path nor a target entry is an error that names the file and the line.
 Every command treats its entries exactly as `exclude` entries, `apply` refuses them at removal time, and `reclaim scanners` says how many entries it holds and where it is.
 

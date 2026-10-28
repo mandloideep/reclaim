@@ -184,38 +184,53 @@ const notExcluded = "not one of your exclude or ignore entries, inside one or ho
 // at removal time and not only at scan time. p may be empty for an action
 // on a Docker object.
 func checkExcluded(p string, a *plan.Action, ex Exclusions) error {
+	return excludedAt(p, a, ex, true)
+}
+
+// excludedAt is checkExcluded, and with holds false it lets a path hold an
+// entry, for a prune, which touches only the registrations under .git and
+// nothing an entry inside the repository names.
+func excludedAt(p string, a *plan.Action, ex Exclusions, holds bool) error {
 	ignored := "your ignore list"
 	if ex.IgnorePath != "" {
 		ignored += " (" + ex.IgnorePath + ")"
 	}
 	for _, src := range []struct {
-		entries                []string
-		is, inside, has, names string
-	}{
-		{ex.Exclude, "it is an exclude entry of your configuration", "it lies inside the exclude entry %s of your configuration",
-			"it holds the exclude entry %s of your configuration", "the exclude entry %s of your configuration names it"},
-		{ex.Ignore, "it is on " + ignored, "it lies inside %s, which is on " + ignored, "it holds %s, which is on " + ignored,
-			"the entry %s on " + ignored + " names it"},
-	} {
+		entries []string
+		ignore  bool
+	}{{ex.Exclude, false}, {ex.Ignore, true}} {
 		for _, e := range src.entries {
 			if finding.IsTargetEntry(e) {
-				if a != nil && finding.MatchesTargetEntry(e, a.Action.IsDocker(), a.Target) {
-					return fmt.Errorf("refusing %s: "+src.names, a.Target, e)
+				if a == nil || !finding.MatchesTargetEntry(e, a.Action.IsDocker(), a.Target, a.Tags) {
+					continue
 				}
-				continue
+				if src.ignore {
+					return fmt.Errorf("refusing %s: the entry %s on %s names it", a.Target, e, ignored)
+				}
+				return fmt.Errorf("refusing %s: the exclude entry %s of your configuration names it", a.Target, e)
 			}
 			if p == "" {
 				continue
 			}
 			e = filepath.Clean(e)
+			var how string
 			switch {
+			case p == e && src.ignore:
+				how = "it is on " + ignored
 			case p == e:
-				return fmt.Errorf("refusing %s: %s", p, src.is)
+				how = "it is an exclude entry of your configuration"
+			case project.IsWithin(p, e) && src.ignore:
+				how = fmt.Sprintf("it lies inside %s, which is on %s", e, ignored)
 			case project.IsWithin(p, e):
-				return fmt.Errorf("refusing %s: "+src.inside, p, e)
-			case project.IsWithin(e, p):
-				return fmt.Errorf("refusing %s: "+src.has, p, e)
+				how = fmt.Sprintf("it lies inside the exclude entry %s of your configuration", e)
+			case holds && project.IsWithin(e, p) && src.ignore:
+				how = fmt.Sprintf("it holds %s, which is on %s", e, ignored)
+			case holds && project.IsWithin(e, p):
+				how = fmt.Sprintf("it holds the exclude entry %s of your configuration", e)
+			default:
+				continue
 			}
+			return fmt.Errorf("refusing %s: %s", p, how)
 		}
 	}
 	return nil

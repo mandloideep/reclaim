@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -159,6 +160,49 @@ func TestScanningShowsTheMeasuringWalk(t *testing.T) {
 	require.Contains(t, flat, "waiting Git worktrees")
 	h.update(scanEventMsg{seq: h.m.seq, event: scan.Event{Kind: scan.Step, Category: finding.CategoryProject, Folders: 1500, Projects: 4}})
 	require.Contains(t, h.flat(), "4 projects in 1,500 folders")
+}
+
+// TestFolderTabSharedFolder checks a folder several findings share, such
+// as Ollama's models folder: no tick box, and what they hold counts
+// inside it.
+func TestFolderTabSharedFolder(t *testing.T) {
+	r := fixtureReport()
+	models := "/Users/me/Code/models"
+	for _, m := range []string{"llama3:latest", "qwen:7b"} {
+		f := finding.Finding{Scanner: "ollama", Category: finding.CategoryAppCache, Tier: finding.TierB, Path: models,
+			Target: "ollama:" + m, Name: "model " + m, Size: 1_000 * MB, Action: finding.ActionRunCommand, Command: []string{"ollama", "rm", m}}
+		f.ID = finding.MakeID(f.Scanner, f.Target)
+		r.Findings = append(r.Findings, f)
+	}
+	be := &fakeBackend{report: r, folder: fixtureFolder()}
+	be.folder.Entries = append(be.folder.Entries, FolderEntry{Name: "models", Path: models, Dir: true, Size: 2_000 * MB})
+	start := defaultStart()
+	start.Paths = []string{"/Users/me/Code"}
+	h := newHarness(t, be, start, 140, 40)
+	h.press("enter", "tab")
+	for range 10 {
+		if !containsCursor(h, "models/") {
+			h.press("down")
+		}
+	}
+	require.Contains(t, h.cursorRow(), "2.0 GB    models/  2.0 GB reclaimable inside")
+	require.NotContains(t, h.cursorRow(), "[")
+	h.press("space")
+	require.Contains(t, h.flat(), "only an entry that is a finding can be ticked")
+}
+
+// TestScanningIgnoresLateWalkProgress checks that a count the measuring
+// walk reports out of order never moves the row backwards.
+func TestScanningIgnoresLateWalkProgress(t *testing.T) {
+	h := newHarness(t, &fakeBackend{report: fixtureReport()}, defaultStart(), 120, 24)
+	h.m.scanning = newScanning(h.m, ScanRequest{Mode: ModeFolder, Paths: []string{"/Users/me/Code"},
+		Categories: []finding.Category{finding.CategoryProject}})
+	h.m.screen = screenScanning
+	for _, n := range []int{1000, 500} {
+		h.update(scanEventMsg{seq: h.m.seq, event: scan.Event{Kind: scan.Step, Category: finding.CategoryProject, Folders: n,
+			Text: fmt.Sprintf("measuring the folder, %d folders", n)}})
+	}
+	require.Contains(t, h.flat(), "measuring the folder, 1000 folders")
 }
 
 // TestNoFolderTabForAWholeMachineScan checks that tab does nothing when the

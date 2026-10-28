@@ -14,7 +14,7 @@ import (
 )
 
 // IgnoreFile is the name of the ignore list, which lives next to the
-// configuration file.
+// configuration file config.toml.
 const IgnoreFile = "ignore"
 
 // ignoreHeader starts an ignore list that reclaim creates, so a person who
@@ -52,9 +52,16 @@ func (ig *Ignore) Targets() []string {
 }
 
 // IgnorePath returns the ignore list that goes with the configuration file
-// at configPath: the file named ignore in the same folder.
+// at configPath: the file named ignore next to config.toml, or for a file
+// with another name, such as one --config names, the same name with the
+// extension .ignore, so ~/dotfiles/reclaim.toml goes with
+// ~/dotfiles/reclaim.ignore and never with an unrelated file.
 func IgnorePath(configPath string) string {
-	return filepath.Join(filepath.Dir(configPath), IgnoreFile)
+	name := filepath.Base(configPath)
+	if name == "config.toml" {
+		return filepath.Join(filepath.Dir(configPath), IgnoreFile)
+	}
+	return filepath.Join(filepath.Dir(configPath), strings.TrimSuffix(name, filepath.Ext(name))+".ignore")
 }
 
 // LoadIgnore reads the ignore list at path. A missing file is an empty list.
@@ -163,10 +170,22 @@ func EditIgnore(path, home string, add, drop []string) (*Ignore, error) {
 		have = append(have, e)
 		kept = append(kept, written(e, home))
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create the folder of %s: %w", path, err)
+	// A list kept elsewhere through a symbolic link, as dotfile managers
+	// keep files, is written where the link points, so the link stays, and
+	// the file keeps its permissions.
+	dest, perm := path, os.FileMode(0o644)
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		if dest, err = filepath.EvalSymlinks(path); err != nil {
+			return nil, fmt.Errorf("follow the ignore list %s: %w", path, err)
+		}
 	}
-	if err := fsx.WriteFileAtomic(path, []byte(strings.Join(kept, "\n")+"\n")); err != nil {
+	if info, err := os.Stat(dest); err == nil {
+		perm = info.Mode().Perm()
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return nil, fmt.Errorf("create the folder of %s: %w", dest, err)
+	}
+	if err := fsx.WriteFileAtomicPerm(dest, []byte(strings.Join(kept, "\n")+"\n"), perm); err != nil {
 		return nil, err
 	}
 	return LoadIgnore(path, home)

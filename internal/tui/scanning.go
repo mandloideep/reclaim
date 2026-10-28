@@ -51,8 +51,10 @@ type categoryRow struct {
 	walked            bool
 	folders, projects int
 	// measured says how far the measuring walk of "This folder" got, which
-	// runs before the scanners.
-	measured string
+	// runs before the scanners, and measuredDirs the count it said that
+	// for, since the walk's goroutines may report out of order.
+	measured     string
+	measuredDirs int
 }
 
 func (r *categoryRow) running() []string {
@@ -131,7 +133,9 @@ func (s *scanningScreen) event(ev scan.Event) {
 		r := s.row(ev.Category)
 		switch {
 		case ev.Scanner == "" && ev.Text != "":
-			r.measured = ev.Text
+			if ev.Folders >= r.measuredDirs {
+				r.measured, r.measuredDirs = ev.Text, ev.Folders
+			}
 			return
 		case ev.Scanner == "":
 			r.walked, r.folders, r.projects = true, ev.Folders, ev.Projects

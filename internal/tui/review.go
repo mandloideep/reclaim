@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -84,7 +85,8 @@ func (s *reviewScreen) key(msg tea.KeyMsg) tea.Cmd {
 		return s.answer(msg)
 	}
 	s.status = ""
-	if msg.String() == "tab" && s.folder != nil {
+	// tab switches only while no filter is typed, which owns every key.
+	if msg.String() == "tab" && s.folder != nil && !s.tree.Filtering() {
 		s.onFolder = !s.onFolder
 		s.detailOffset = 0
 		return nil
@@ -160,10 +162,14 @@ func (s *reviewScreen) askIgnore() {
 			return
 		}
 		fs := s.tree.CurrentFindings()
-		entries, _ = ignoreEntries(fs)
+		var skipped int
+		entries, skipped = ignoreEntries(fs)
 		switch {
-		case len(entries) == 0:
+		case len(entries) == 0 && skipped > 0:
 			s.status = "Stale worktree registrations have no path to ignore; leave them unticked instead."
+			return
+		case len(entries) == 0:
+			s.status = "Nothing below this row can be ignored."
 			return
 		case it.Kind == ui.TreeFinding && finding.IsTargetEntry(entries[0]):
 			what = it.Finding.DisplayName() + " (" + entries[0] + ")"
@@ -174,7 +180,28 @@ func (s *reviewScreen) askIgnore() {
 		}
 	}
 	s.asking = entries
-	s.status = "Ignore " + what + " from now on? y adds it to the ignore list, any other key keeps it; x on the Start screen undoes it."
+	// A path entry also stops offering what holds it, such as the worktree
+	// a node_modules lies in, so the question says so.
+	also := ""
+	if n := s.othersIgnored(entries); n > 0 {
+		also = " It also stops offering " + plural(n, "other finding", "other findings") + " that " + map[bool]string{true: "holds", false: "hold"}[n == 1] + " it."
+	}
+	s.status = "Ignore " + what + " from now on?" + also + " y adds it to the ignore list, any other key keeps it; x on the Start screen undoes it."
+}
+
+// othersIgnored counts the findings the entries would drop besides the
+// ones they were made from.
+func (s *reviewScreen) othersIgnored(entries []string) int {
+	n := 0
+	for _, f := range s.tree.Findings() {
+		if e, ok := finding.EntryFor(&f); ok && slices.Contains(entries, e) {
+			continue
+		}
+		if excludedBy(entries, &f) {
+			n++
+		}
+	}
+	return n
 }
 
 // answer takes the key that answers the confirmation of x: y writes the
@@ -248,7 +275,7 @@ func (s *reviewScreen) view() frame {
 	}
 	if s.onFolder {
 		head = append(head, st.dim.Render(fmt.Sprintf("%s in all, %s reclaimable inside", sizeText(s.folder.folder.Size),
-			sizeText(s.reclaimableInFolder()))))
+			sizeText(s.folder.reclaimable()))))
 	} else {
 		head = append(head, s.tree.FilterLine())
 	}
@@ -352,14 +379,4 @@ func (s *reviewScreen) pane(width, height int) []string {
 		out = append(out, "")
 	}
 	return out
-}
-
-// reclaimableInFolder is the reclaimable size of the findings inside the
-// folder of the folder tab.
-func (s *reviewScreen) reclaimableInFolder() int64 {
-	var n int64
-	for _, e := range s.folder.folder.Entries {
-		n += s.folder.inside[e.Path]
-	}
-	return n
 }

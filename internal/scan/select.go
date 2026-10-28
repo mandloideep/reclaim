@@ -83,8 +83,14 @@ func (f Filter) Apply(in []finding.Finding) []finding.Finding {
 		if x.Path != "" && slices.ContainsFunc(f.Exclude, func(ex string) bool { return isWithin(x.Path, ex) || isWithin(ex, x.Path) }) {
 			continue
 		}
+		// A finding with no path of its own, such as the stale worktree
+		// registrations of a repository, goes with a repository that is or
+		// lies inside an entry, as apply refuses it.
+		if x.Path == "" && x.Repo != "" && slices.ContainsFunc(f.Exclude, func(ex string) bool { return isWithin(x.Repo, ex) }) {
+			continue
+		}
 		if slices.ContainsFunc(f.ExcludeTargets, func(e string) bool {
-			return finding.MatchesTargetEntry(e, x.Category == finding.CategoryDocker, x.Target)
+			return finding.MatchesTargetEntry(e, x.Category == finding.CategoryDocker, x.Target, x.Tags)
 		}) {
 			continue
 		}

@@ -246,6 +246,24 @@ func TestFilter(t *testing.T) {
 	}
 }
 
+// TestFilterDropsRegistrationsOfAnExcludedRepository checks a finding with
+// no path of its own: it goes with a repository that is or lies inside an
+// entry, and stays when the repository only holds one, as apply decides.
+func TestFilterDropsRegistrationsOfAnExcludedRepository(t *testing.T) {
+	prune := []finding.Finding{{ID: "prune", Category: finding.CategoryWorktree, Repo: "/c/app", Target: "git-worktree-prune:/c/app"}}
+	for _, tc := range []struct {
+		exclude []string
+		kept    bool
+	}{
+		{[]string{"/c/app"}, false},
+		{[]string{"/c"}, false},
+		{[]string{"/c/app/dist"}, true},
+		{[]string{"/c/application"}, true},
+	} {
+		require.Equal(t, tc.kept, len(Filter{Exclude: tc.exclude}.Apply(prune)) == 1, tc.exclude)
+	}
+}
+
 // TestFilterKeepsFoldersEmptiedByTheirFindings keeps a task folder that is
 // removed once empty while a finding inside it is kept, whatever its size,
 // and drops it when everything inside was filtered out.

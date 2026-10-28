@@ -282,6 +282,12 @@ func (r *runner) one(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome 
 		err := fmt.Errorf("refusing %s: action %q cannot be applied", a.Label(), a.Action)
 		o = Outcome{Err: err, Checks: []Check{{Name: CheckAction, Detail: err.Error()}}}
 	case a.NeedsSudo:
+		// Nothing runs, but a command the user asked reclaim to keep is not
+		// printed for them to run either.
+		if err := checkExcluded(a.Path, a, r.opts.Excluded); err != nil {
+			o = Outcome{Err: err, Checks: []Check{{Name: CheckExcluded, Detail: err.Error()}}}
+			break
+		}
 		return Outcome{Action: *a, Status: StatusManual,
 			Checks: []Check{{Name: CheckSudo, OK: true, Detail: "needs administrator rights: printed for you, never run"}}}
 	default:

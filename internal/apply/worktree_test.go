@@ -405,6 +405,48 @@ func TestApplyPrunesOnlyStaleRegistrations(t *testing.T) {
 	require.Equal(t, StatusGone, sum.Outcomes[0].Status)
 }
 
+// TestIgnoredWorktreesAreRefused checks the ignore list on worktrees: a
+// worktree on it is refused before any check of the proof, dry and real,
+// and kept; a prune is refused for a repository on the list, and runs for
+// one that only holds an entry, since it touches only the registrations.
+func TestIgnoredWorktreesAreRefused(t *testing.T) {
+	f := worktreetest.New(t)
+	e := env{root: f.Dir, home: filepath.Join(worktreetest.RealTempDir(t), "home", "me")}
+	merged := f.Worktree("merged")
+	f.Commit(merged, "m.txt", "m\n")
+	f.Push(merged, "merged")
+	f.MergeFF("merged")
+	stale := f.Worktree("stale")
+	require.NoError(t, os.RemoveAll(stale))
+	ignore := func(entries ...string) func(*Options) {
+		return gitRun(func(o *Options) {
+			o.KeepGoing = true
+			o.Excluded = Exclusions{Ignore: entries, IgnorePath: "/Users/me/.config/reclaim/ignore"}
+		})
+	}
+	p := newPlan([]string{f.Dir}, worktreeAction(t, merged, finding.TierA))
+	for _, dry := range []bool{true, false} {
+		sum, _, err := run(t, e, p, func(o *Options) { ignore(merged)(o); o.DryRun = dry })
+		require.Error(t, err)
+		require.Contains(t, []Status{StatusRefused, StatusFailed}, sum.Outcomes[0].Status)
+		require.ErrorContains(t, sum.Outcomes[0].Err, "refusing "+merged+": it is on your ignore list")
+		require.DirExists(t, merged)
+		require.DirExists(t, filepath.Join(f.Repo, ".git", "worktrees", "merged"))
+	}
+
+	prune := newPlan([]string{f.Dir}, pruneAction(f.Repo, stale))
+	sum, _, err := run(t, e, prune, ignore(f.Repo))
+	require.Error(t, err)
+	require.ErrorContains(t, sum.Outcomes[0].Err, "refusing "+f.Repo+": it is on your ignore list")
+	require.True(t, exists(filepath.Join(f.Repo, ".git", "worktrees", "stale")), "a refused prune prunes nothing")
+
+	sum, _, err = run(t, e, prune, ignore(filepath.Join(f.Repo, "dist")))
+	require.NoError(t, err)
+	require.Equal(t, StatusDone, sum.Outcomes[0].Status, "an entry inside the repository does not stop a prune")
+	require.False(t, exists(filepath.Join(f.Repo, ".git", "worktrees", "stale")))
+	require.DirExists(t, merged)
+}
+
 // TestApplyRefusesToPruneUnlistedRegistrations refuses a prune when git
 // would also prune a registration that went stale after the scan.
 func TestApplyRefusesToPruneUnlistedRegistrations(t *testing.T) {

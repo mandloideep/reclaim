@@ -10,6 +10,12 @@ import (
 // over path, so readers never see a partial file. The only file it ever
 // removes is its own temporary file, when the write fails before the rename.
 func WriteFileAtomic(path string, data []byte) error {
+	return WriteFileAtomicPerm(path, data, 0o644)
+}
+
+// WriteFileAtomicPerm is WriteFileAtomic with the permissions of the file
+// it writes.
+func WriteFileAtomicPerm(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
 	if err != nil {
@@ -26,7 +32,7 @@ func WriteFileAtomic(path string, data []byte) error {
 		_ = tmp.Close()
 		return fmt.Errorf("write %s: %w", path, err)
 	}
-	if err := tmp.Chmod(0o644); err != nil {
+	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write %s: %w", path, err)
 	}

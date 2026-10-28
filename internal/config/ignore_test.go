@@ -76,6 +76,41 @@ func TestIgnoreList(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(home, "other"), "a refused entry writes nothing")
 }
 
+// TestIgnorePathFollowsTheConfigFile checks the name of the list for the
+// default configuration file and for one --config names.
+func TestIgnorePathFollowsTheConfigFile(t *testing.T) {
+	require.Equal(t, "/Users/me/.config/reclaim/ignore", IgnorePath("/Users/me/.config/reclaim/config.toml"))
+	require.Equal(t, "/Users/me/dotfiles/reclaim.ignore", IgnorePath("/Users/me/dotfiles/reclaim.toml"))
+	require.Equal(t, "/etc/reclaim.ignore", IgnorePath("/etc/reclaim"))
+}
+
+// TestEditIgnoreKeepsALinkAndItsMode checks that a list kept through a
+// symbolic link is written where the link points, the link stays, and the
+// file keeps its permissions.
+func TestEditIgnoreKeepsALinkAndItsMode(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	target := filepath.Join(home, "dotfiles", "ignore")
+	require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o755))
+	require.NoError(t, os.WriteFile(target, []byte("# mine\n"), 0o600))
+	link := filepath.Join(home, ".config", "reclaim", "ignore")
+	require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o755))
+	require.NoError(t, os.Symlink(target, link))
+
+	ig, err := EditIgnore(link, home, []string{"docker:data"}, nil)
+	require.NoError(t, err)
+	require.Equal(t, []string{"docker:data"}, ig.Entries)
+	info, err := os.Lstat(link)
+	require.NoError(t, err)
+	require.NotZero(t, info.Mode()&os.ModeSymlink, "the link stays a link")
+	data, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, "# mine\ndocker:data\n", string(data))
+	info, err = os.Stat(target)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
 func TestIgnoreOnANilList(t *testing.T) {
 	var ig *Ignore
 	require.Empty(t, ig.Paths())

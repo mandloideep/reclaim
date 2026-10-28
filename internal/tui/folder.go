@@ -45,41 +45,49 @@ func newFolderTab(s *reviewScreen, f *Folder) *folderTab {
 	return t
 }
 
-// index maps the findings to the entries of the breakdown: the finding at
-// each path, and the reclaimable bytes below every entry, a finding inside
-// another counted once, as report totals do.
+// index maps the findings to the entries of the breakdown: the finding
+// that is an entry, and the reclaimable bytes below every folder, a finding
+// inside another counted once, as report totals do. Only a finding whose
+// target is its own path is an entry; findings that share a folder, such as
+// the Ollama models in their models folder, count inside it instead.
 func (t *folderTab) index() {
 	t.byPath = map[string]*finding.Finding{}
-	var actionable []finding.Finding
+	var shown []finding.Finding
 	for i := range t.s.report.Findings {
 		f := &t.s.report.Findings[i]
 		if f.Path == "" || excludedBy(t.s.m.ignore, f) {
 			continue
 		}
+		shown = append(shown, *f)
+		if f.Target != f.Path {
+			continue
+		}
 		if prev, ok := t.byPath[f.Path]; !ok || (!prev.Actionable() && f.Actionable()) {
 			t.byPath[f.Path] = f
 		}
-		if f.Actionable() {
-			actionable = append(actionable, *f)
-		}
 	}
+	// Each counted finding adds its size to its own path and every folder
+	// above it up to the folder measured: one pass, whatever the size of
+	// the breakdown.
 	t.inside = map[string]int64{}
-	var walk func(es []FolderEntry)
-	walk = func(es []FolderEntry) {
-		for i := range es {
-			e := &es[i]
-			var below []finding.Finding
-			for _, f := range actionable {
-				if f.Path == e.Path || strings.HasPrefix(f.Path, e.Path+string(filepath.Separator)) {
-					below = append(below, f)
-				}
+	root := t.folder.Path
+	for i, counted := range finding.Counted(shown) {
+		p := shown[i].Path
+		if !counted || (p != root && !strings.HasPrefix(p, root+string(filepath.Separator))) {
+			continue
+		}
+		for {
+			t.inside[p] += shown[i].Size
+			if p == root {
+				break
 			}
-			t.inside[e.Path] = finding.ReclaimableSize(below)
-			walk(e.Entries)
+			p = filepath.Dir(p)
 		}
 	}
-	walk(t.folder.Entries)
 }
+
+// reclaimable is the reclaimable size inside the folder measured.
+func (t *folderTab) reclaimable() int64 { return t.inside[t.folder.Path] }
 
 // rebuild flattens the open folders into rows, keeping the cursor on the
 // same entry.

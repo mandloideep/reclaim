@@ -1,6 +1,9 @@
 package finding
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // Prefixes of the target entries that exclude and the ignore list accept
 // besides paths, for findings that have no path of their own to name.
@@ -22,10 +25,11 @@ func IsTargetEntry(entry string) bool {
 
 // MatchesTargetEntry reports whether a target entry names target: for a
 // Docker object, when docker is set, the id, a prefix of at least 12 hex
-// digits of it, or the volume name; for an Ollama model, the model with
-// its tag, or without one for its latest tag. A path entry matches no
-// target.
-func MatchesTargetEntry(entry string, docker bool, target string) bool {
+// digits of it in either case, the volume name, or one of the image's tags,
+// a repository without a tag meaning its latest tag; for an Ollama model,
+// the model with its tag, or without one for its latest tag. A path entry
+// matches no target.
+func MatchesTargetEntry(entry string, docker bool, target string, tags []string) bool {
 	switch {
 	case strings.HasPrefix(entry, DockerEntryPrefix):
 		id := strings.TrimPrefix(entry, DockerEntryPrefix)
@@ -35,8 +39,12 @@ func MatchesTargetEntry(entry string, docker bool, target string) bool {
 		if id == target {
 			return true
 		}
-		short, full := strings.TrimPrefix(id, "sha256:"), strings.TrimPrefix(target, "sha256:")
-		return len(short) >= 12 && isHex(short) && strings.HasPrefix(full, short)
+		short := strings.ToLower(strings.TrimPrefix(id, "sha256:"))
+		full := strings.ToLower(strings.TrimPrefix(target, "sha256:"))
+		if len(short) >= 12 && isHex(short) && strings.HasPrefix(full, short) {
+			return true
+		}
+		return slices.Contains(tags, id) || (!strings.Contains(id, ":") && slices.Contains(tags, id+":latest"))
 	case strings.HasPrefix(entry, OllamaEntryPrefix):
 		model := strings.TrimPrefix(entry, OllamaEntryPrefix)
 		if docker || model == "" {

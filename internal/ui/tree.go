@@ -351,6 +351,7 @@ func (t *Tree) SelectNone() int {
 // the user just put on the ignore list, and clears their selection. It
 // returns how many it took out.
 func (t *Tree) Drop(drop func(*finding.Finding) bool) int {
+	key, at := t.cursorKey, t.cursor
 	n := 0
 	for i := range t.findings {
 		if !t.dropped[i] && drop(&t.findings[i]) {
@@ -360,6 +361,13 @@ func (t *Tree) Drop(drop func(*finding.Finding) bool) int {
 		}
 	}
 	t.rebuild()
+	// When the row under the cursor went, the cursor stays where it was
+	// rather than jumping to the top.
+	if len(t.rows) > 0 && t.rows[t.cursor].node.key != key {
+		t.cursor = min(at, len(t.rows)-1)
+		t.cursorKey = t.rows[t.cursor].node.key
+		t.scroll()
+	}
 	return n
 }
 

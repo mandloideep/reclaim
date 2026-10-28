@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/docker/docker/api/types/image"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mandloideep/reclaim/internal/dockerx"
@@ -193,33 +194,45 @@ func TestIgnoredTargetsAreRefused(t *testing.T) {
 	models := filepath.Join(e.home, ".ollama", "models")
 	write(t, filepath.Join(models, "blobs", "b"), 10)
 	model := ollamaAction(models, "llama3:latest")
+	const runtime = "6F3C8F5A-1C2B-4D8E-9A1B-2C3D4E5F6A7B"
+	runtimePath := filepath.Join(e.home, "Library", "Developer", "CoreSimulator", "Volumes", "iOS_21A328")
+	sudo := plan.Action{ID: finding.MakeID("simulator-runtimes", plan.SimulatorRuntimeTarget(runtime)), Action: finding.ActionRunCommand,
+		Target: plan.SimulatorRuntimeTarget(runtime), Tier: finding.TierB, Scanner: "simulator-runtimes", NeedsSudo: true, Path: runtimePath,
+		Command: []string{"xcrun", "simctl", "runtime", "delete", runtime}}
 	p := newPlan([]string{e.root, e.home},
 		removeAction(kept, finding.KindDir),
 		removeAction(inside, finding.KindDir),
 		dockerAction(finding.ActionDockerRemoveContainer, "c-stopped", 10),
 		dockerAction(finding.ActionDockerRemoveVolume, "vol-free", 20),
 		model,
+		withTags(dockerAction(finding.ActionDockerRemoveImage, "sha256:4f2a9c1e7b3d5a6b", 10), "app:1"),
+		withTags(dockerAction(finding.ActionDockerRemoveImage, "sha256:multi", 10), "busybox:1.36", "busybox:latest"),
+		dockerAction(finding.ActionDockerPruneBuildCache, "docker-build-cache", 300),
+		sudo,
 		removeAction(other, finding.KindDir),
 	)
 	ignore := Exclusions{IgnorePath: "/Users/me/.config/reclaim/ignore", Ignore: []string{
 		kept, filepath.Join(e.root, "keep"), "docker:c-stopped", "docker:vol-free", "ollama:llama3",
+		"docker:4F2A9C1E7B3D", "docker:busybox", "docker:docker-build-cache", runtimePath,
 	}}
 	ex := &execx.Fake{Tools: map[string]string{"ollama": "/usr/local/bin/ollama"}}
 	for _, dry := range []bool{true, false} {
 		dk := dockerFixture()
+		dk.Images = append(dk.Images, image.Summary{ID: "sha256:4f2a9c1e7b3d5a6b", RepoTags: []string{"app:1"}})
 		sum, _, err := run(t, e, p, func(o *Options) {
 			o.DryRun, o.KeepGoing, o.Exec = dry, true, ex
 			o.Docker = func() (dockerx.API, error) { return dk, nil }
 			o.Excluded = ignore
 		})
 		require.Error(t, err)
-		for _, o := range sum.Outcomes[:5] {
+		for _, o := range sum.Outcomes[:9] {
 			require.Contains(t, []Status{StatusFailed, StatusRefused}, o.Status, o.Action.Label())
 			require.ErrorContains(t, o.Err, "your ignore list (/Users/me/.config/reclaim/ignore)")
 			require.Equal(t, CheckExcluded, o.Checks[len(o.Checks)-1].Name)
 		}
-		require.Contains(t, []Status{StatusChecked, StatusDone}, sum.Outcomes[5].Status, "what the list does not name goes on")
+		require.Contains(t, []Status{StatusChecked, StatusDone}, sum.Outcomes[9].Status, "what the list does not name goes on")
 		require.Empty(t, dk.Removed(), "no Docker object was removed")
+		require.Len(t, dk.BuildCache, 2, "the build cache was not pruned")
 	}
 	require.True(t, exists(filepath.Join(kept, "app.js")))
 	require.True(t, exists(filepath.Join(inside, "x")))
