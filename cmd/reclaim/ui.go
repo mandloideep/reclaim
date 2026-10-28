@@ -306,7 +306,7 @@ var _ tui.Backend = (*uiBackend)(nil)
 // Scan runs the scan the Start screen describes, with the code scan and
 // worktrees use, and saves a scan that finished as the last report.
 func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func(scan.Event)) (*finding.Report, error) {
-	a := b.a
+	a, cfg := b.a, b.config()
 	reg := scanners.New()
 	selected, err := b.scanners(reg.All(), req)
 	if err != nil {
@@ -335,7 +335,7 @@ func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func
 			selected = scan.UnderRoots(selected)
 		}
 	default:
-		roots = a.uiRoots(b.cfg)
+		roots = a.uiRoots(cfg)
 	}
 	if len(selected) == 0 {
 		return nil, errors.New("no scanners selected: the ticked categories have no scanner to run")
@@ -347,7 +347,7 @@ func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func
 	}
 	// What scan runs by default with the configuration, which the scope
 	// leaves unsaid.
-	byDefault, err := enabledScanners(reg.All(), nil, b.cfg.Disable)
+	byDefault, err := enabledScanners(reg.All(), nil, cfg.Disable)
 	if err != nil {
 		return nil, err
 	}
@@ -355,11 +355,12 @@ func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func
 		byDefault = scan.UnderRoots(byDefault)
 	}
 	report := a.runScan(ctx, reg, scanRequest{
-		scanners: selected, roots: roots, exclude: b.cfg.Exclude, depth: depth, labels: labels,
+		scanners: selected, roots: roots, exclude: cfg.ExcludedPaths(), excludeTargets: cfg.ExcludedTargets(), depth: depth, labels: labels,
 		scope:     &finding.Scope{Command: command, Args: scopeArgs(req, paths, selected, reg.All(), byDefault), Paths: paths, Roots: roots},
 		worktrees: scan.WorktreeOptions{GitHub: req.GitHub, InUse: req.Mode == tui.ModeWorktrees},
 		progress:  progress,
-		shown:     scan.Filter{MinSize: req.MinSize, Stale: req.Stale, Now: a.now(), Exclude: b.cfg.Exclude},
+		shown: scan.Filter{MinSize: req.MinSize, Stale: req.Stale, Now: a.now(), Exclude: cfg.ExcludedPaths(),
+			ExcludeTargets: cfg.ExcludedTargets()},
 	})
 	report.Findings = scan.Filter{MinSize: req.MinSize, Stale: req.Stale, Now: a.now()}.Apply(report.Findings)
 	// A scan that was stopped returns what it found so far, which is not
@@ -376,7 +377,7 @@ func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func
 // ticked, all of them, as --category runs a disabled scanner it names. In
 // worktrees mode only the worktree scanners run.
 func (b *uiBackend) scanners(all []scan.Scanner, req tui.ScanRequest) ([]scan.Scanner, error) {
-	enabled, err := enabledScanners(all, nil, b.cfg.Disable)
+	enabled, err := enabledScanners(all, nil, b.config().Disable)
 	if err != nil {
 		return nil, err
 	}
@@ -486,9 +487,18 @@ func flagSize(n int64) string {
 }
 
 // Protected renders the protected list for the roots with the
-// configuration's exclude entries.
+// configuration's exclude entries and the ignore list.
 func (b *uiBackend) Protected(roots []string) []apply.ProtectedEntry {
-	return apply.ProtectedList(apply.ProtectedOptions{Home: b.a.home, Roots: roots, Exclude: b.cfg.Exclude, ConfigPath: b.cfg.Path})
+	return b.a.protectedFor(b.config(), roots)
+}
+
+// config is the configuration as it stands, with the ignore list as the
+// screen last wrote it.
+func (b *uiBackend) config() *config.Config {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := *b.cfg
+	return &c
 }
 
 // SavePlan builds the plan with the code select uses, proves the selected
@@ -568,7 +578,7 @@ func (b *uiBackend) Apply(ctx context.Context, path string, dryRun bool, progres
 		return apply.Summary{}, err
 	}
 	defer func() { _ = logFile.Close() }()
-	opts := a.applyOptions(b.cfg, path, logFile, logPath)
+	opts := a.applyOptions(b.config(), path, logFile, logPath)
 	opts.KeepGoing, opts.DryRun, opts.Progress = true, dryRun, progress
 	// The actions run under a context that is never canceled, so a stop
 	// never cuts off a command or a Docker call halfway; the stop signal

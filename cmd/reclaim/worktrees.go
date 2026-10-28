@@ -76,10 +76,11 @@ func (a *app) worktreesCommand(cmd *cobra.Command, args []string, f worktreesFla
 		return errors.New("the config file disables every worktree scanner")
 	}
 	report := a.runScan(cmd.Context(), reg, scanRequest{
-		scanners: selected,
-		roots:    roots,
-		exclude:  cfg.Exclude,
-		scope:    scopeOf(cmd, args, paths, roots, "json", "md", "out"),
+		scanners:       selected,
+		roots:          roots,
+		exclude:        cfg.ExcludedPaths(),
+		excludeTargets: cfg.ExcludedTargets(),
+		scope:          scopeOf(cmd, args, paths, roots, "json", "md", "out"),
 		// Every linked worktree is shown, the ones a running process
 		// holds too, which a scan never lists.
 		worktrees: scan.WorktreeOptions{GitHub: cfg.GitHub(), InUse: true},

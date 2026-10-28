@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/fsx"
 )
 
 // Version is the plan schema version this build reads and writes.
@@ -247,34 +248,7 @@ func Save(path string, p *Plan) error {
 	if err != nil {
 		return fmt.Errorf("encode plan: %w", err)
 	}
-	return WriteFileAtomic(path, append(data, '\n'))
-}
-
-// WriteFileAtomic writes data to a temporary file next to path and renames it
-// over path, so readers never see a partial file.
-func WriteFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
-	if err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	name := tmp.Name()
-	defer func() { _ = os.Remove(name) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := os.Rename(name, path); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
+	return fsx.WriteFileAtomic(path, append(data, '\n'))
 }
 
 // Validate checks the plan's schema and every action.

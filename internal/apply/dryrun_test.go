@@ -112,7 +112,7 @@ func TestDryRunRemovesNothing(t *testing.T) {
 	}
 	require.Equal(t, []string{CheckRules, CheckExcluded, CheckObject, CheckMounts, CheckLastLook}, names(sum.Outcomes[4].Checks))
 	require.Equal(t, []string{CheckAllowed, CheckExcluded, CheckTool, CheckLocation}, names(sum.Outcomes[9].Checks))
-	require.Equal(t, []string{CheckDaemon, CheckDockerUse, CheckTags}, names(sum.Outcomes[1].Checks), "the image the container before it uses counts as unused")
+	require.Equal(t, []string{CheckExcluded, CheckDaemon, CheckDockerUse, CheckTags}, names(sum.Outcomes[1].Checks), "the image the container before it uses counts as unused")
 }
 
 // TestDryRunReportsWhatARealRunDoes runs the same plan dry and then for
@@ -163,7 +163,7 @@ func TestExcludedTargetsAreRefused(t *testing.T) {
 	for _, dry := range []bool{true, false} {
 		sum, _, err := run(t, e, p, func(o *Options) {
 			o.DryRun, o.KeepGoing, o.Exec = dry, true, ex
-			o.Protected = []string{keep, nested, cache}
+			o.Excluded = Exclusions{Exclude: []string{keep, nested, cache}}
 		})
 		require.Error(t, err)
 		for _, o := range sum.Outcomes {
@@ -178,13 +178,96 @@ func TestExcludedTargetsAreRefused(t *testing.T) {
 	require.Empty(t, ex.Ran())
 }
 
+// TestIgnoredTargetsAreRefused proves apply refuses what the ignore list
+// names, exactly as it refuses exclude entries: a path that is, lies under
+// or holds an entry, and a Docker object or Ollama model a target entry
+// names, dry and real, and that nothing of them is touched.
+func TestIgnoredTargetsAreRefused(t *testing.T) {
+	e := newEnv(t)
+	kept := filepath.Join(e.root, "web", "dist")
+	write(t, filepath.Join(kept, "app.js"), 10)
+	inside := filepath.Join(e.root, "keep", "py", ".venv")
+	write(t, filepath.Join(inside, "x"), 10)
+	other := filepath.Join(e.root, "other", "node_modules")
+	write(t, filepath.Join(other, "y"), 10)
+	models := filepath.Join(e.home, ".ollama", "models")
+	write(t, filepath.Join(models, "blobs", "b"), 10)
+	model := ollamaAction(models, "llama3:latest")
+	p := newPlan([]string{e.root, e.home},
+		removeAction(kept, finding.KindDir),
+		removeAction(inside, finding.KindDir),
+		dockerAction(finding.ActionDockerRemoveContainer, "c-stopped", 10),
+		dockerAction(finding.ActionDockerRemoveVolume, "vol-free", 20),
+		model,
+		removeAction(other, finding.KindDir),
+	)
+	ignore := Exclusions{IgnorePath: "/Users/me/.config/reclaim/ignore", Ignore: []string{
+		kept, filepath.Join(e.root, "keep"), "docker:c-stopped", "docker:vol-free", "ollama:llama3",
+	}}
+	ex := &execx.Fake{Tools: map[string]string{"ollama": "/usr/local/bin/ollama"}}
+	for _, dry := range []bool{true, false} {
+		dk := dockerFixture()
+		sum, _, err := run(t, e, p, func(o *Options) {
+			o.DryRun, o.KeepGoing, o.Exec = dry, true, ex
+			o.Docker = func() (dockerx.API, error) { return dk, nil }
+			o.Excluded = ignore
+		})
+		require.Error(t, err)
+		for _, o := range sum.Outcomes[:5] {
+			require.Contains(t, []Status{StatusFailed, StatusRefused}, o.Status, o.Action.Label())
+			require.ErrorContains(t, o.Err, "your ignore list (/Users/me/.config/reclaim/ignore)")
+			require.Equal(t, CheckExcluded, o.Checks[len(o.Checks)-1].Name)
+		}
+		require.Contains(t, []Status{StatusChecked, StatusDone}, sum.Outcomes[5].Status, "what the list does not name goes on")
+		require.Empty(t, dk.Removed(), "no Docker object was removed")
+	}
+	require.True(t, exists(filepath.Join(kept, "app.js")))
+	require.True(t, exists(filepath.Join(inside, "x")))
+	require.False(t, exists(other), "only the entry the list does not name was removed")
+	require.Empty(t, ex.Ran(), "the model was not removed")
+}
+
 func TestCheckExcluded(t *testing.T) {
-	ex := []string{"/Users/me/Code/archive"}
-	require.ErrorContains(t, checkExcluded("/Users/me/Code/archive", ex), "is an exclude entry")
-	require.ErrorContains(t, checkExcluded("/Users/me/Code/archive/x/node_modules", ex), "lies inside the exclude entry")
-	require.ErrorContains(t, checkExcluded("/Users/me/Code", ex), "holds the exclude entry")
-	require.NoError(t, checkExcluded("/Users/me/Code/archived/node_modules", ex), "a sibling with a longer name is not inside")
-	require.NoError(t, checkExcluded("/Users/me/Code/web/node_modules", nil))
+	ex := Exclusions{
+		Exclude:    []string{"/Users/me/Code/archive", "docker:4f2a9c1e7b3d"},
+		Ignore:     []string{"/Users/me/Code/web/dist", "docker:data", "ollama:llama3"},
+		IgnorePath: "/Users/me/.config/reclaim/ignore",
+	}
+	image := &plan.Action{Action: finding.ActionDockerRemoveImage, Target: "sha256:4f2a9c1e7b3d5a6b7c8d9e0f"}
+	volume := &plan.Action{Action: finding.ActionDockerRemoveVolume, Target: "data"}
+	model := &plan.Action{Action: finding.ActionRunCommand, Target: "ollama:llama3:latest"}
+	other := &plan.Action{Action: finding.ActionDockerRemoveVolume, Target: "cache"}
+	tests := []struct {
+		name string
+		path string
+		a    *plan.Action
+		want string
+	}{
+		{"exclude entry", "/Users/me/Code/archive", nil, "refusing /Users/me/Code/archive: it is an exclude entry of your configuration"},
+		{"inside an exclude entry", "/Users/me/Code/archive/x/node_modules", nil, "lies inside the exclude entry /Users/me/Code/archive"},
+		{"holds an exclude entry", "/Users/me/Code", nil, "holds the exclude entry /Users/me/Code/archive"},
+		{"sibling with a longer name", "/Users/me/Code/archived/node_modules", nil, ""},
+		{"ignore entry", "/Users/me/Code/web/dist", nil, "it is on your ignore list (/Users/me/.config/reclaim/ignore)"},
+		{"inside an ignore entry", "/Users/me/Code/web/dist/assets", nil, "lies inside /Users/me/Code/web/dist, which is on your ignore list"},
+		{"holds an ignore entry", "/Users/me/Code/web", nil, "holds /Users/me/Code/web/dist, which is on your ignore list"},
+		{"image by a short id", "", image, "refusing sha256:4f2a9c1e7b3d5a6b7c8d9e0f: the exclude entry docker:4f2a9c1e7b3d of your configuration names it"},
+		{"volume by name", "", volume, "the entry docker:data on your ignore list"},
+		{"model without its tag", "", model, "the entry ollama:llama3 on your ignore list"},
+		{"another volume", "", other, ""},
+		{"a model entry never names a Docker object", "", &plan.Action{Action: finding.ActionDockerRemoveVolume, Target: "ollama:llama3"}, ""},
+		{"nothing excluded", "/Users/me/Code/app/node_modules", nil, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkExcluded(tc.path, tc.a, ex)
+			if tc.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+	require.NoError(t, checkExcluded("/Users/me/Code/archive", nil, Exclusions{}))
 }
 
 // TestDryRunCountsFoldersEmptiedByEarlierActions checks a folder removed

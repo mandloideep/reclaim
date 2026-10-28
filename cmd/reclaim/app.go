@@ -272,12 +272,15 @@ func (a *app) configRoots(cfg *config.Config) []string {
 type scanRequest struct {
 	scanners []scan.Scanner
 	roots    []string
-	exclude  []string
-	depth    int
-	labels   []dockerx.Label
-	walker   *fsx.Walker
-	sizes    map[string]int64
-	scope    *finding.Scope
+	// exclude are the paths the walk never enters and whose findings are
+	// dropped, and excludeTargets the target entries whose findings are.
+	exclude        []string
+	excludeTargets []string
+	depth          int
+	labels         []dockerx.Label
+	walker         *fsx.Walker
+	sizes          map[string]int64
+	scope          *finding.Scope
 	// worktrees tune the worktree scanners.
 	worktrees scan.WorktreeOptions
 	// progress receives the scan's events, nil to discard them.
@@ -400,7 +403,7 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 		// Nested roots are kept, unlike for the walk, so apply refuses to
 		// remove ~/Code itself even though ~ is also a root.
 		Roots:    uniqueRoots(reportRoots),
-		Findings: scan.Filter{Exclude: req.exclude}.Apply(res.Findings),
+		Findings: scan.Filter{Exclude: req.exclude, ExcludeTargets: req.excludeTargets}.Apply(res.Findings),
 		Warnings: warnings,
 		Notes:    notes,
 	}
@@ -457,7 +460,7 @@ func saveReport(path string, r *finding.Report) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("save report %s: %w", path, err)
 	}
-	return plan.WriteFileAtomic(path, append(data, '\n'))
+	return fsx.WriteFileAtomic(path, append(data, '\n'))
 }
 
 // saveLastReport keeps a copy of the report for select. Failing to save it
@@ -471,6 +474,13 @@ func (a *app) saveLastReport(r *finding.Report) {
 	}
 }
 
+// excludedDropped drops the findings the configuration's exclude entries
+// and the ignore list name, as a scan does.
+func excludedDropped(cfg *config.Config, fs []finding.Finding) []finding.Finding {
+	return scan.Filter{Exclude: cfg.ExcludedPaths(), ExcludeTargets: cfg.ExcludedTargets()}.Apply(fs)
+}
+
+// loadReport reads and validates a report file.
 func loadReport(path string) (*finding.Report, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

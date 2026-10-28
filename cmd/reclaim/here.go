@@ -139,12 +139,13 @@ func (a *app) hereCommand(cmd *cobra.Command, args []string, path string, f here
 		return err
 	}
 	report := a.runScan(ctx, reg, scanRequest{
-		scanners: scan.OnlyCategory(selected, finding.CategoryProject),
-		roots:    []string{root},
-		exclude:  cfg.Exclude,
-		walker:   walker,
-		sizes:    treeRes.DirSizes,
-		scope:    scopeOf(cmd, args, []string{root}, []string{root}, "depth", "json", "md", "out"),
+		scanners:       scan.OnlyCategory(selected, finding.CategoryProject),
+		roots:          []string{root},
+		exclude:        cfg.ExcludedPaths(),
+		excludeTargets: cfg.ExcludedTargets(),
+		walker:         walker,
+		sizes:          treeRes.DirSizes,
+		scope:          scopeOf(cmd, args, []string{root}, []string{root}, "depth", "json", "md", "out"),
 	})
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("here interrupted: %w", err)

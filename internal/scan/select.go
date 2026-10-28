@@ -65,6 +65,9 @@ type Filter struct {
 	// lies below one, or contains one, since removing such a finding would
 	// remove the excluded path with it.
 	Exclude []string
+	// ExcludeTargets drops findings whose target an entry such as
+	// docker:<id> or ollama:<model> names.
+	ExcludeTargets []string
 }
 
 // Apply returns the findings that pass the filter, in the same order. A
@@ -78,6 +81,11 @@ func (f Filter) Apply(in []finding.Finding) []finding.Finding {
 			continue
 		}
 		if x.Path != "" && slices.ContainsFunc(f.Exclude, func(ex string) bool { return isWithin(x.Path, ex) || isWithin(ex, x.Path) }) {
+			continue
+		}
+		if slices.ContainsFunc(f.ExcludeTargets, func(e string) bool {
+			return finding.MatchesTargetEntry(e, x.Category == finding.CategoryDocker, x.Target)
+		}) {
 			continue
 		}
 		if len(f.Tiers) > 0 && !slices.Contains(f.Tiers, x.Tier) {

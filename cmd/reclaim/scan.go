@@ -142,7 +142,7 @@ func (a *app) scanCommand(cmd *cobra.Command, args []string, f scanFlags) error 
 	scope := scopeOf(cmd, args, paths, roots,
 		"all", "category", "depth", "docker-label", "json", "md", "min-size", "out", "stale", "tier")
 	report := a.runScan(cmd.Context(), reg, scanRequest{
-		scanners: selected, roots: roots, exclude: cfg.Exclude, depth: f.depth, labels: labels, scope: scope,
+		scanners: selected, roots: roots, exclude: cfg.ExcludedPaths(), excludeTargets: cfg.ExcludedTargets(), depth: f.depth, labels: labels, scope: scope,
 		worktrees: scan.WorktreeOptions{GitHub: cfg.GitHub()},
 	})
 	if err := cmd.Context().Err(); err != nil {

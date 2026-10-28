@@ -162,19 +162,60 @@ func containingRoot(path string, roots []string) string {
 	return best
 }
 
-// checkExcluded refuses a path that is, lies under or contains one of the
-// user's exclude entries, whatever the plan says, so the entries hold at
-// removal time and not only at scan time.
-func checkExcluded(p string, protected []string) error {
-	for _, ex := range protected {
-		ex = filepath.Clean(ex)
-		switch {
-		case p == ex:
-			return fmt.Errorf("refusing %s: it is an exclude entry of your configuration", p)
-		case project.IsWithin(p, ex):
-			return fmt.Errorf("refusing %s: it lies inside the exclude entry %s of your configuration", p, ex)
-		case project.IsWithin(ex, p):
-			return fmt.Errorf("refusing %s: it holds the exclude entry %s of your configuration", p, ex)
+// Exclusions are the user's own entries that apply refuses whatever a plan
+// says: the exclude entries of the configuration and the entries of the
+// ignore list. Each entry is a clean absolute path or a target entry such
+// as docker:<id> or ollama:<model>.
+type Exclusions struct {
+	// Exclude are the exclude entries of the configuration.
+	Exclude []string
+	// Ignore are the entries of the ignore list.
+	Ignore []string
+	// IgnorePath is the ignore list file, which refusals name.
+	IgnorePath string
+}
+
+// notExcluded is the detail of a passed exclude check of a path.
+const notExcluded = "not one of your exclude or ignore entries, inside one or holding one"
+
+// checkExcluded refuses an action whose path p is, lies under or contains
+// a path entry of the user's exclude entries or ignore list, or whose
+// target a target entry names, whatever the plan says, so the entries hold
+// at removal time and not only at scan time. p may be empty for an action
+// on a Docker object.
+func checkExcluded(p string, a *plan.Action, ex Exclusions) error {
+	ignored := "your ignore list"
+	if ex.IgnorePath != "" {
+		ignored += " (" + ex.IgnorePath + ")"
+	}
+	for _, src := range []struct {
+		entries                []string
+		is, inside, has, names string
+	}{
+		{ex.Exclude, "it is an exclude entry of your configuration", "it lies inside the exclude entry %s of your configuration",
+			"it holds the exclude entry %s of your configuration", "the exclude entry %s of your configuration names it"},
+		{ex.Ignore, "it is on " + ignored, "it lies inside %s, which is on " + ignored, "it holds %s, which is on " + ignored,
+			"the entry %s on " + ignored + " names it"},
+	} {
+		for _, e := range src.entries {
+			if finding.IsTargetEntry(e) {
+				if a != nil && finding.MatchesTargetEntry(e, a.Action.IsDocker(), a.Target) {
+					return fmt.Errorf("refusing %s: "+src.names, a.Target, e)
+				}
+				continue
+			}
+			if p == "" {
+				continue
+			}
+			e = filepath.Clean(e)
+			switch {
+			case p == e:
+				return fmt.Errorf("refusing %s: %s", p, src.is)
+			case project.IsWithin(p, e):
+				return fmt.Errorf("refusing %s: "+src.inside, p, e)
+			case project.IsWithin(e, p):
+				return fmt.Errorf("refusing %s: "+src.has, p, e)
+			}
 		}
 	}
 	return nil

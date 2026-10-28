@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -152,16 +153,28 @@ func (a *app) applyOptions(cfg *config.Config, planPath string, log io.Writer, l
 		Log:                log,
 		LogPath:            logPath,
 		PlanPath:           planPath,
-		Protected:          cfg.Exclude,
+		Excluded:           exclusionsOf(cfg),
 		Now:                a.now,
 		Getwd:              a.getwd,
 	}
 }
 
 // protectedFor is the protected list for a plan's roots with the
-// configuration's exclude entries.
+// configuration's exclude entries and the ignore list.
 func (a *app) protectedFor(cfg *config.Config, roots []string) []apply.ProtectedEntry {
-	return apply.ProtectedList(apply.ProtectedOptions{Home: a.home, Roots: roots, Exclude: cfg.Exclude, ConfigPath: cfg.Path})
+	ex := exclusionsOf(cfg)
+	return apply.ProtectedList(apply.ProtectedOptions{Home: a.home, Roots: roots, Exclude: ex.Exclude, ConfigPath: cfg.Path,
+		Ignore: ex.Ignore, IgnorePath: ex.IgnorePath})
+}
+
+// exclusionsOf are the entries apply refuses whatever a plan says: the
+// configuration's exclude entries, paths and targets, and the ignore list.
+func exclusionsOf(cfg *config.Config) apply.Exclusions {
+	ex := apply.Exclusions{Exclude: append(slices.Clone(cfg.Exclude), cfg.ExcludeTargets...)}
+	if cfg.Ignore != nil {
+		ex.Ignore, ex.IgnorePath = slices.Clone(cfg.Ignore.Entries), cfg.Ignore.Path
+	}
+	return ex
 }
 
 // openLog opens the apply log: the file --log names, appended to, or a new

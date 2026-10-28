@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mandloideep/reclaim/internal/apply"
+	"github.com/mandloideep/reclaim/internal/config"
 	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/worktree"
@@ -204,6 +205,18 @@ func TestDoneRemove(t *testing.T) {
 	require.DirExists(t, w["pushed"])
 
 	a.getwd = func() (string, error) { return f.Repo, nil }
+
+	// An entry of the ignore list holds for done --remove too.
+	ignore := config.IgnorePath(a.configPath)
+	_, err = config.EditIgnore(ignore, a.home, []string{w["pushed"]}, nil)
+	require.NoError(t, err)
+	withOutput(a)
+	require.NotEqual(t, 0, exitCode(execute(a, "done", "--remove", "--allow-unmerged", w["pushed"])))
+	require.Contains(t, output(a), "refusing "+w["pushed"]+": it is on your ignore list ("+ignore+")")
+	require.DirExists(t, w["pushed"])
+	_, err = config.EditIgnore(ignore, a.home, nil, []string{w["pushed"]})
+	require.NoError(t, err)
+
 	withOutput(a)
 	require.Equal(t, 0, exitCode(execute(a, "done", "--remove", "--allow-unmerged", w["pushed"])), output(a))
 	require.NoDirExists(t, w["pushed"])

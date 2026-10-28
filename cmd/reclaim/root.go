@@ -98,7 +98,8 @@ func newScannersCmd(a *app) *cobra.Command {
 		// No arguments, so there is nothing to complete.
 		ValidArgsFunction: cobra.NoFileCompletions,
 		Long: "scanners lists every registered scanner with its category, its ecosystem and what it looks for.\n" +
-			"Scanners turned off by [scanners] disable in the config file are marked disabled.",
+			"Scanners turned off by [scanners] disable in the config file are marked disabled, and the last line\n" +
+			"says how many entries the ignore list holds and where it is.",
 		RunE: func(*cobra.Command, []string) error {
 			cfg, err := a.loadConfig()
 			if err != nil {
@@ -123,6 +124,9 @@ func newScannersCmd(a *app) *cobra.Command {
 			}
 			if cfg.Path != "" && len(cfg.Disable) > 0 {
 				a.sayf("\nDisabled in %s.\n", cfg.Path)
+			}
+			if cfg.Ignore != nil {
+				a.sayf("\nIgnore list: %s in %s.\n", plural(len(cfg.Ignore.Entries), "entry", "entries"), cfg.Ignore.Path)
 			}
 			return nil
 		},
