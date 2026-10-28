@@ -86,6 +86,8 @@ func protectedTitle(s apply.ProtectedSource) string {
 		return "Scanned roots"
 	case apply.ProtectedExclude:
 		return "Your exclude entries (config file)"
+	case apply.ProtectedIgnore:
+		return "Your ignore list"
 	default:
 		return string(s)
 	}

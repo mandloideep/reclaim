@@ -215,7 +215,7 @@ func TestFilter(t *testing.T) {
 		{ID: "fresh", Tier: finding.TierA, Size: 100, Category: finding.CategoryProject, LastUsed: now.Add(-24 * time.Hour)},
 		{ID: "stale", Tier: finding.TierA, Size: 100, Category: finding.CategoryProject, LastUsed: now.Add(-200 * 24 * time.Hour), Path: "/c/archive/old/node_modules"},
 		{ID: "cache", Tier: finding.TierB, Size: 100, Category: finding.CategoryPackageCache, LastUsed: now},
-		{ID: "data", Tier: finding.TierC, Size: 100, Category: finding.CategoryDocker},
+		{ID: "data", Tier: finding.TierC, Size: 100, Category: finding.CategoryDocker, Target: "data"},
 	}
 	ids := func(fs []finding.Finding) []string {
 		out := make([]string, 0, len(fs))
@@ -235,12 +235,32 @@ func TestFilter(t *testing.T) {
 		{name: "exclude", filter: Filter{Exclude: []string{"/c/archive", "/c/ap"}}, want: []string{"small", "fresh", "cache", "data"}},
 		{name: "exclude a finding itself", filter: Filter{Exclude: []string{"/c/app/x"}}, want: []string{"fresh", "stale", "cache", "data"}},
 		{name: "exclude inside a finding", filter: Filter{Exclude: []string{"/c/archive/old/node_modules/keep"}}, want: []string{"small", "fresh", "cache", "data"}},
+		{name: "exclude a Docker target", filter: Filter{ExcludeTargets: []string{"docker:data"}}, want: []string{"small", "fresh", "stale", "cache"}},
+		{name: "a model entry names no volume", filter: Filter{ExcludeTargets: []string{"ollama:data"}}, want: []string{"small", "fresh", "stale", "cache", "data"}},
 		{name: "stale only affects projects", filter: Filter{Stale: 90 * 24 * time.Hour, Now: now, MinSize: 10}, want: []string{"stale", "cache", "data"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, ids(tt.filter.Apply(fs)))
 		})
+	}
+}
+
+// TestFilterDropsRegistrationsOfAnExcludedRepository checks a finding with
+// no path of its own: it goes with a repository that is or lies inside an
+// entry, and stays when the repository only holds one, as apply decides.
+func TestFilterDropsRegistrationsOfAnExcludedRepository(t *testing.T) {
+	prune := []finding.Finding{{ID: "prune", Category: finding.CategoryWorktree, Repo: "/c/app", Target: "git-worktree-prune:/c/app"}}
+	for _, tc := range []struct {
+		exclude []string
+		kept    bool
+	}{
+		{[]string{"/c/app"}, false},
+		{[]string{"/c"}, false},
+		{[]string{"/c/app/dist"}, true},
+		{[]string{"/c/application"}, true},
+	} {
+		require.Equal(t, tc.kept, len(Filter{Exclude: tc.exclude}.Apply(prune)) == 1, tc.exclude)
 	}
 }
 

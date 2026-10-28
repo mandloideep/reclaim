@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +58,17 @@ type startScreen struct {
 	edited string
 	input  textinput.Model
 	status string
+
+	// listing shows the ignore list, with listCursor on an entry; asking
+	// is the entry d would take off while its confirmation waits for y,
+	// and writing is set while the list is written.
+	listing    bool
+	listCursor int
+	// listOffset is the first entry shown when the list is longer than
+	// the window.
+	listOffset int
+	asking     string
+	writing    bool
 }
 
 func newStart(m *Model) *startScreen {
@@ -99,6 +112,7 @@ func startHelp() [][2]string {
 		{"g", "ask GitHub about pull requests, or keep the scan offline"},
 		{"p", "type the folder This folder scans"},
 		{"o", "open the last report without scanning"},
+		{"x", "show the ignore list: what is never offered again and apply refuses; d takes an entry off"},
 	}
 }
 
@@ -153,6 +167,9 @@ func (s *startScreen) key(msg tea.KeyMsg) tea.Cmd {
 	if s.editing {
 		return s.editKey(msg)
 	}
+	if s.listing {
+		return s.listKey(msg)
+	}
 	s.status = ""
 	switch msg.String() {
 	case "up", "k":
@@ -185,14 +202,111 @@ func (s *startScreen) key(msg tea.KeyMsg) tea.Cmd {
 		s.input.SetValue(s.edited)
 		s.input.CursorEnd()
 		return s.input.Focus()
+	case "x":
+		s.listing, s.listCursor = true, 0
 	case "o":
 		if s.m.lastReport == nil {
 			s.status = "There is no last report yet; enter scans."
 			return nil
 		}
-		s.m.openReview(s.m.lastReport, false)
+		s.m.openReview(s.m.lastReport, s.m.lastFolder, false)
 	}
 	return nil
+}
+
+// listKey handles the keys of the ignore list: moving, d with its one
+// line confirmation, and esc or x back to the Start screen.
+func (s *startScreen) listKey(msg tea.KeyMsg) tea.Cmd {
+	if s.writing {
+		return nil
+	}
+	if s.asking != "" {
+		entry := s.asking
+		s.asking = ""
+		if msg.String() != "y" {
+			s.status = "Kept on the ignore list."
+			return nil
+		}
+		s.writing = true
+		s.status = "Taking it off the ignore list..."
+		return s.m.changeIgnore(nil, []string{entry})
+	}
+	s.status = ""
+	switch msg.String() {
+	case "up", "k":
+		s.listCursor = max(s.listCursor-1, 0)
+	case "down", "j":
+		s.listCursor = max(min(s.listCursor+1, len(s.m.ignore)-1), 0)
+	case "d":
+		if len(s.m.ignore) == 0 {
+			s.status = "There is nothing to take off; x on the Review screen adds to the list."
+			return nil
+		}
+		s.asking = s.m.ignore[s.listCursor]
+		s.status = "Take " + s.m.path(s.asking) + " off the ignore list, so scans offer it again? y takes it off, any other key keeps it."
+	case "esc", "x":
+		s.listing = false
+	}
+	return nil
+}
+
+// ignored ends a change of the ignore list made from it.
+func (s *startScreen) ignored(msg ignoredMsg) {
+	s.writing = false
+	if msg.err != nil {
+		s.status = "The ignore list was not written: " + msg.err.Error()
+		return
+	}
+	s.listCursor = max(min(s.listCursor, len(s.m.ignore)-1), 0)
+	if len(msg.dropped) > 0 {
+		s.status = "Took " + s.m.path(msg.dropped[0]) + " off the ignore list; the next scan offers it again."
+	}
+}
+
+// listView shows the ignore list with the cursor on an entry.
+func (s *startScreen) listView() frame {
+	st := s.m.st
+	var b []string
+	b = append(b, "  "+st.bold.Render("Ignore list")+"   "+st.dim.Render(s.m.path(s.m.opts.IgnorePath)))
+	for _, l := range wrapText("Never offered again, and apply refuses them whatever a plan says. x on the Review screen adds to it; "+
+		"the file can be edited by hand too.", s.m.width-2) {
+		b = append(b, "  "+st.dim.Render(l))
+	}
+	b = append(b, "")
+	var tail []string
+	if s.status != "" {
+		tail = append(tail, "")
+		for _, l := range wrapText(s.status, s.m.width-2) {
+			tail = append(tail, "  "+st.warn.Render(l))
+		}
+	}
+	footer := s.m.footer(st.keys("up/down", "move", "d", "take off the list", "esc", "back", "?", "help", "q", "quit"))
+	if len(s.m.ignore) == 0 {
+		b = append(b, "  The ignore list is empty.")
+	}
+	// A long list scrolls with the cursor; the last line says where it is.
+	entries := s.m.ignore
+	room := max(s.m.bodyHeight(len(footer))-len(b)-len(tail), 1)
+	scrolls := len(entries) > room
+	if scrolls {
+		room = max(room-1, 1)
+		s.listOffset = min(max(s.listOffset, s.listCursor-room+1), s.listCursor, len(entries)-room)
+	} else {
+		s.listOffset = 0
+	}
+	shown := entries[s.listOffset:min(s.listOffset+room, len(entries))]
+	for i, e := range shown {
+		marker := "    "
+		if s.listOffset+i == s.listCursor {
+			marker = "  " + st.cursor.Render(">") + " "
+		}
+		b = append(b, marker+s.m.path(e))
+	}
+	if scrolls {
+		b = append(b, st.dim.Render(fmt.Sprintf("    entries %d to %d of %d; up and down scroll", s.listOffset+1, s.listOffset+len(shown), len(entries))))
+	}
+	b = append(b, tail...)
+	return frame{title: "reclaim", facts: s.m.opts.Version, body: strings.Join(b, "\n"), footer: footer}
 }
 
 func (s *startScreen) editKey(msg tea.KeyMsg) tea.Cmd {
@@ -259,6 +373,9 @@ func nextStep[T int64 | time.Duration](steps []T, v T) T {
 }
 
 func (s *startScreen) view() frame {
+	if s.listing {
+		return s.listView()
+	}
 	st := s.m.st
 	var b strings.Builder
 	line := func(l string) { b.WriteString(l + "\n") }
@@ -327,7 +444,7 @@ func (s *startScreen) view() frame {
 		}
 	}
 	footer := s.m.footer(st.keys("enter", "scan", "space", "toggle", "m", "min size", "s", "stale", "g", "github", "p", "path",
-		"o", "open last report", "P", "protected", "?", "help", "q", "quit"))
+		"o", "open last report", "x", "ignored", "P", "protected", "?", "help", "q", "quit"))
 	if s.editing {
 		footer = s.m.footer(st.keys("enter", "use this folder", "esc", "keep the old one"))
 	}
@@ -439,7 +556,8 @@ func (s *startScreen) settings() []string {
 	if s.github {
 		github = "on"
 	}
-	return []string{size, "Stale projects only: " + stale, "Ask GitHub about pull requests: " + github}
+	return []string{size, "Stale projects only: " + stale, "Ask GitHub about pull requests: " + github,
+		"Ignored: " + strconv.Itoa(len(s.m.ignore))}
 }
 
 func staleWords(d time.Duration) string {

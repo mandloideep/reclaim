@@ -7,9 +7,9 @@ Run `reclaim` with no arguments in a terminal and one screen walks you through i
 
 ![The reclaim review screen: findings grouped by category and project with tier A ticked, a repository's worktrees with their merge state and pull requests, and the details of the selected build folder on the right](docs/screenshots/ui-review.svg)
 
-Status: phases 1 to 4 are complete, and phase 5, the interactive screen, is in progress.
+Status: phases 1 to 5 are complete.
 `scan`, `here`, `select`, `apply`, `worktrees` and `done` work on macOS and Linux, with table, JSON and Markdown output, an interactive checklist, a config file, shell completion, release binaries, a Homebrew formula, an install script and a skill for coding agents.
-The screen scans, reviews, saves the plan, checks it and, once you type `yes`, removes it, all with the same code as the commands below; the ignore list and the folder tab come next.
+The interactive screen scans, reviews, saves the plan, checks it and, once you type `yes`, removes it, all with the same code as the commands below.
 Windows is not supported.
 [docs/DESIGN.md](docs/DESIGN.md) is the specification.
 
@@ -115,6 +115,7 @@ reclaim
 Opens the interactive screen; `reclaim` alone does the same when standard input and output are a terminal, and prints the help otherwise, so `reclaim | cat` keeps working.
 The Start screen chooses what to look at: the whole machine, one folder, which is the current one unless you type another with `p`, or the git worktrees alone.
 It also ticks the scanner categories, the minimum size (`m`), the stale filter (`s`) and whether GitHub is asked about pull requests (`g`), and `o` opens the last report without scanning.
+`x` shows the ignore list, what reclaim never offers again, and `d` there takes an entry off it.
 
 ![The reclaim start screen with the whole machine selected, every scanner category ticked and the last report named](docs/screenshots/ui-start.svg)
 
@@ -124,6 +125,11 @@ While the scan runs, one row per category says what it is doing and what it has 
 
 The Review screen is the checklist of `select` with a details pane: the full path, the tier in words, the restore command, the root and project apply checks it against, what apply checks before removing it and the exact action, and for a worktree everything the worktree scanner found, with the commands that save its work.
 `n` clears the selection, `i` hides the details and `J` and `K` scroll them, `w` writes the plan to `--out` and quits, and `c` saves the plan in the reclaim cache folder and continues to Confirm.
+`x` puts the finding, or every finding of a group, on the ignore list after a one line confirmation, so no scan offers it again and `apply` refuses it.
+
+One folder is measured the way `reclaim here` measures it, in one walk, and `tab` switches to its breakdown: the entries by size with what is reclaimable inside each, the tier of the ones that are findings and the state of linked worktrees, ticked in the same selection.
+
+![The reclaim folder tab: the storefront project by size, its worktrees folder open with each worktree's state, and the details of the merged one on the right](docs/screenshots/ui-folder.svg)
 
 The Confirm screen lists the plan the way `reclaim apply` does, says what is checked before every removal, and asks you to type `yes`.
 `d` runs every check of every action without removing anything and marks each row ok, gone, manual or refused, with the checks of a worktree's proof by name, so a refusal shows before you confirm.
@@ -140,6 +146,8 @@ When the screen closes it prints what every run removed, and reclaim exits 1 whe
 The screen itself never removes anything.
 
 It takes the flags of `scan`, `--min-size`, `--category`, `--stale`, `--depth`, `--all` and `--docker-label`, which prefill the Start screen, and `--out plan.json`.
+For one folder `--depth` is the depth of its breakdown, three levels by default.
+`--report report.json` opens the Review screen on a saved report without scanning, as `select --report` does.
 
 ### scan
 
@@ -211,7 +219,7 @@ Prints every action with its size, asks you to type `yes`, then carries the acti
 - `--log apply.log` appends the log to that file instead of a new one in the reclaim cache folder.
 - `--dry-run` runs every check of every action and removes nothing: it prints what reclaim never removes, then one line per action, checked, gone, manual or refused with the reason, needs no `yes` and writes a log marked as a dry run.
 
-Apply also refuses any target that is, lies inside or holds an `exclude` entry of the config file, whatever the plan says.
+Apply also refuses any target that is, lies inside or holds an `exclude` entry of the config file or an entry of the ignore list, or that a target entry names, whatever the plan says.
 
 ### worktrees
 
@@ -273,7 +281,7 @@ Every key is optional, flags override the file, and an unknown key is an error t
 
 ```toml
 roots = ["~/Code", "~/Downloads"]   # replaces the default scan roots
-exclude = ["~/Code/archive"]        # never walked, never offered, refused by apply
+exclude = ["~/Code/archive", "docker:pgdata"]  # never walked, never offered, refused by apply
 min_size = "20MB"                   # default for --min-size
 stale = "60d"                       # default for --stale
 
@@ -283,6 +291,10 @@ disable = ["ollama"]                # names, categories or ecosystems, as in rec
 [worktrees]
 github = true                       # ask gh for pull requests; false keeps reclaim offline
 ```
+
+`exclude` takes paths and target entries: `docker:<id>` for a container or image, by its id or its first 12 hex digits, or a volume by name, and `ollama:<model>` for a model.
+The ignore list, a file named `ignore` next to `config.toml`, holds one entry per line of the same kinds, with `#` comments; the screen adds to it with `x` and takes entries off with `d`, and it can be edited by hand.
+Every command treats its entries exactly as `exclude` entries, and `reclaim scanners` says how many it holds and where it is.
 
 ## For agents
 

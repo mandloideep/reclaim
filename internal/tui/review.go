@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -31,16 +32,29 @@ type reviewScreen struct {
 	detailOffset int
 	status       string
 	saving       bool
+
+	// folder is the folder tab of "This folder" mode, nil in the other
+	// modes, and onFolder whether it is the tab shown.
+	folder   *folderTab
+	onFolder bool
+	// asking holds the entries x would add while the one line
+	// confirmation waits for y, and writing is set while they are written.
+	asking  []string
+	writing bool
 }
 
-func newReview(m *Model, r *finding.Report, interrupted bool) *reviewScreen {
-	return &reviewScreen{
+func newReview(m *Model, r *finding.Report, folder *Folder, interrupted bool) *reviewScreen {
+	s := &reviewScreen{
 		m:           m,
 		report:      r,
 		tree:        ui.NewTree(r, ui.TreeOptions{Home: m.opts.Home, Renderer: m.opts.Renderer, Now: m.opts.Now(), Warnings: true}),
 		interrupted: interrupted,
 		showDetails: true,
 	}
+	if folder != nil {
+		s.folder = newFolderTab(s, folder)
+	}
+	return s
 }
 
 func reviewHelp() [][2]string {
@@ -55,21 +69,40 @@ func reviewHelp() [][2]string {
 		{"n", "select nothing"},
 		{"i", "show or hide the details"},
 		{"J/K", "scroll the details down and up, one line each"},
+		{"x", "add the finding, or every finding of the group, to the ignore list, after a one line confirmation; " +
+			"x on the Start screen lists it, where d takes an entry off"},
+		{"tab", "in This folder mode, switch between the findings and the folder breakdown, which share the selection"},
 		{"w", "write the plan to the --out file and quit, to read or edit it first"},
 		{"c", "continue to Confirm: save the plan, read it, check it and type yes"},
 	}
 }
 
 func (s *reviewScreen) key(msg tea.KeyMsg) tea.Cmd {
-	if s.saving {
+	if s.saving || s.writing {
 		return nil
 	}
+	if len(s.asking) > 0 {
+		return s.answer(msg)
+	}
 	s.status = ""
-	if handled, cmd := s.tree.HandleKey(msg); handled {
+	// tab switches only while no filter is typed, which owns every key.
+	if msg.String() == "tab" && s.folder != nil && !s.tree.Filtering() {
+		s.onFolder = !s.onFolder
+		s.detailOffset = 0
+		return nil
+	}
+	if s.onFolder {
+		if s.folder.key(msg) {
+			s.detailOffset = 0
+			return nil
+		}
+	} else if handled, cmd := s.tree.HandleKey(msg); handled {
 		s.detailOffset = 0
 		return cmd
 	}
 	switch msg.String() {
+	case "x":
+		s.askIgnore()
 	case "n":
 		n := s.tree.SelectNone()
 		s.status = "cleared " + plural(n, "item", "items")
@@ -110,6 +143,96 @@ func (s *reviewScreen) key(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+// askIgnore asks, on the status line, whether to put what the cursor is on
+// on the ignore list: a finding, every finding of a group, or on the
+// folder tab the entry's path.
+func (s *reviewScreen) askIgnore() {
+	var entries []string
+	var what string
+	if s.onFolder {
+		e := s.folder.current()
+		if e == nil {
+			return
+		}
+		entries, what = []string{e.Path}, s.m.path(e.Path)
+	} else {
+		it := s.tree.Current()
+		if it.Kind != ui.TreeFinding && it.Kind != ui.TreeGroup {
+			s.status = "x ignores a finding, or every finding of a group; move to one first."
+			return
+		}
+		fs := s.tree.CurrentFindings()
+		var skipped int
+		entries, skipped = ignoreEntries(fs)
+		switch {
+		case len(entries) == 0 && skipped > 0:
+			s.status = "Stale worktree registrations have no path to ignore; leave them unticked instead."
+			return
+		case len(entries) == 0:
+			s.status = "Nothing below this row can be ignored."
+			return
+		case it.Kind == ui.TreeFinding && finding.IsTargetEntry(entries[0]):
+			what = it.Finding.DisplayName() + " (" + entries[0] + ")"
+		case it.Kind == ui.TreeFinding:
+			what = s.m.path(entries[0])
+		default:
+			what = "the " + plural(len(entries), "item", "items") + " of " + it.Group.Title
+		}
+	}
+	s.asking = entries
+	// A path entry also stops offering what holds it, such as the worktree
+	// a node_modules lies in, so the question says so.
+	also := ""
+	if n := s.othersIgnored(entries); n > 0 {
+		also = " It also stops offering " + plural(n, "other finding", "other findings") + " that " + map[bool]string{true: "holds", false: "hold"}[n == 1] + " it."
+	}
+	s.status = "Ignore " + what + " from now on?" + also + " y adds it to the ignore list, any other key keeps it; x on the Start screen undoes it."
+}
+
+// othersIgnored counts the findings the entries would drop besides the
+// ones they were made from.
+func (s *reviewScreen) othersIgnored(entries []string) int {
+	n := 0
+	for _, f := range s.tree.Findings() {
+		if e, ok := finding.EntryFor(&f); ok && slices.Contains(entries, e) {
+			continue
+		}
+		if excludedBy(entries, &f) {
+			n++
+		}
+	}
+	return n
+}
+
+// answer takes the key that answers the confirmation of x: y writes the
+// entries to the ignore list, any other key keeps everything as it was.
+func (s *reviewScreen) answer(msg tea.KeyMsg) tea.Cmd {
+	entries := s.asking
+	s.asking = nil
+	if msg.String() != "y" {
+		s.status = "Nothing was added to the ignore list."
+		return nil
+	}
+	s.writing = true
+	s.status = "Adding to the ignore list..."
+	return s.m.changeIgnore(entries, nil)
+}
+
+// ignored drops from both tabs what the entries just added name, or says
+// why the list was not written.
+func (s *reviewScreen) ignored(msg ignoredMsg) {
+	s.writing = false
+	if msg.err != nil {
+		s.status = "The ignore list was not written: " + msg.err.Error()
+		return
+	}
+	n := s.tree.Drop(func(f *finding.Finding) bool { return excludedBy(msg.added, f) })
+	if s.folder != nil {
+		s.folder.index()
+	}
+	s.status = "On the ignore list now, " + plural(n, "finding", "findings") + " no longer offered; x on the Start screen lists it, where d takes an entry off."
+}
+
 // planSaved ends the screen once the plan is saved, or says why it was not.
 func (s *reviewScreen) planSaved(msg planSavedMsg) {
 	s.saving = false
@@ -143,7 +266,19 @@ func (s *reviewScreen) layout(listHeight int) (listW, listH, detailW, detailH in
 func (s *reviewScreen) view() frame {
 	st := s.m.st
 	var head []string
-	head = append(head, s.tree.FilterLine())
+	if s.folder != nil {
+		findings, folder := st.bold.Render("Findings"), st.dim.Render("Folder "+s.m.path(s.folder.folder.Path))
+		if s.onFolder {
+			findings, folder = st.dim.Render("Findings"), st.bold.Render("Folder "+s.m.path(s.folder.folder.Path))
+		}
+		head = append(head, findings+"   "+folder+st.dim.Render("   tab switches"))
+	}
+	if s.onFolder {
+		head = append(head, st.dim.Render(fmt.Sprintf("%s in all, %s reclaimable inside", sizeText(s.folder.folder.Size),
+			sizeText(s.folder.reclaimable()))))
+	} else {
+		head = append(head, s.tree.FilterLine())
+	}
 	if s.interrupted {
 		for _, l := range wrapText("The scan was stopped before it finished: these are the findings so far, and the warnings say what was not scanned.", s.m.width) {
 			head = append(head, st.warn.Render(l))
@@ -155,7 +290,11 @@ func (s *reviewScreen) view() frame {
 		}
 	}
 	footer := s.m.footer(st.keys("space", "toggle", "enter", "open", "/", "filter", "t", "tier", "s", "sort", "a", "all tier A",
-		"n", "none", "i", "details", "w", "save plan", "c", "continue", "?", "help"))
+		"n", "none", "x", "ignore", "i", "details", "w", "save plan", "c", "continue", "?", "help"))
+	if s.onFolder {
+		footer = s.m.footer(st.keys("space", "toggle", "enter", "open", "x", "ignore", "tab", "findings", "i", "details",
+			"w", "save plan", "c", "continue", "?", "help"))
+	}
 	if s.tree.Filtering() {
 		footer = s.m.footer(st.keys("enter", "keep the filter", "esc", "clear it"))
 	}
@@ -163,8 +302,13 @@ func (s *reviewScreen) view() frame {
 	// line and the selection line.
 	listHeight := max(s.m.bodyHeight(len(footer))-len(head)-3, 3)
 	listW, listH, detailW, detailH, beside := s.layout(listHeight)
-	s.tree.SetSize(listW, listH)
-	list := strings.Split(s.tree.View(), "\n")
+	var list []string
+	if s.onFolder {
+		list = s.folder.view(listW, listH)
+	} else {
+		s.tree.SetSize(listW, listH)
+		list = strings.Split(s.tree.View(), "\n")
+	}
 
 	var body []string
 	body = append(body, head...)
@@ -205,7 +349,11 @@ func (s *reviewScreen) view() frame {
 func (s *reviewScreen) pane(width, height int) []string {
 	st := s.m.st
 	var out []string
-	for _, l := range s.m.details(s.report, s.tree.Current()) {
+	lines := s.m.details(s.report, s.tree.Current())
+	if s.onFolder {
+		lines = s.folder.details()
+	}
+	for _, l := range lines {
 		for _, w := range wrapText(l.text, width) {
 			switch l.style {
 			case boldLine:

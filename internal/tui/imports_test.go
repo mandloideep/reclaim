@@ -102,19 +102,23 @@ func TestScreensCannotRemoveAnything(t *testing.T) {
 	require.Positive(t, checked)
 
 	// The backend scans, renders the protected list, saves a plan, reads
-	// the free space and applies a plan. The only method that removes
-	// anything is Apply, and the only thing it takes besides the context,
-	// the dry run flag and the progress callbacks is the path of a plan.
+	// the free space, applies a plan and writes the ignore list. The only
+	// method that removes anything is Apply, and the only thing it takes
+	// besides the context, the dry run flag and the progress callbacks is
+	// the path of a plan. Ignore takes entries to add and drop and returns
+	// the list; it has no context, no plan and nothing to run.
 	backend := reflect.TypeFor[Backend]()
 	methods := make([]string, 0, backend.NumMethod())
 	for i := range backend.NumMethod() {
 		methods = append(methods, backend.Method(i).Name)
 	}
-	require.Equal(t, []string{"Apply", "FreeSpace", "Protected", "SavePlan", "Scan"}, methods)
+	require.Equal(t, []string{"Apply", "FreeSpace", "Ignore", "Protected", "SavePlan", "Scan"}, methods)
 	applyMethod, _ := backend.MethodByName("Apply")
 	in := make([]string, 0, applyMethod.Type.NumIn())
 	for i := range applyMethod.Type.NumIn() {
 		in = append(in, applyMethod.Type.In(i).String())
 	}
 	require.Equal(t, []string{"context.Context", "string", "bool", "apply.Progress"}, in)
+	ignoreMethod, _ := backend.MethodByName("Ignore")
+	require.Equal(t, "func([]string, []string) ([]string, error)", ignoreMethod.Type.String())
 }

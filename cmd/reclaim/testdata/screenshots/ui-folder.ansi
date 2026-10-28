@@ -1,0 +1,22 @@
+[1mReview[0m                                              [2mreclaim here ~/Code/storefront, just now: 5 findings, 2.0 GB reclaimable[0m
+
+[2mFindings[0m   [1mFolder ~/Code/storefront[0m[2m   tab switches[0m
+[2m2.1 GB in all, 2.0 GB reclaimable inside[0m
+[2mIt covers only ~/Code/storefront, not the whole machine; run reclaim scan for everything.[0m
+
+  [x] [1;32mA[0m    1.2 GB  ▸ node_modules/                                               [2m│[0m [1m~/Code/storefront/.claude/worktrees/agent[0m
+  [x] [1;32mA[0m  412.0 MB  ▸ .next/                                                      [2m│[0m [1m-3f9c1e2a[0m
+         368.0 MB  ▾ .claude/  [2m280.0 MB reclaimable inside[0m                       [2m│[0m claude-code fix/checkout-rounding
+         368.0 MB    ▾ worktrees/  [2m280.0 MB reclaimable inside[0m                   [2m│[0m 184.0 MB, tier A: committed, pushed and
+[7m>[0m [x] [1;32mA[0m  184.0 MB        agent-3f9c1e2a/  [2mcommitted, pushed, merged[0m              [2m│[0m merged, so the work is in the default
+  [ ] [1;33mB[0m   96.0 MB        agent-7b2d40aa/  [2mcommitted, pushed, not merged[0m          [2m│[0m branch
+          88.0 MB        agent-c0ffee12/  [2mcommitted, pushed, not merged, in use [0m [2m│[0m Scanner: git-worktrees
+  [x] [1;32mA[0m   38.0 MB  ▸ dist/                                                       [2m│[0m Restore: git -C ~/Code/storefront
+           3.0 MB  ▸ public/                                                     [2m│[0m worktree add
+           2.4 MB  ▸ .git/                                                       [2m│[0m ~/Code/storefront/.claude/worktrees/agent
+          12.0 kB  ▸ src/                                                        [2m│[0m -3f9c1e2a fix/checkout-rounding; the
+             34 B    package.json                                                [2m│[0m branch stays; delete it with git -C
+                                                                                 [2m│[0m [2m... J scrolls down[0m
+
+[1mSelected: 4 items, 1.9 GB[0m[2m   w writes plan.json   c continues[0m
+[1mspace[0m toggle  [1menter[0m open  [1mx[0m ignore  [1mtab[0m findings  [1mi[0m details  [1mw[0m save plan  [1mc[0m continue  [1m?[0m help

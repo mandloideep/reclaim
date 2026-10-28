@@ -38,6 +38,10 @@ func (r *runner) closeDocker() {
 // this is a dry run, removes it, never forcing.
 func (r *runner) dockerAction(ctx context.Context, a *plan.Action) Outcome {
 	var c checks
+	if err := checkExcluded("", a, r.opts.Excluded); err != nil {
+		return c.fail(CheckExcluded, err)
+	}
+	c.pass(CheckExcluded, "not one of your exclude or ignore entries")
 	cli, err := r.client()
 	if err != nil {
 		return c.fail(CheckDaemon, err)

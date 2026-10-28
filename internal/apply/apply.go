@@ -134,9 +134,11 @@ type Options struct {
 	// DryRun runs every check of every action and removes nothing: it stops
 	// right before each action would change anything. It implies KeepGoing.
 	DryRun bool
-	// Protected are the user's exclude entries. Apply refuses a target that
-	// is, lies under or contains one, whatever the plan says.
-	Protected []string
+	// Excluded are the user's own entries, the configuration's exclude
+	// entries and the ignore list. Apply refuses a target that is, lies
+	// under or contains a path entry, or that a target entry names,
+	// whatever the plan says.
+	Excluded Exclusions
 	// Now returns the current time. Nil uses time.Now.
 	Now func() time.Time
 	// Progress reports the run at both edges of every action.
@@ -280,6 +282,12 @@ func (r *runner) one(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome 
 		err := fmt.Errorf("refusing %s: action %q cannot be applied", a.Label(), a.Action)
 		o = Outcome{Err: err, Checks: []Check{{Name: CheckAction, Detail: err.Error()}}}
 	case a.NeedsSudo:
+		// Nothing runs, but a command the user asked reclaim to keep is not
+		// printed for them to run either.
+		if err := checkExcluded(a.Path, a, r.opts.Excluded); err != nil {
+			o = Outcome{Err: err, Checks: []Check{{Name: CheckExcluded, Detail: err.Error()}}}
+			break
+		}
 		return Outcome{Action: *a, Status: StatusManual,
 			Checks: []Check{{Name: CheckSudo, OK: true, Detail: "needs administrator rights: printed for you, never run"}}}
 	default:
@@ -334,10 +342,10 @@ func (r *runner) removePath(ctx context.Context, p *plan.Plan, a *plan.Action) O
 	}
 	root := containingRoot(a.Path, p.Roots)
 	c.pass(CheckRules, "inside the root "+root+"; not protected, not a root or the project root")
-	if err := checkExcluded(a.Path, r.opts.Protected); err != nil {
+	if err := checkExcluded(a.Path, a, r.opts.Excluded); err != nil {
 		return c.fail(CheckExcluded, err)
 	}
-	c.pass(CheckExcluded, "not one of your exclude entries, inside one or holding one")
+	c.pass(CheckExcluded, notExcluded)
 	checked, err := os.Lstat(a.Path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return c.gone(CheckObject, a.Path+" no longer exists")
@@ -474,11 +482,13 @@ func (r *runner) runCommand(ctx context.Context, a *plan.Action) Outcome {
 		return c.fail(CheckAllowed, fmt.Errorf("refusing command %q: not an allowed clean command", cmdline))
 	}
 	c.pass(CheckAllowed, cmdline)
+	if err := checkExcluded(a.Path, a, r.opts.Excluded); err != nil {
+		return c.fail(CheckExcluded, err)
+	}
 	if a.Path != "" {
-		if err := checkExcluded(a.Path, r.opts.Protected); err != nil {
-			return c.fail(CheckExcluded, err)
-		}
-		c.pass(CheckExcluded, "the folder it cleans is not one of your exclude entries, inside one or holding one")
+		c.pass(CheckExcluded, "the folder it cleans is not one of your exclude or ignore entries, inside one or holding one")
+	} else {
+		c.pass(CheckExcluded, "its target is not one of your exclude or ignore entries")
 	}
 	if r.opts.Exec == nil {
 		return c.fail(CheckTool, errors.New("no command runner configured"))

@@ -237,7 +237,7 @@ func checkWorktreePath(ctx context.Context, opts Options, roots []string, a *pla
 	if err := checkProtected(a.Path, opts.Home, a.Repo, roots); err != nil {
 		return nil, 0, err
 	}
-	if err := checkExcluded(a.Path, opts.Protected); err != nil {
+	if err := checkExcluded(a.Path, a, opts.Excluded); err != nil {
 		return nil, 0, err
 	}
 	info, err := os.Lstat(a.Path)
@@ -388,7 +388,10 @@ func (r *runner) pruneWorktrees(ctx context.Context, a *plan.Action) Outcome {
 	if resolved, err := filepath.EvalSymlinks(a.Repo); err != nil || resolved != a.Repo {
 		return c.fail(CheckRepo, fmt.Errorf("refusing to prune %s: the path goes through a symbolic link", a.Repo))
 	}
-	if err := checkExcluded(a.Repo, r.opts.Protected); err != nil {
+	// A prune touches only the registrations under .git, so an entry
+	// inside the repository does not stop it; the repository being or
+	// lying inside one does.
+	if err := excludedAt(a.Repo, a, r.opts.Excluded, false); err != nil {
 		return c.fail(CheckRepo, err)
 	}
 	c.pass(CheckRepo, "a repository, no symbolic link in its path, not excluded")

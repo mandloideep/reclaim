@@ -75,7 +75,14 @@ type TreeOptions struct {
 	// DirSizes records the size of every directory in Result.DirSizes, so
 	// callers can look up any subtree without walking it again.
 	DirSizes bool
+	// Progress, when set, is called from the walk's goroutines with the
+	// number of directories seen so far, every ProgressEvery directories.
+	Progress func(dirs int64)
 }
+
+// ProgressEvery is how many directories a walk sees between two calls of
+// TreeOptions.Progress.
+const ProgressEvery = 500
 
 // Node is one entry of a size tree built by Walker.Tree.
 type Node struct {
@@ -153,6 +160,7 @@ type walk struct {
 	w        *Walker
 	maxDepth int
 	dirSizes bool
+	progress func(int64)
 	rootDev  uint64
 	haveDev  bool
 	root     string
@@ -191,7 +199,7 @@ func (w *Walker) walk(ctx context.Context, root string, opts TreeOptions) (*Node
 		return nil, Result{}, fmt.Errorf("measure %s: %w", root, ctx.Err())
 	}
 	defer func() { <-w.sem }()
-	wk := &walk{ctx: ctx, w: w, maxDepth: opts.Depth, dirSizes: opts.DirSizes, root: root, seen: map[[2]uint64]struct{}{}}
+	wk := &walk{ctx: ctx, w: w, maxDepth: opts.Depth, dirSizes: opts.DirSizes, progress: opts.Progress, root: root, seen: map[[2]uint64]struct{}{}}
 	if st, ok := w.statFn(info); ok {
 		wk.rootDev, wk.haveDev = st.dev, true
 	}
@@ -262,7 +270,9 @@ func (wk *walk) dir(path string, chain []*Node, depth int) {
 				wk.addMount(child)
 				continue
 			}
-			wk.dirs.Add(1)
+			if n := wk.dirs.Add(1); wk.progress != nil && n%ProgressEvery == 0 {
+				wk.progress(n)
+			}
 			childChain := chain
 			if withNodes || wk.dirSizes {
 				n := &Node{Name: e.Name(), Path: child, IsDir: true}

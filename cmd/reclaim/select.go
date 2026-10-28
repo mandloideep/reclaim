@@ -63,6 +63,13 @@ func (a *app) selectCommand(cmd *cobra.Command, f selectFlags) error {
 		}
 		return err
 	}
+	cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+	// An entry added to exclude or the ignore list after the scan holds
+	// here too, so it never enters a plan.
+	report.Findings = excludedDropped(cfg, report.Findings)
 	p := a.printer()
 	provenance := p.Provenance(report)
 	a.sayf("%s\n", provenance)

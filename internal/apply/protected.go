@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/project"
 )
 
@@ -24,13 +25,16 @@ const (
 	ProtectedRoot ProtectedSource = "scan root"
 	// ProtectedExclude is an exclude entry of the configuration file.
 	ProtectedExclude ProtectedSource = "exclude in config"
+	// ProtectedIgnore is an entry of the ignore list.
+	ProtectedIgnore ProtectedSource = "ignore list"
 )
 
 // ProtectedEntry is one thing reclaim never removes, in words.
 type ProtectedEntry struct {
 	// Source says where the entry comes from.
 	Source ProtectedSource
-	// Path is the protected path, empty for a rule.
+	// Path is the protected path or target entry, such as docker:<id>,
+	// empty for a rule.
 	Path string
 	// Text says what is protected and how.
 	Text string
@@ -42,16 +46,22 @@ type ProtectedOptions struct {
 	Home string
 	// Roots are the roots of the scan or of the plan.
 	Roots []string
-	// Exclude are the exclude entries of the configuration.
+	// Exclude are the exclude entries of the configuration, paths and
+	// target entries.
 	Exclude []string
 	// ConfigPath is the configuration file the exclude entries come from.
 	ConfigPath string
+	// Ignore are the entries of the ignore list, paths and target entries.
+	Ignore []string
+	// IgnorePath is the ignore list file.
+	IgnorePath string
 }
 
 // ProtectedList renders in words the tables and rules the path checks of
 // apply use, so a screen that shows it cannot drift from what apply does:
 // the system paths, the protected folders of the home directory, the rules
-// that name no single path, the roots, and the user's exclude entries.
+// that name no single path, the roots, and the user's exclude and ignore
+// entries.
 func ProtectedList(opts ProtectedOptions) []ProtectedEntry {
 	var out []ProtectedEntry
 	for _, p := range protectedSystemPaths() {
@@ -84,12 +94,24 @@ func ProtectedList(opts ProtectedOptions) []ProtectedEntry {
 		out = append(out, ProtectedEntry{Source: ProtectedRoot, Path: filepath.Clean(r),
 			Text: "never removed itself, nor any folder that contains it; what reclaim removes lies inside a root"})
 	}
-	for _, ex := range opts.Exclude {
+	out = append(out, userEntries(ProtectedExclude, opts.Exclude, opts.ConfigPath)...)
+	out = append(out, userEntries(ProtectedIgnore, opts.Ignore, opts.IgnorePath)...)
+	return out
+}
+
+// userEntries renders the user's own exclude or ignore entries, set in the
+// file at from.
+func userEntries(src ProtectedSource, entries []string, from string) []ProtectedEntry {
+	out := make([]ProtectedEntry, 0, len(entries))
+	for _, e := range entries {
 		text := "the scan never enters it, and apply refuses any target that is it, lies inside it or holds it"
-		if opts.ConfigPath != "" {
-			text += "; set in " + opts.ConfigPath
+		if finding.IsTargetEntry(e) {
+			text = "never offered, and apply refuses the object it names"
 		}
-		out = append(out, ProtectedEntry{Source: ProtectedExclude, Path: ex, Text: text})
+		if from != "" {
+			text += "; set in " + from
+		}
+		out = append(out, ProtectedEntry{Source: src, Path: e, Text: text})
 	}
 	return out
 }
