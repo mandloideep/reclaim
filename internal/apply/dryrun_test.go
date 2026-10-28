@@ -189,3 +189,37 @@ func TestCheckExcluded(t *testing.T) {
 	require.NoError(t, checkExcluded("/Users/me/Code/archived/node_modules", ex), "a sibling with a longer name is not inside")
 	require.NoError(t, checkExcluded("/Users/me/Code/web/node_modules", nil))
 }
+
+// TestDryRunCountsFoldersEmptiedByEarlierActions checks a folder removed
+// once empty, such as a Codex task folder: a dry run counts it empty when
+// all it holds is removed by actions before it that passed their checks, as
+// the real run will find it, and refuses it otherwise.
+func TestDryRunCountsFoldersEmptiedByEarlierActions(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(task string)
+		dry   []Status
+		real  []Status
+	}{
+		{"emptied by the action before it", func(string) {}, []Status{StatusChecked, StatusChecked}, []Status{StatusDone, StatusDone}},
+		{"also holds a file no action removes", func(task string) { write(t, filepath.Join(task, "notes.txt"), 1) },
+			[]Status{StatusChecked, StatusRefused}, []Status{StatusDone, StatusFailed}},
+		{"the action before it is refused", func(task string) { write(t, filepath.Join(task, "repo", "package.json"), 1) },
+			[]Status{StatusRefused, StatusRefused}, []Status{StatusFailed, StatusFailed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			task := filepath.Join(e.root, "tasks", "8595")
+			inner := filepath.Join(task, "repo")
+			write(t, filepath.Join(inner, "a.txt"), 10)
+			tc.setup(task)
+			p := newPlan([]string{e.root}, removeAction(inner, finding.KindDir), removeAction(task, finding.KindEmptyDir))
+			before := snapshot(t, e.root)
+			dry, _, _ := run(t, e, p, func(o *Options) { o.DryRun = true })
+			require.Equal(t, tc.dry, []Status{dry.Outcomes[0].Status, dry.Outcomes[1].Status})
+			require.Equal(t, before, snapshot(t, e.root), "the dry run removed nothing")
+			actual, _, _ := run(t, e, p, func(o *Options) { o.KeepGoing = true })
+			require.Equal(t, tc.real, []Status{actual.Outcomes[0].Status, actual.Outcomes[1].Status}, "the real run agrees")
+		})
+	}
+}

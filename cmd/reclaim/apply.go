@@ -75,7 +75,7 @@ func (a *app) applyCommand(cmd *cobra.Command, path string, f applyFlags) error 
 		// What the checks protect comes first, so the refusals below read
 		// against it.
 		p.Protected(a.protectedFor(cfg, pl.Roots), 100)
-		a.sayf("\n%s %s in %s. Nothing is removed.\n", p.Bold("Dry run of"), path, plural(len(pl.Actions), "action", "actions"))
+		a.sayf("\n%s %s: %s, checked and not removed.\n", p.Bold("Dry run of"), path, plural(len(pl.Actions), "action", "actions"))
 	} else {
 		p.Plan(pl)
 		if !f.yes {

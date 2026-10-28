@@ -212,8 +212,9 @@ func lastLook(r *os.Root, rel, path string, checked fs.FileInfo) error {
 
 // checkInRoot runs the last look at path through an os.Root at root and,
 // for a folder removed only once empty, checks that it is empty, without
-// removing anything.
-func checkInRoot(root, path string, checked fs.FileInfo, emptyOnly bool) error {
+// removing anything. Entries in removedFirst, which earlier actions of a
+// dry run would remove, do not count.
+func checkInRoot(root, path string, checked fs.FileInfo, emptyOnly bool, removedFirst map[string]bool) error {
 	r, rel, err := openAt(root, path)
 	if err != nil {
 		return err
@@ -223,19 +224,22 @@ func checkInRoot(root, path string, checked fs.FileInfo, emptyOnly bool) error {
 		return err
 	}
 	if emptyOnly {
-		return checkEmpty(path)
+		return checkEmpty(path, removedFirst)
 	}
 	return nil
 }
 
-// checkEmpty refuses a folder that holds anything.
-func checkEmpty(path string) error {
+// checkEmpty refuses a folder that holds anything but the entries in
+// removedFirst.
+func checkEmpty(path string, removedFirst map[string]bool) error {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	if len(entries) > 0 {
-		return fmt.Errorf("refusing %s: it was to be removed once empty, and it still holds %s", path, entries[0].Name())
+	for _, e := range entries {
+		if !removedFirst[filepath.Join(path, e.Name())] {
+			return fmt.Errorf("refusing %s: it was to be removed once empty, and it still holds %s", path, e.Name())
+		}
 	}
 	return nil
 }
@@ -268,7 +272,7 @@ func removeEmptyInRoot(root, path string, checked fs.FileInfo) error {
 	if err := lastLook(r, rel, path, checked); err != nil {
 		return err
 	}
-	if err := checkEmpty(path); err != nil {
+	if err := checkEmpty(path, nil); err != nil {
 		return err
 	}
 	// Remove, unlike RemoveAll, fails on a directory that is not empty, so

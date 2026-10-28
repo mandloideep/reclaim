@@ -241,6 +241,11 @@ type runner struct {
 	docker    dockerx.API
 	dockerErr error
 	dockerSet bool
+	// checked holds the paths a dry run found removable so far. A folder
+	// removed once empty, such as a Codex task folder, still holds the
+	// worktrees earlier actions remove, so a dry run counts it empty when
+	// all it holds is in here, as it will be in the real run.
+	checked map[string]bool
 }
 
 func (r *runner) log(e logEntry) {
@@ -291,6 +296,12 @@ func (r *runner) one(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome 
 		o.Status = StatusFailed
 	case r.opts.DryRun:
 		o.Status = StatusChecked
+		if a.Path != "" && (a.Action == finding.ActionRemovePath || a.Action == finding.ActionGitWorktreeRemove) {
+			if r.checked == nil {
+				r.checked = map[string]bool{}
+			}
+			r.checked[a.Path] = true
+		}
 	default:
 		o.Status = StatusDone
 	}
@@ -328,12 +339,21 @@ func (r *runner) removePath(ctx context.Context, p *plan.Plan, a *plan.Action) O
 	}
 	c.pass(CheckMounts, "no other filesystem inside; "+fmt.Sprint(before.Size)+" bytes now")
 	emptyOnly := a.Kind == finding.KindEmptyDir
-	if err := checkInRoot(root, a.Path, checked, emptyOnly); err != nil {
+	// A dry run removes nothing, so a folder removed once empty is checked
+	// as the real run will find it: without what earlier actions remove.
+	var removedFirst map[string]bool
+	if r.opts.DryRun {
+		removedFirst = r.checked
+	}
+	if err := checkInRoot(root, a.Path, checked, emptyOnly, removedFirst); err != nil {
 		return c.fail(CheckLastLook, err)
 	}
 	detail := "the same object, no symbolic link, seen through the root"
 	if emptyOnly {
 		detail += "; empty"
+		if r.opts.DryRun {
+			detail += " once the actions before it have run"
+		}
 	}
 	c.pass(CheckLastLook, detail)
 	if r.opts.DryRun {
