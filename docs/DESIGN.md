@@ -254,7 +254,7 @@ type Backend interface {
 `SavePlan` takes a context because the proof runs git.
 The only backend method that removes anything takes a plan path, so a review can see that no screen removes anything itself.
 The methods arrive with the screens that need them: the first pull request of phase 5 has `Scan`, `Protected` and `SavePlan`, the Confirm and Removing screens add `Apply` and `FreeSpace`, and the ignore list adds `Ignore`.
-A test parses the sources of `internal/tui` and fails if any file imports `os` or `os/exec`, if a screen uses anything of `apply` but the types of the protected list, outcomes and checks, or anything of `plan` but its types and `FromFinding`, or if `Backend` gains a method that is not on this list.
+A test parses the sources of `internal/tui` and fails if any file imports a package outside an allowlist that leaves out `os`, `os/exec`, `syscall`, cgo and the Docker client, uses a dot import or sits in a sub-package, if a screen uses anything of `apply` but the types of the protected list, outcomes and checks, or anything of `plan` but its types and `FromFinding`, or if `Backend` gains a method that is not on this list.
 Tests give the screens a fake backend and drive them with key messages, as the checklist tests do.
 `fsx.FreeSpace` reads `statfs` in `stat_darwin.go` and `stat_linux.go` and reports not supported elsewhere.
 
