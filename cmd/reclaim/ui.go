@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,6 +21,7 @@ import (
 	"github.com/mandloideep/reclaim/internal/config"
 	"github.com/mandloideep/reclaim/internal/dockerx"
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/fsx"
 	"github.com/mandloideep/reclaim/internal/plan"
 	"github.com/mandloideep/reclaim/internal/scan"
 	"github.com/mandloideep/reclaim/internal/scanners"
@@ -87,34 +90,43 @@ func (a *app) uiCommand(cmd *cobra.Command, args []string, f uiFlags) error {
 	if f.out == "" {
 		f.out = "plan.json"
 	}
-	ctx := cmd.Context()
+	// Canceled when the screen closes, however it closes, so a run still
+	// going stops after the action it is in.
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
 	changed := func(name string) bool {
 		fl := cmd.Flags().Lookup(name)
 		return fl != nil && fl.Changed
 	}
 	var prog *tea.Program
-	m, err := a.newUIModel(ctx, args, f, changed, func(msg tea.Msg) { prog.Send(msg) })
+	opts, err := a.uiOptions(ctx, args, f, changed, func(msg tea.Msg) { prog.Send(msg) })
 	if err != nil {
 		return err
 	}
+	be := opts.Backend.(*uiBackend)
+	m := tui.New(opts)
 	// The screen never captures the mouse, so text such as a printed
 	// command can still be selected and copied.
 	prog = tea.NewProgram(m, tea.WithContext(ctx), tea.WithInput(a.stdin), tea.WithOutput(a.stdout), tea.WithAltScreen())
-	if _, err := prog.Run(); err != nil {
-		return fmt.Errorf("interactive screen: %w", err)
-	}
-	return a.uiSummary(ctx, m.Result(), f.out)
+	_, progErr := prog.Run()
+	return a.uiFinish(ctx, cancel, be, m.Result(), progErr, f.out)
 }
 
-// newUIModel builds the screen over the real backend, prefilled from the
-// flags and the configuration. send delivers the scan's progress to the
-// running program.
-func (a *app) newUIModel(ctx context.Context, args []string, f uiFlags, changed func(string) bool, send func(tea.Msg)) (*tui.Model, error) {
-	opts, err := a.uiOptions(ctx, args, f, changed, send)
-	if err != nil {
-		return nil, err
+// uiFinish ends the command once the screen has closed. A signal or a
+// failure of the screen can end the program while a run goes on: it is
+// stopped after the action it is in, waited for, and reported like any
+// run before the command returns.
+func (a *app) uiFinish(ctx context.Context, cancel context.CancelFunc, be *uiBackend, res tui.Result, progErr error, out string) error {
+	cancel()
+	be.close()
+	if res.Pending != nil {
+		res.Runs = append(res.Runs, be.runOf(*res.Pending))
 	}
-	return tui.New(opts), nil
+	if progErr != nil {
+		a.printRuns(res.Runs)
+		return errors.Join(fmt.Errorf("interactive screen: %w", progErr), runErrors(res.Runs))
+	}
+	return a.uiSummary(ctx, res, out)
 }
 
 // uiOptions are the options of the screen over the real backend.
@@ -146,11 +158,16 @@ func (a *app) uiOptions(ctx context.Context, args []string, f uiFlags, changed f
 	}, nil
 }
 
-// uiSummary prints what the screen did once it has closed.
+// uiSummary prints what the screen did once it has closed: every plan it
+// applied, then the plan it saved or wrote last. It returns the errors of
+// the runs, so a run that failed or stopped ends reclaim with exit 1.
 func (a *app) uiSummary(ctx context.Context, res tui.Result, out string) error {
+	a.printRuns(res.Runs)
+	runErr := runErrors(res.Runs)
 	switch res.Outcome {
 	case tui.OutcomeWrite:
-		return a.writePlan(ctx, res.Report, res.Selected, out)
+		return errors.Join(runErr, a.writePlan(ctx, res.Report, res.Selected, out))
+	case tui.OutcomeApplied:
 	case tui.OutcomePlanSaved:
 		p := res.Plan
 		for _, msg := range p.LeftOut {
@@ -159,13 +176,33 @@ func (a *app) uiSummary(ctx context.Context, res tui.Result, out string) error {
 		a.sayf("Plan written to %s: %d actions, %s. Nothing was removed.\n", p.Path, len(p.Plan.Actions), units.FormatSize(p.Plan.TotalSize()))
 		a.sayf("Review it, then run: reclaim apply %s\n", p.Path)
 	default:
-		line := "Nothing was removed."
-		if res.Scanned {
-			line += " The report is saved, so reclaim select picks from it."
+		if len(res.Runs) == 0 {
+			line := "Nothing was removed."
+			if res.Scanned {
+				line += " The report is saved, so reclaim select picks from it."
+			}
+			a.sayf("%s\n", line)
 		}
-		a.sayf("%s\n", line)
 	}
-	return nil
+	return runErr
+}
+
+// printRuns prints the summary of every plan the screen applied.
+func (a *app) printRuns(runs []tui.Run) {
+	for _, run := range runs {
+		a.appliedSummary(run)
+	}
+}
+
+// runErrors joins the errors of the runs, each naming its plan.
+func runErrors(runs []tui.Run) error {
+	var errs []error
+	for _, run := range runs {
+		if run.Err != nil {
+			errs = append(errs, fmt.Errorf("apply %s: %w", run.Plan.Path, run.Err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // uiStart prefills the Start screen from the flags, the configuration and
@@ -246,6 +283,22 @@ type uiBackend struct {
 	// categories are the --category selectors, which pick the scanners of
 	// the categories they touch.
 	categories []string
+	// save writes a plan file, plan.Save when nil; tests make it fail.
+	save func(path string, p *plan.Plan) error
+
+	// mu guards the fields below, which the screen's commands reach from
+	// their own goroutines.
+	mu sync.Mutex
+	// saved holds the SHA-256 of every plan file SavePlan wrote, so Apply
+	// runs only those, and only as they were confirmed.
+	saved map[string][sha256.Size]byte
+	// runs counts the runs in progress, and closed refuses new ones once
+	// the screen has closed, so the command waits for the last before it
+	// reports and exits.
+	runs   sync.WaitGroup
+	closed bool
+	// done holds how every real run ended, by plan file.
+	done map[string]tui.Run
 }
 
 var _ tui.Backend = (*uiBackend)(nil)
@@ -455,10 +508,142 @@ func (b *uiBackend) SavePlan(ctx context.Context, r *finding.Report, selected []
 	if err != nil {
 		return tui.SavedPlan{}, err
 	}
-	if err := plan.Save(path, pl); err != nil {
+	save := b.save
+	if save == nil {
+		save = plan.Save
+	}
+	if err := save(path, pl); err != nil {
+		releasePlanPath(path)
 		return tui.SavedPlan{}, err
 	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return tui.SavedPlan{}, fmt.Errorf("read back plan %s: %w", path, err)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.saved == nil {
+		b.saved = map[string][sha256.Size]byte{}
+	}
+	b.saved[path] = sha256.Sum256(data)
 	return tui.SavedPlan{Path: path, Plan: pl, LeftOut: leftOut}, nil
+}
+
+// releasePlanPath removes the name newPlanPath reserved when the plan could
+// not be written into it: the file, only while it is still the empty
+// regular file the reservation created, so nothing else is ever removed.
+func releasePlanPath(path string) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+// Apply runs the plan file at path as reclaim apply --keep-going does,
+// with the configuration's exclude entries refused, a new log in the
+// reclaim folder, and progress at both edges of every action. With dryRun
+// it runs every check and removes nothing. It runs only a plan file
+// SavePlan wrote, unchanged since, so what runs is what the Confirm screen
+// showed. Canceling ctx stops the run after the action in progress, which
+// always finishes.
+func (b *uiBackend) Apply(ctx context.Context, path string, dryRun bool, progress apply.Progress) (sum apply.Summary, err error) {
+	if err := b.begin(); err != nil {
+		return apply.Summary{}, err
+	}
+	defer b.runs.Done()
+	if !dryRun {
+		defer func() { b.record(path, sum, err) }()
+	}
+	a := b.a
+	pl, err := b.load(path)
+	if err != nil {
+		return apply.Summary{}, err
+	}
+	if err := pl.CheckAge(a.now(), false); err != nil {
+		return apply.Summary{}, err
+	}
+	logFile, logPath, err := a.openLog("", dryRun)
+	if err != nil {
+		return apply.Summary{}, err
+	}
+	defer func() { _ = logFile.Close() }()
+	opts := a.applyOptions(b.cfg, path, logFile, logPath)
+	opts.KeepGoing, opts.DryRun, opts.Progress = true, dryRun, progress
+	// The actions run under a context that is never canceled, so a stop
+	// never cuts off a command or a Docker call halfway; the stop signal
+	// is checked between actions instead.
+	opts.Stop = ctx.Done()
+	return apply.Run(context.WithoutCancel(ctx), pl, opts)
+}
+
+// load reads the plan file at path, refusing one SavePlan did not write
+// or that changed since.
+func (b *uiBackend) load(path string) (*plan.Plan, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read plan %s: %w", path, err)
+	}
+	b.mu.Lock()
+	want, ok := b.saved[path]
+	b.mu.Unlock()
+	switch {
+	case !ok:
+		return nil, fmt.Errorf("refusing plan %s: the screen did not save it", path)
+	case sha256.Sum256(data) != want:
+		return nil, fmt.Errorf("refusing plan %s: it changed after the screen saved it; review it with reclaim apply instead", path)
+	}
+	return plan.Parse(path, data)
+}
+
+// begin counts a run in, unless the screen has closed.
+func (b *uiBackend) begin() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return errNotStarted
+	}
+	b.runs.Add(1)
+	return nil
+}
+
+// errNotStarted is the error of a run the screen started as it closed.
+var errNotStarted = errors.New("the screen closed before the run started; nothing was removed")
+
+// record keeps how a real run ended.
+func (b *uiBackend) record(path string, sum apply.Summary, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.done == nil {
+		b.done = map[string]tui.Run{}
+	}
+	b.done[path] = tui.Run{Plan: tui.SavedPlan{Path: path}, Summary: sum, Err: err}
+}
+
+// close refuses new runs and waits for the ones in progress to end.
+func (b *uiBackend) close() {
+	b.mu.Lock()
+	b.closed = true
+	b.mu.Unlock()
+	b.runs.Wait()
+}
+
+// runOf is how the run of a saved plan ended, once close has returned: as
+// recorded, or never started.
+func (b *uiBackend) runOf(saved tui.SavedPlan) tui.Run {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	run, ok := b.done[saved.Path]
+	if !ok {
+		return tui.Run{Plan: saved, Err: errNotStarted}
+	}
+	run.Plan = saved
+	return run
+}
+
+// FreeSpace reports the free bytes of the volume holding path.
+func (b *uiBackend) FreeSpace(path string) (int64, error) {
+	return fsx.FreeSpace(path)
 }
 
 // newPlanPath reserves a plan file name under the reclaim folder that no
@@ -491,4 +676,36 @@ func (a *app) newPlanPath() (string, error) {
 			return "", fmt.Errorf("reserve %s: %w", path, err)
 		}
 	}
+}
+
+// appliedSummary prints what the screen applied: the freed total, the
+// count of each outcome, the commands that need administrator rights in
+// full, the log and the plan.
+func (a *app) appliedSummary(run tui.Run) {
+	sum := run.Summary
+	if len(sum.Outcomes) == 0 {
+		a.sayf("Nothing was applied from %s.\n", run.Plan.Path)
+		return
+	}
+	counts := map[apply.Status]int{}
+	var sudo []string
+	for _, o := range sum.Outcomes {
+		counts[o.Status]++
+		if o.Status == apply.StatusManual {
+			sudo = append(sudo, "sudo "+strings.Join(o.Action.Command, " "))
+		}
+	}
+	a.sayf("Freed %s: %d removed, %d already gone, %d failed, %d not run, %d for you to run.\n",
+		units.FormatSize(sum.Freed), counts[apply.StatusDone], counts[apply.StatusGone], counts[apply.StatusFailed],
+		counts[apply.StatusNotRun], counts[apply.StatusManual])
+	if len(sudo) > 0 {
+		a.sayf("%s\n", "These need administrator rights. Run them yourself if you want them:")
+		for _, c := range sudo {
+			a.sayf("  %s\n", c)
+		}
+	}
+	if sum.LogPath != "" {
+		a.sayf("Log: %s\n", sum.LogPath)
+	}
+	a.sayf("Plan: %s\n", run.Plan.Path)
 }

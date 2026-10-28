@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	"github.com/docker/docker/api/types/volume"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mandloideep/reclaim/internal/apply"
 	"github.com/mandloideep/reclaim/internal/dockerx"
 	"github.com/mandloideep/reclaim/internal/execx"
 	"github.com/mandloideep/reclaim/internal/finding"
@@ -94,9 +96,12 @@ func TestScreenshots(t *testing.T) {
 
 	// The interactive screen, over the same machine, with the report of the
 	// scan above as the last one, started in the storefront project.
+	// The reclaim folder moves under the fixture home, where it is on a
+	// real machine, so the plan and log paths start with ~.
+	a.stateDir = filepath.Join(a.home, "Library", "Caches", "reclaim")
 	require.NoError(t, saveReport(a.lastReportPath(), report))
 	a.getwd = func() (string, error) { return filepath.Join(a.home, "Code", "storefront"), nil }
-	shots["ui-start"], shots["ui-scanning"], shots["ui-review"] = uiScreens(t, a)
+	maps.Copy(shots, uiScreens(t, a))
 
 	dir := filepath.Join("testdata", "screenshots")
 	for name, got := range shots {
@@ -287,23 +292,40 @@ func screenshotApp(t *testing.T) (*app, *bytes.Buffer) {
 	return a, out
 }
 
-// uiScreens renders the Start, Scanning and Review screens of the
-// interactive mode. The scan is the real one; its progress is replayed in a
-// fixed order with the worktree and Docker scanners still running, so the
-// Scanning screen does not depend on which scanner finished first.
-func uiScreens(t *testing.T, a *app) (start, scanning, review string) {
+// uiScreens renders the six screens of the interactive mode. The scan is
+// the real one, its progress replayed in a fixed order with the worktree
+// and Docker scanners still running, so the Scanning screen does not
+// depend on which scanner finished first. The Confirm screen shows the
+// real dry run of the preselected findings, and the Removing screen the
+// real run of the plan, replayed up to its fifth action, before Done.
+func uiScreens(t *testing.T, a *app) map[string]string {
 	t.Helper()
 	now := a.now
 	defer func() { a.now = now }()
+	at := func(d time.Duration) func() {
+		return func() { a.now = func() time.Time { return screenshotNow.Add(d) } }
+	}
+	shots := map[string]string{}
+	// The scripted git removes the fixture worktree it is told to, as git
+	// worktree remove would, inside the fixture's temp folder.
+	if fake, ok := a.exec.(*execx.Fake); ok {
+		fake.OnRun = func(argv []string) error {
+			if len(argv) == 6 && argv[0] == "git" && argv[3] == "worktree" && argv[4] == "remove" {
+				require.True(t, strings.HasPrefix(argv[5], a.home+string(filepath.Separator)), "only the fixture")
+				return os.RemoveAll(argv[5])
+			}
+			return nil
+		}
+	}
 	d := newDriverWith(t, a, nil, uiFlags{minSize: defaultMinSize, out: "plan.json"}, 124, 20, func(o *tui.Options) {
 		o.Version = "v0.3.0"
 		o.Backend = &curatedScan{Backend: o.Backend, hold: map[string]bool{"git-worktrees": true, "docker": true},
-			after: func() { a.now = func() time.Time { return screenshotNow.Add(7 * time.Second) } }}
+			after: at(7 * time.Second), applied: at(48 * time.Second), runningAt: 4}
 	})
-	start = d.m.View() + "\n"
+	shots["ui-start"] = d.m.View() + "\n"
 	d.beforeDone = func() {
 		d.m.Update(tea.WindowSizeMsg{Width: 104, Height: 14})
-		scanning = d.m.View() + "\n"
+		shots["ui-scanning"] = d.m.View() + "\n"
 		d.m.Update(tea.WindowSizeMsg{Width: 124, Height: 34})
 	}
 	d.key("enter")
@@ -311,7 +333,18 @@ func uiScreens(t *testing.T, a *app) (start, scanning, review string) {
 	d.key("enter")
 	d.moveTo("~/Code/ripgrep-fork")
 	d.key("enter", "down")
-	return start, scanning, d.m.View() + "\n"
+	shots["ui-review"] = d.m.View() + "\n"
+
+	d.key("c", "d")
+	shots["ui-confirm"] = d.m.View() + "\n"
+	d.beforeDone = func() {
+		d.m.Update(tea.WindowSizeMsg{Width: 124, Height: 15})
+		shots["ui-removing"] = d.m.View() + "\n"
+	}
+	d.key("y", "e", "s", "enter")
+	d.m.Update(tea.WindowSizeMsg{Width: 124, Height: 12})
+	shots["ui-done"] = d.m.View() + "\n"
+	return shots
 }
 
 // curatedScan runs the real scan and replays its progress in the order of
@@ -321,6 +354,41 @@ type curatedScan struct {
 	tui.Backend
 	hold  map[string]bool
 	after func()
+	// applied moves the clock once the real run is done, and runningAt is
+	// the action the replay of its progress stops in.
+	applied   func()
+	runningAt int
+	freeReads int
+}
+
+// Apply runs the plan for real over the fixture machine. A dry run reports
+// as it goes; the real run's progress is replayed up to the action at
+// runningAt, which is shown running.
+func (c *curatedScan) Apply(ctx context.Context, path string, dryRun bool, progress apply.Progress) (apply.Summary, error) {
+	if dryRun {
+		return c.Backend.Apply(ctx, path, true, progress)
+	}
+	var logPath string
+	sum, err := c.Backend.Apply(ctx, path, false, apply.Progress{Begin: func(p string) { logPath = p }})
+	c.applied()
+	progress.Begin(logPath)
+	for i, o := range sum.Outcomes {
+		progress.Starting(i, o.Action)
+		if i == c.runningAt {
+			break
+		}
+		progress.Finished(i, o)
+	}
+	return sum, err
+}
+
+// FreeSpace reports a fixed disk: 41.2 GB before the run, more after.
+func (c *curatedScan) FreeSpace(string) (int64, error) {
+	c.freeReads++
+	if c.freeReads == 1 {
+		return 41_200_000_000, nil
+	}
+	return 50_600_000_000, nil
 }
 
 func (c *curatedScan) Scan(ctx context.Context, req tui.ScanRequest, progress func(scan.Event)) (*finding.Report, error) {

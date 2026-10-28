@@ -1,0 +1,34 @@
+[1mConfirm[0m                                                                                                    [2m16 items, 16.4 GB[0m
+
+Plan written to ~/Library/Caches/reclaim/plans/plan-20261005T093007Z.json
+
+[1;32mok[0m       1.  [1;32mA[0m   48.0 MB  docker remove container storefront-worker-1 (storefront-worker:dev, exited)
+[1;32mok[0m       2.  [1;32mA[0m    1.2 GB  docker remove dangling image 9f3c1a7be2d4
+[1;32mok[0m       3.  [1;32mA[0m    3.2 GB  docker prune build cache (2 unused records)
+[1;32mok[0m       4.  [1;32mA[0m  184.0 MB  git -C ~/Code/storefront worktree remove ~/Code/storefront/.claude/worktrees/agent-3f9c1e2a[2m  git-w[0m
+                          [2mlinked worktree ok, path ok, work exists elsewhere ok, head unchanged ok, not the working[0m
+                          [2mdirectory ok[0m
+[1;32mok[0m       5.  [1;32mA[0m    3.9 GB  remove ~/Code/ripgrep-fork/target[2m  rust-target[0m
+[1;32mok[0m       6.  [1;32mA[0m    2.3 GB  remove ~/Code/ml-pipeline/.venv[2m  python-venv[0m
+[1;32mok[0m       7.  [1;32mA[0m    1.4 GB  remove ~/Library/Developer/Xcode/DerivedData/Weather-bxrjzktdwfaugpcvhzjmlzkhwqyi[2m  xcode-derived-d[0m
+[1;32mok[0m       8.  [1;32mA[0m    1.2 GB  remove ~/Code/storefront/node_modules[2m  node_modules[0m
+[1;32mok[0m       9.  [1;32mA[0m  655.0 MB  remove ~/Library/Caches/Google[2m  user-caches[0m
+[1;32mok[0m       10. [1;32mA[0m  512.0 MB  remove ~/Code/weather/build[2m  build[0m
+[1;32mok[0m       11. [1;32mA[0m  412.0 MB  remove ~/Code/storefront/.next[2m  next[0m
+[1;32mok[0m       12. [1;32mA[0m  214.0 MB  remove ~/Library/Caches/com.microsoft.VSCode.ShipIt[2m  electron-updaters[0m
+[1;32mok[0m       13. [1;32mA[0m  186.0 MB  remove ~/Code/weather/.dart_tool[2m  dart-tool[0m
+[1;32mok[0m       14. [1;32mA[0m   61.0 MB  remove ~/Code/ml-pipeline/.mypy_cache[2m  mypy-cache[0m
+[1;32mok[0m       15. [1;32mA[0m   38.0 MB  remove ~/Code/storefront/dist[2m  dist[0m
+[1;32mok[0m       16. [1;32mA[0m  940.0 MB  run go clean -cache[2m  cleans ~/Library/Caches/go-build[0m
+
+By tier: A 16.4 GB in 16 items.
+[2mEvery target is checked again right before it is removed: inside a scanned root, not a protected folder, not a project root,[0m
+[2mno symbolic link, still the same thing. Nothing is deleted until you confirm.[0m
+
+[33mChecked without removing anything: 16 ok, 0 gone, 0 for you to run, 0 refused.[0m
+[2mLog: ~/Library/Caches/reclaim/logs/dry-run-20261005T093007Z.log[0m
+[1mType yes to remove these 16 items (16.4 GB): [0m[7m [0m            
+
+
+
+[1myes enter[0m remove  [1md[0m checks everything without removing  [1mup/down[0m scroll  [1mesc[0m back  [1m?[0m help

@@ -180,7 +180,7 @@ func (a *app) doneCommand(ctx context.Context, path string, f doneFlags) error {
 	if len(cfg.Roots) == 0 {
 		roots = a.defaultRoots()
 	}
-	if err := a.doneRemove(ctx, out, roots, state, size.Size); err != nil {
+	if err := a.doneRemove(ctx, out, roots, cfg.Exclude, state, size.Size); err != nil {
 		say("\n%v\n", err)
 		return exit(refusalCode(err))
 	}
@@ -296,7 +296,7 @@ func orUnknown(s string) string {
 
 // doneRemove removes one worktree through the same plan, proof and apply as
 // everything else, writing the plan and the log to the reclaim cache folder.
-func (a *app) doneRemove(ctx context.Context, w io.Writer, roots []string, s *finding.WorktreeState, size int64) error {
+func (a *app) doneRemove(ctx context.Context, w io.Writer, roots, exclude []string, s *finding.WorktreeState, size int64) error {
 	say := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
 	tier := finding.TierA
 	if !s.Merged.Proven() {
@@ -320,7 +320,7 @@ func (a *app) doneRemove(ctx context.Context, w io.Writer, roots []string, s *fi
 	if err := pl.Validate(); err != nil {
 		return fmt.Errorf("not removed: %w", err)
 	}
-	opts := apply.Options{Home: a.home, Walker: fsx.NewWalker(0), Exec: a.exec, Getenv: a.getenv, Now: a.now, Getwd: a.getwd}
+	opts := apply.Options{Home: a.home, Walker: fsx.NewWalker(0), Exec: a.exec, Getenv: a.getenv, Now: a.now, Getwd: a.getwd, Protected: exclude}
 	// The proof runs once before the plan is written and again inside
 	// apply, immediately before git acts.
 	if _, err := apply.ProveWorktree(ctx, opts, pl.Roots, &pl.Actions[0]); err != nil {

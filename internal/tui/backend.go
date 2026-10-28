@@ -1,13 +1,14 @@
 // Package tui is the interactive mode of reclaim: one screen that walks
-// through scan, review and plan, built as one bubbletea model per screen
-// and a root model that switches between them.
+// through scan, review, confirm, removing and done, built as one bubbletea
+// model per screen and a root model that switches between them.
 //
 // The screens remove nothing themselves. They import neither os nor
 // os/exec, keep no global state, and reach the machine only through the
 // Backend interface, which cmd/reclaim implements over the same code the
-// scan, select and apply commands use. No method of Backend removes
-// anything: the screens scan, show the protected list and save a plan, and
-// the plan is applied by reclaim apply.
+// scan, select and apply commands use. The only method of Backend that
+// removes anything is Apply, which takes the path of the plan SavePlan
+// wrote, and the screens call it only after yes is typed on the Confirm
+// screen, or with dryRun from its d key.
 package tui
 
 import (
@@ -75,8 +76,8 @@ type SavedPlan struct {
 
 // Backend is everything the screens need from the machine. cmd/reclaim
 // implements it over the scan, plan and apply code; tests give the screens
-// a fake. The screens never remove anything themselves, and no method here
-// removes anything.
+// a fake. The screens never remove anything themselves; the only method
+// here that removes anything is Apply, and it takes a plan path.
 type Backend interface {
 	// Scan runs the scanners the request names and reports progress
 	// through events. Canceling ctx stops the scan and returns what was
@@ -90,4 +91,12 @@ type Backend interface {
 	// the code select uses, proves the selected worktrees as select does,
 	// and saves the plan under the reclaim folder.
 	SavePlan(ctx context.Context, r *finding.Report, selected []finding.Finding) (SavedPlan, error)
+	// Apply runs the plan file at path with apply.Run, as reclaim apply
+	// does with --keep-going, and reports progress through the callbacks.
+	// With dryRun it runs every check and removes nothing. This is the only
+	// method that removes anything, and it takes nothing but the path of a
+	// plan SavePlan wrote.
+	Apply(ctx context.Context, path string, dryRun bool, progress apply.Progress) (apply.Summary, error)
+	// FreeSpace reports the free bytes of the volume holding path.
+	FreeSpace(path string) (int64, error)
 }

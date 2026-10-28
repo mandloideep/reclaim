@@ -102,27 +102,6 @@ func checkProtected(p, home, projectRoot string, roots []string) error {
 	return nil
 }
 
-// verifyPath re-checks a RemovePath target immediately before removal: the
-// path rules above, then that no component of the path is a symbolic link,
-// that the object is still the same kind the scanner found, and that a
-// directory does not hold a git working tree.
-func verifyPath(a *plan.Action, home string, roots []string) (fs.FileInfo, error) {
-	if err := checkProtected(a.Path, home, a.Project, roots); err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(a.Path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, errGone
-	}
-	if err != nil {
-		return nil, fmt.Errorf("inspect %s: %w", a.Path, err)
-	}
-	if err := checkObject(a, info); err != nil {
-		return nil, err
-	}
-	return info, nil
-}
-
 // checkObject applies the checks that depend on what is on disk now.
 func checkObject(a *plan.Action, info fs.FileInfo) error {
 	if err := checkShape(a, info); err != nil {
@@ -183,22 +162,43 @@ func containingRoot(path string, roots []string) string {
 	return best
 }
 
-// removeInRoot removes path through an os.Root opened at root, after checking
-// once more, immediately before acting, that no component of the path became
-// a symbolic link and that the object is the one verified earlier. Removal
-// through the root cannot escape it even if the path changes underneath.
-func removeInRoot(root, path string, checked fs.FileInfo) error {
-	if resolved, err := filepath.EvalSymlinks(path); err != nil || resolved != path {
-		return fmt.Errorf("refusing %s: the path changed since it was checked", path)
+// checkExcluded refuses a path that is, lies under or contains one of the
+// user's exclude entries, whatever the plan says, so the entries hold at
+// removal time and not only at scan time.
+func checkExcluded(p string, protected []string) error {
+	for _, ex := range protected {
+		ex = filepath.Clean(ex)
+		switch {
+		case p == ex:
+			return fmt.Errorf("refusing %s: it is an exclude entry of your configuration", p)
+		case project.IsWithin(p, ex):
+			return fmt.Errorf("refusing %s: it lies inside the exclude entry %s of your configuration", p, ex)
+		case project.IsWithin(ex, p):
+			return fmt.Errorf("refusing %s: it holds the exclude entry %s of your configuration", p, ex)
+		}
+	}
+	return nil
+}
+
+// openAt opens an os.Root at root and returns it with path relative to it.
+func openAt(root, path string) (*os.Root, string, error) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, "", fmt.Errorf("refusing %s: %w", path, err)
 	}
 	r, err := os.OpenRoot(root)
 	if err != nil {
-		return fmt.Errorf("open root %s: %w", root, err)
+		return nil, "", fmt.Errorf("open root %s: %w", root, err)
 	}
-	defer func() { _ = r.Close() }()
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return fmt.Errorf("refusing %s: %w", path, err)
+	return r, rel, nil
+}
+
+// lastLook checks once more, immediately before acting, that no component
+// of the path became a symbolic link and that the object, seen through an
+// os.Root at root, is the one verified earlier. A dry run runs it too.
+func lastLook(r *os.Root, rel, path string, checked fs.FileInfo) error {
+	if resolved, err := filepath.EvalSymlinks(path); err != nil || resolved != path {
+		return fmt.Errorf("refusing %s: the path changed since it was checked", path)
 	}
 	info, err := r.Lstat(rel)
 	if err != nil {
@@ -206,40 +206,74 @@ func removeInRoot(root, path string, checked fs.FileInfo) error {
 	}
 	if !os.SameFile(info, checked) {
 		return fmt.Errorf("refusing %s: it was replaced since it was checked", path)
+	}
+	return nil
+}
+
+// checkInRoot runs the last look at path through an os.Root at root and,
+// for a folder removed only once empty, checks that it is empty, without
+// removing anything. Entries in removedFirst, which earlier actions of a
+// dry run would remove, do not count.
+func checkInRoot(root, path string, checked fs.FileInfo, emptyOnly bool, removedFirst map[string]bool) error {
+	r, rel, err := openAt(root, path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = r.Close() }()
+	if err := lastLook(r, rel, path, checked); err != nil {
+		return err
+	}
+	if emptyOnly {
+		return checkEmpty(path, removedFirst)
+	}
+	return nil
+}
+
+// checkEmpty refuses a folder that holds anything but the entries in
+// removedFirst.
+func checkEmpty(path string, removedFirst map[string]bool) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	for _, e := range entries {
+		if !removedFirst[filepath.Join(path, e.Name())] {
+			return fmt.Errorf("refusing %s: it was to be removed once empty, and it still holds %s", path, e.Name())
+		}
+	}
+	return nil
+}
+
+// removeInRoot removes path through an os.Root opened at root, after the
+// last look. Removal through the root cannot escape it even if the path
+// changes underneath.
+func removeInRoot(root, path string, checked fs.FileInfo) error {
+	r, rel, err := openAt(root, path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = r.Close() }()
+	if err := lastLook(r, rel, path, checked); err != nil {
+		return err
 	}
 	return r.RemoveAll(rel)
 }
 
 // removeEmptyInRoot removes the empty directory at path through an os.Root
-// opened at root, after the same last checks as removeInRoot. It refuses a
+// opened at root, after the same last look as removeInRoot. It refuses a
 // directory that holds anything, so a folder whose worktrees could not be
 // removed keeps them.
 func removeEmptyInRoot(root, path string, checked fs.FileInfo) error {
-	if resolved, err := filepath.EvalSymlinks(path); err != nil || resolved != path {
-		return fmt.Errorf("refusing %s: the path changed since it was checked", path)
-	}
-	r, err := os.OpenRoot(root)
+	r, rel, err := openAt(root, path)
 	if err != nil {
-		return fmt.Errorf("open root %s: %w", root, err)
+		return err
 	}
 	defer func() { _ = r.Close() }()
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return fmt.Errorf("refusing %s: %w", path, err)
+	if err := lastLook(r, rel, path, checked); err != nil {
+		return err
 	}
-	info, err := r.Lstat(rel)
-	if err != nil {
-		return fmt.Errorf("inspect %s: %w", path, err)
-	}
-	if !os.SameFile(info, checked) {
-		return fmt.Errorf("refusing %s: it was replaced since it was checked", path)
-	}
-	entries, err := os.ReadDir(path)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	if len(entries) > 0 {
-		return fmt.Errorf("refusing %s: it was to be removed once empty, and it still holds %s", path, entries[0].Name())
+	if err := checkEmpty(path, nil); err != nil {
+		return err
 	}
 	// Remove, unlike RemoveAll, fails on a directory that is not empty, so
 	// an entry created after the check above is never removed.

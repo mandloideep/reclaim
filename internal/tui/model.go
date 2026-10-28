@@ -5,12 +5,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/mandloideep/reclaim/internal/apply"
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/plan"
 	"github.com/mandloideep/reclaim/internal/scan"
 	"github.com/mandloideep/reclaim/internal/ui"
 	"github.com/mandloideep/reclaim/internal/units"
@@ -95,9 +97,23 @@ const (
 	// screen closes.
 	OutcomeWrite
 	// OutcomePlanSaved means the screen saved a plan under the reclaim
-	// folder for reclaim apply.
+	// folder and nothing was applied.
 	OutcomePlanSaved
+	// OutcomeApplied means the last thing the screen did was apply a plan
+	// after yes was typed.
+	OutcomeApplied
 )
+
+// Run is one plan the screen applied after yes was typed.
+type Run struct {
+	// Plan is the plan file that ran.
+	Plan SavedPlan
+	// Summary is what apply.Run reported.
+	Summary apply.Summary
+	// Err is the error apply.Run or the backend returned, such as a stale
+	// plan or failed actions.
+	Err error
+}
 
 // Result is what the screen leaves for the caller to print once the
 // alternate screen has closed.
@@ -108,8 +124,16 @@ type Result struct {
 	Report *finding.Report
 	// Selected are the selected findings, for OutcomeWrite.
 	Selected []finding.Finding
-	// Plan is the saved plan, for OutcomePlanSaved.
+	// Plan is the last plan the screen saved, for OutcomePlanSaved and
+	// OutcomeApplied.
 	Plan SavedPlan
+	// Runs are the plans applied, in order: a second pass after r adds
+	// one, and none is forgotten.
+	Runs []Run
+	// Pending is the plan of a run that started but whose end the screen
+	// did not see, because the program ended while it ran; the caller
+	// waits for it and reports it.
+	Pending *SavedPlan
 	// Scanned reports whether a scan finished and was saved as the last
 	// report.
 	Scanned bool
@@ -121,6 +145,9 @@ const (
 	screenStart screenID = iota
 	screenScanning
 	screenReview
+	screenConfirm
+	screenRemoving
+	screenDone
 )
 
 type overlayID int
@@ -151,6 +178,23 @@ type (
 		plan SavedPlan
 		err  error
 	}
+	applyBeginMsg struct {
+		seq     int
+		logPath string
+	}
+	applyStartingMsg struct {
+		seq, index int
+	}
+	applyFinishedMsg struct {
+		seq, index int
+		outcome    apply.Outcome
+	}
+	applyDoneMsg struct {
+		seq     int
+		dryRun  bool
+		summary apply.Summary
+		err     error
+	}
 )
 
 // frame is what a screen shows inside the common frame: a title with the
@@ -162,9 +206,10 @@ type frame struct {
 }
 
 // Model is the root model of the interactive screen. It owns the screens
-// and switches between them: Start, Scanning and Review. It removes
-// nothing: the scan goes through Backend.Scan and the plan through
-// Backend.SavePlan, and reclaim apply runs the plan.
+// and switches between them: Start, Scanning, Review, Confirm, Removing and
+// Done. It removes nothing itself: the scan goes through Backend.Scan, the
+// plan through Backend.SavePlan, and the plan file SavePlan wrote through
+// Backend.Apply, only after yes is typed on the Confirm screen.
 type Model struct {
 	opts   Options
 	plain  *ui.Printer
@@ -176,6 +221,8 @@ type Model struct {
 	start    *startScreen
 	scanning *scanningScreen
 	review   *reviewScreen
+	confirm  *confirmScreen
+	removing *removingScreen
 
 	overlay   overlayID
 	viewport  viewport.Model
@@ -246,7 +293,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tickMsg:
-		if m.screen == screenScanning && msg.seq == m.seq {
+		if (m.screen == screenScanning || m.screen == screenRemoving) && msg.seq == m.seq {
 			return m, m.tick()
 		}
 		return m, nil
@@ -257,11 +304,57 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case planSavedMsg:
 		if m.screen == screenReview {
-			return m, m.review.planSaved(msg)
+			m.review.planSaved(msg)
+		}
+		return m, nil
+	case applyBeginMsg, applyStartingMsg, applyFinishedMsg, applyDoneMsg:
+		m.applyMsg(msg)
+		return m, nil
+	case spinner.TickMsg:
+		if m.screen == screenRemoving {
+			var cmd tea.Cmd
+			m.removing.spinner, cmd = m.removing.spinner.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 	}
 	return m, nil
+}
+
+// applyMsg follows a run of the plan: the dry run on the Confirm screen or
+// the real one on the Removing screen.
+func (m *Model) applyMsg(msg tea.Msg) {
+	switch msg := msg.(type) {
+	case applyBeginMsg:
+		if msg.seq == m.seq && m.removing != nil && m.screen == screenRemoving {
+			m.removing.logPath = msg.logPath
+		}
+	case applyStartingMsg:
+		if msg.seq == m.seq && m.screen == screenRemoving {
+			m.removing.starting(msg.index)
+		}
+	case applyFinishedMsg:
+		switch {
+		case msg.seq != m.seq:
+		case m.screen == screenRemoving:
+			m.removing.finished(msg.index, msg.outcome)
+		case m.screen == screenConfirm:
+			m.confirm.finished(msg.index, msg.outcome)
+		}
+	case applyDoneMsg:
+		if msg.seq != m.seq {
+			return
+		}
+		m.stopRun()
+		if msg.dryRun {
+			m.confirm.dryRunDone(msg.summary, msg.err)
+			return
+		}
+		m.removing.done(msg.summary, msg.err)
+		m.result.Outcome, m.result.Pending = OutcomeApplied, nil
+		m.result.Runs = append(m.result.Runs, Run{Plan: m.removing.saved, Summary: msg.summary, Err: msg.err})
+		m.screen = screenDone
+	}
 }
 
 // key handles a key: the overlays first, then a text input that wants every
@@ -271,6 +364,18 @@ func (m *Model) key(msg tea.KeyMsg) tea.Cmd {
 	// never ends with a plan written that nobody was told about.
 	if m.screen == screenReview && m.review.saving {
 		return nil
+	}
+	// While the plan is removed, q does nothing and ctrl+c stops after the
+	// current action, so no action is ever cut off half done.
+	if m.screen == screenRemoving && m.overlay == overlayNone {
+		switch msg.String() {
+		case "?", "P":
+		default:
+			return m.removing.key(msg)
+		}
+	}
+	if m.screen == screenRemoving && msg.String() == "ctrl+c" {
+		return m.removing.key(msg)
 	}
 	if msg.String() == "ctrl+c" {
 		return m.quit()
@@ -312,6 +417,8 @@ func (m *Model) typing() bool {
 		return m.start.editing
 	case screenReview:
 		return m.review.tree.Filtering()
+	case screenConfirm:
+		return m.confirm.typing()
 	}
 	return false
 }
@@ -324,20 +431,30 @@ func (m *Model) screenKey(msg tea.KeyMsg) tea.Cmd {
 		return m.scanning.key(msg)
 	case screenReview:
 		return m.review.key(msg)
+	case screenConfirm:
+		return m.confirm.key(msg)
+	case screenDone:
+		if msg.String() == "r" {
+			// A second pass often finds more: images freed by a removed
+			// container, or a worktree whose pull request merged.
+			m.start.status = ""
+			m.screen = screenStart
+		}
 	}
 	return nil
 }
 
-// quit stops a running scan and ends the program.
+// quit stops a running scan or dry run and ends the program.
 func (m *Model) quit() tea.Cmd {
-	m.stopScan()
+	m.stopRun()
 	if m.review != nil && m.result.Outcome == OutcomeQuit {
 		m.result.Report = m.review.report
 	}
 	return tea.Quit
 }
 
-func (m *Model) stopScan() {
+// stopRun cancels the scan or apply run in progress.
+func (m *Model) stopRun() {
 	if m.cancel != nil {
 		m.cancel()
 		m.cancel = nil
@@ -348,7 +465,7 @@ func (m *Model) stopScan() {
 // The scan reports progress through Options.Send and ends with a
 // scanDoneMsg.
 func (m *Model) startScan(req ScanRequest) tea.Cmd {
-	m.stopScan()
+	m.stopRun()
 	m.seq++
 	seq := m.seq
 	ctx, cancel := context.WithCancel(m.opts.Context)
@@ -376,7 +493,7 @@ func (m *Model) tick() tea.Cmd {
 // with the error.
 func (m *Model) scanDone(msg scanDoneMsg) {
 	interrupted := msg.report != nil && scan.Interrupted(msg.report.Warnings)
-	m.stopScan()
+	m.stopRun()
 	if msg.err != nil || msg.report == nil {
 		m.screen = screenStart
 		text := "the scan returned no report"
@@ -403,10 +520,13 @@ func (m *Model) openReview(r *finding.Report, interrupted bool) {
 // screen: the roots a scan would use on Start, the report's elsewhere.
 func (m *Model) showProtected() {
 	var roots []string
-	if m.screen == screenReview {
-		roots = m.review.report.Roots
-	} else {
+	switch m.screen {
+	case screenStart, screenScanning:
 		roots = m.start.roots()
+	case screenReview:
+		roots = m.review.report.Roots
+	default:
+		roots = m.confirm.saved.Plan.Roots
 	}
 	m.protected = m.opts.Backend.Protected(roots)
 	m.viewport = viewport.New(m.width, m.bodyHeight(1))
@@ -428,6 +548,12 @@ func (m *Model) View() string {
 		f = m.scanning.view()
 	case screenReview:
 		f = m.review.view()
+	case screenConfirm:
+		f = m.confirm.view()
+	case screenRemoving:
+		f = m.removing.view()
+	case screenDone:
+		f = m.removing.doneView()
 	}
 	switch m.overlay {
 	case overlayHelp:
@@ -475,7 +601,7 @@ func (m *Model) frame(f frame) string {
 // footer lays out the keys of a screen in as many lines as the window
 // needs, so a narrow window still shows every key.
 func (m *Model) footer(parts []string) []string {
-	return pack(parts, "  ", m.width)
+	return ui.Pack(parts, "  ", m.width)
 }
 
 // closing is the sentence every help overlay ends with.
@@ -491,8 +617,18 @@ func (m *Model) helpText() string {
 		keys = scanningHelp()
 	case screenReview:
 		keys = reviewHelp()
+	case screenConfirm:
+		keys = confirmHelp()
+	case screenRemoving:
+		keys = removingHelp()
+	case screenDone:
+		keys = doneHelp()
 	}
-	keys = append(keys, [2]string{"P", "what reclaim never removes"}, [2]string{"?", "this help"}, [2]string{"q", "quit"})
+	keys = append(keys, [2]string{"P", "what reclaim never removes"}, [2]string{"?", "this help"})
+	if m.screen != screenRemoving {
+		// q does nothing while a plan is removed.
+		keys = append(keys, [2]string{"q", "quit"})
+	}
 	var b strings.Builder
 	b.WriteString(m.st.bold.Render("Keys") + "\n\n")
 	for _, k := range keys {
@@ -519,69 +655,6 @@ func (m *Model) helpText() string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-// protectedText renders the protected list, grouped by where each entry
-// comes from.
-func (m *Model) protectedText() string {
-	var b strings.Builder
-	for _, l := range wrapText("reclaim never removes what the built in rules and the scanned roots protect, whatever a plan says: apply checks every target against them right before removing it. Your exclude entries keep the scan out of those folders, so nothing in them is offered.", m.width) {
-		b.WriteString(l + "\n")
-	}
-	width := max(m.width-4, 20)
-	for i := 0; i < len(m.protected); {
-		src := m.protected[i].Source
-		j := i
-		for j < len(m.protected) && m.protected[j].Source == src {
-			j++
-		}
-		b.WriteString("\n" + m.st.bold.Render(sourceTitle(src)) + "\n")
-		// Paths that share a rule are listed together under it; rules that
-		// name no path are listed one per line.
-		var texts []string
-		paths := map[string][]string{}
-		for _, e := range m.protected[i:j] {
-			if e.Path == "" {
-				for k, l := range wrapText(e.Text, width-2) {
-					bullet := "- "
-					if k > 0 {
-						bullet = "  "
-					}
-					b.WriteString("  " + bullet + l + "\n")
-				}
-				continue
-			}
-			if _, seen := paths[e.Text]; !seen {
-				texts = append(texts, e.Text)
-			}
-			paths[e.Text] = append(paths[e.Text], m.path(e.Path))
-		}
-		for _, text := range texts {
-			b.WriteString("  " + m.st.dim.Render(text) + "\n")
-			for _, l := range pack(paths[text], "   ", width) {
-				b.WriteString("    " + l + "\n")
-			}
-		}
-		i = j
-	}
-	return strings.TrimSuffix(b.String(), "\n")
-}
-
-func sourceTitle(s apply.ProtectedSource) string {
-	switch s {
-	case apply.ProtectedSystem:
-		return "System paths (built in)"
-	case apply.ProtectedHome:
-		return "Folders of your home folder (built in)"
-	case apply.ProtectedRule:
-		return "Rules (built in)"
-	case apply.ProtectedRoot:
-		return "Scanned roots"
-	case apply.ProtectedExclude:
-		return "Your exclude entries (config file), which the scan skips"
-	default:
-		return string(s)
-	}
-}
-
 // sizeText formats a size.
 func sizeText(n int64) string { return units.FormatSize(n) }
 
@@ -592,4 +665,50 @@ func (m *Model) ago(t time.Time) string {
 		return "just now"
 	}
 	return age + " ago"
+}
+
+// protectedText renders the protected list with the same code reclaim
+// apply --dry-run prints it with.
+func (m *Model) protectedText() string {
+	p := ui.NewWithRenderer(nil, m.opts.Renderer, m.opts.Home, m.opts.Now())
+	return strings.Join(p.ProtectedLines(m.protected, m.width), "\n")
+}
+
+// openConfirm shows the Confirm screen on the plan SavePlan wrote.
+func (m *Model) openConfirm(saved SavedPlan) {
+	m.result.Plan = saved
+	m.confirm = newConfirm(m, saved)
+	m.screen = screenConfirm
+}
+
+// startApply runs the plan file at path through Backend.Apply in the
+// background, a dry run or the real one, reporting progress through
+// Options.Send and ending with an applyDoneMsg.
+func (m *Model) startApply(path string, dryRun bool) tea.Cmd {
+	m.stopRun()
+	m.seq++
+	seq := m.seq
+	ctx, cancel := context.WithCancel(m.opts.Context)
+	m.cancel = cancel
+	backend, send := m.opts.Backend, m.opts.Send
+	progress := apply.Progress{
+		Begin:    func(logPath string) { send(applyBeginMsg{seq: seq, logPath: logPath}) },
+		Starting: func(i int, _ plan.Action) { send(applyStartingMsg{seq: seq, index: i}) },
+		Finished: func(i int, o apply.Outcome) { send(applyFinishedMsg{seq: seq, index: i, outcome: o}) },
+	}
+	run := func() tea.Msg {
+		sum, err := backend.Apply(ctx, path, dryRun, progress)
+		return applyDoneMsg{seq: seq, dryRun: dryRun, summary: sum, err: err}
+	}
+	return run
+}
+
+// startRemoving opens the Removing screen and applies the plan file, after
+// yes was typed on the Confirm screen.
+func (m *Model) startRemoving(saved SavedPlan) tea.Cmd {
+	m.removing = newRemoving(m, saved)
+	m.screen = screenRemoving
+	m.result.Outcome, m.result.Pending = OutcomeApplied, &saved
+	run := m.startApply(saved.Path, false)
+	return tea.Batch(run, m.tick(), m.removing.spinner.Tick)
 }

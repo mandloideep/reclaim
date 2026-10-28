@@ -36,6 +36,19 @@ type fakeBackend struct {
 	// as a scan stopped with esc does.
 	wait  bool
 	saved SavedPlan
+
+	// applied records the plan paths Apply ran, dry runs marked "dry ";
+	// lastPlan is the plan SavePlan returned; applyWait makes Apply finish
+	// the first action and then wait for its context, as a run stopped
+	// with ctrl+c does; outcome decides the status of each action.
+	applied   []string
+	lastPlan  *plan.Plan
+	applyWait bool
+	outcome   func(a plan.Action, dry bool) apply.Outcome
+	free      int64
+	// applyErr makes the real run fail before its first action, as for a
+	// plan apply refuses.
+	applyErr error
 }
 
 func (f *fakeBackend) record(call string) {
@@ -79,9 +92,77 @@ func (f *fakeBackend) SavePlan(_ context.Context, r *finding.Report, selected []
 		if err != nil {
 			return SavedPlan{}, err
 		}
+		f.lastPlan = p
 		return SavedPlan{Path: "/Users/me/Library/Caches/reclaim/plans/plan-20261027T153000Z.json", Plan: p}, nil
 	}
+	f.lastPlan = f.saved.Plan
 	return f.saved, nil
+}
+
+// Apply plays the run of the last saved plan: every action done, or checked
+// in a dry run, unless outcome says otherwise. It removes nothing.
+func (f *fakeBackend) Apply(ctx context.Context, path string, dryRun bool, progress apply.Progress) (apply.Summary, error) {
+	f.record("Apply")
+	f.mu.Lock()
+	mark := ""
+	if dryRun {
+		mark = "dry "
+	}
+	f.applied = append(f.applied, mark+path)
+	p := f.lastPlan
+	f.mu.Unlock()
+	if f.applyErr != nil && !dryRun {
+		return apply.Summary{}, f.applyErr
+	}
+	log := "/Users/me/Library/Caches/reclaim/logs/apply-20261027T153045Z.log"
+	if progress.Begin != nil {
+		progress.Begin(log)
+	}
+	sum := apply.Summary{DryRun: dryRun, LogPath: log}
+	for i, a := range p.Actions {
+		if f.applyWait && i > 0 {
+			<-ctx.Done()
+		}
+		if ctx.Err() != nil {
+			o := apply.Outcome{Action: a, Status: apply.StatusNotRun}
+			sum.Outcomes = append(sum.Outcomes, o)
+			progress.Finished(i, o)
+			continue
+		}
+		progress.Starting(i, a)
+		o := apply.Outcome{Action: a, Status: apply.StatusDone, Freed: a.Size, Checks: []apply.Check{{Name: apply.CheckRules, OK: true}}}
+		if dryRun {
+			o.Status, o.Freed = apply.StatusChecked, 0
+		}
+		if a.NeedsSudo {
+			o.Status, o.Freed = apply.StatusManual, 0
+		}
+		if f.outcome != nil {
+			o = f.outcome(a, dryRun)
+		}
+		sum.Outcomes = append(sum.Outcomes, o)
+		sum.Freed += o.Freed
+		if o.Status == apply.StatusFailed || o.Status == apply.StatusRefused {
+			sum.Failed++
+		}
+		progress.Finished(i, o)
+	}
+	if ctx.Err() != nil {
+		return sum, errors.New("apply interrupted: " + ctx.Err().Error())
+	}
+	return sum, nil
+}
+
+// FreeSpace reports a disk that gains what the run freed.
+func (f *fakeBackend) FreeSpace(string) (int64, error) {
+	f.record("FreeSpace")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.free == 0 {
+		f.free = 41_200 * MB
+	}
+	f.free += 100 * MB
+	return f.free, nil
 }
 
 // harness drives a model the way bubbletea does: keys go to Update, the
@@ -172,6 +253,13 @@ func (h *harness) press(keys ...string) {
 		default:
 			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 		}
+		// A character typed into a text input that already has the keys
+		// only edits it; its command is the cursor's blink, which waits
+		// half a second and is not run here.
+		if h.m.overlay == overlayNone && h.m.typing() && msg.Type == tea.KeyRunes {
+			h.m.Update(msg)
+			continue
+		}
 		h.update(msg)
 	}
 }
@@ -212,7 +300,7 @@ func (h *harness) deliver(msg tea.Msg) {
 		}
 	case tea.QuitMsg:
 		h.quit = true
-	case scanDoneMsg, planSavedMsg:
+	case scanDoneMsg, planSavedMsg, applyDoneMsg:
 		h.flushSent()
 		h.update(msg)
 	}

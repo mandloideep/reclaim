@@ -85,7 +85,7 @@ func ProtectedList(opts ProtectedOptions) []ProtectedEntry {
 			Text: "never removed itself, nor any folder that contains it; what reclaim removes lies inside a root"})
 	}
 	for _, ex := range opts.Exclude {
-		text := "the scan never enters it and drops every finding that is it, lies inside it or holds it"
+		text := "the scan never enters it, and apply refuses any target that is it, lies inside it or holds it"
 		if opts.ConfigPath != "" {
 			text += "; set in " + opts.ConfigPath
 		}

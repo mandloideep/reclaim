@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -876,15 +877,18 @@ func TestCanceledRunDoesNothing(t *testing.T) {
 
 func TestProgressIsReported(t *testing.T) {
 	e := newEnv(t)
-	var seen []int
+	var seen []string
 	_, _, err := run(t, e, newPlan([]string{e.root},
 		removeAction(filepath.Join(e.root, "p", "a"), finding.KindDir),
 		removeAction(filepath.Join(e.root, "p", "b"), finding.KindDir),
 	), func(o *Options) {
-		o.Progress = func(i int, _ Outcome) { seen = append(seen, i) }
+		o.Progress = Progress{
+			Starting: func(i int, a plan.Action) { seen = append(seen, fmt.Sprintf("start %d %s", i, filepath.Base(a.Path))) },
+			Finished: func(i int, o Outcome) { seen = append(seen, fmt.Sprintf("end %d %s", i, o.Status)) },
+		}
 	})
 	require.NoError(t, err)
-	require.Equal(t, []int{0, 1}, seen)
+	require.Equal(t, []string{"start 0 a", "end 0 gone", "start 1 b", "end 1 gone"}, seen, "both edges of every action")
 }
 
 func TestRemoveInRootRefusesReplacedTargets(t *testing.T) {
@@ -928,4 +932,31 @@ func TestComponentCount(t *testing.T) {
 	require.Equal(t, 0, componentCount("/"))
 	require.Equal(t, 2, componentCount("/Users/me"))
 	require.Equal(t, 4, componentCount("/Users/me/Code/app"))
+}
+
+// TestStopFinishesTheRunningAction proves Options.Stop stops a run between
+// actions: the action that runs when it closes finishes, with its context
+// still live, and the rest are not run.
+func TestStopFinishesTheRunningAction(t *testing.T) {
+	e := newEnv(t)
+	cache := filepath.Join(e.home, ".npm", "_cacache")
+	write(t, filepath.Join(cache, "a"), 400)
+	later := filepath.Join(e.root, "web", "node_modules")
+	write(t, filepath.Join(later, "x"), 10)
+	stop := make(chan struct{})
+	fake := &execx.Fake{
+		Tools:   map[string]string{"npm": "/usr/bin/npm"},
+		Outputs: map[string]string{"npm config get cache": filepath.Dir(cache)},
+		OnRun: func([]string) error {
+			close(stop) // ctrl+c arrives while the command runs
+			return os.Remove(filepath.Join(cache, "a"))
+		},
+	}
+	p := newPlan([]string{e.root, e.home}, commandAction(cache, "npm", "cache", "clean", "--force"), removeAction(later, finding.KindDir))
+	sum, err := Run(t.Context(), p, Options{Home: e.home, Walker: fsx.NewWalker(1), Exec: fake, Stop: stop})
+	require.ErrorContains(t, err, "apply interrupted: stopped after the action that was running")
+	require.Equal(t, StatusDone, sum.Outcomes[0].Status)
+	require.Equal(t, int64(400), sum.Outcomes[0].Freed)
+	require.Equal(t, StatusNotRun, sum.Outcomes[1].Status)
+	require.True(t, exists(filepath.Join(later, "x")))
 }

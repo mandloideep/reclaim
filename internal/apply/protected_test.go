@@ -39,10 +39,11 @@ func TestProtectedListCoversTheDenylists(t *testing.T) {
 	require.Contains(t, paths, "/Users/me/Code")
 	require.Equal(t, ProtectedExclude, paths["/Users/me/Code/archive"])
 
-	// Every path the list names is refused by the path checks, except
-	// exclude entries, which the scan drops.
+	// Every path the list names is refused by the path checks, and the
+	// exclude entries by the exclude check.
 	for p, src := range paths {
 		if src == ProtectedExclude {
+			require.Error(t, checkExcluded(p, []string{"/Users/me/Code/archive"}), p)
 			continue
 		}
 		require.Error(t, checkProtected(p, home, "", []string{"/Users/me"}), "%s is listed as protected", p)

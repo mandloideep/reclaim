@@ -9,7 +9,7 @@ Run `reclaim` with no arguments in a terminal and one screen walks you through i
 
 Status: phases 1 to 4 are complete, and phase 5, the interactive screen, is in progress.
 `scan`, `here`, `select`, `apply`, `worktrees` and `done` work on macOS and Linux, with table, JSON and Markdown output, an interactive checklist, a config file, shell completion, release binaries, a Homebrew formula, an install script and a skill for coding agents.
-The screen scans and reviews today and saves the plan you continue with; confirming and removing from the screen come next, and until then `reclaim apply` runs the plan.
+The screen scans, reviews, saves the plan, checks it and, once you type `yes`, removes it, all with the same code as the commands below; the ignore list and the folder tab come next.
 Windows is not supported.
 [docs/DESIGN.md](docs/DESIGN.md) is the specification.
 
@@ -44,7 +44,7 @@ go install github.com/mandloideep/reclaim/cmd/reclaim@latest
 ## Quick start
 
 ```
-reclaim                         # in a terminal: scan, review and save a plan on one screen
+reclaim                         # in a terminal: scan, review, confirm and remove on one screen
 ```
 
 The same steps one command at a time, which also work in scripts and pipes:
@@ -98,7 +98,8 @@ Anything that needs `sudo` is printed as a command for you to run.
 - A git worktree is removed only with `git worktree remove`, never with `--force`, after `apply` checks again, right before acting, that it is a linked worktree at the commit the scan saw and that nothing in it is uncommitted, untracked, ignored outside build folders, on no branch, or on no remote without being exactly merged into the remote default branch.
 A worktree whose work exists nowhere else is never removed, whoever asks and whatever flags are given; reclaim prints the `--force` command for you instead.
 Branches are never deleted and nothing is ever pushed or fetched.
-- Every `apply` run writes a log of what it did and how much it freed.
+- Every `apply` run writes a log of what it did, the checks of every action and how much it freed, and `apply --dry-run` runs every check without removing anything.
+- The interactive screen removes nothing itself: it saves a plan with the code `select` uses and applies it with the code `apply` uses, only after you type `yes`; `P` on every screen lists what reclaim never removes.
 
 ## Commands
 
@@ -122,7 +123,19 @@ While the scan runs, one row per category says what it is doing and what it has 
 ![The reclaim scanning screen with project artifacts done, the worktree scanner asking GitHub about branches and Docker inspecting stopped containers](docs/screenshots/ui-scanning.svg)
 
 The Review screen is the checklist of `select` with a details pane: the full path, the tier in words, the restore command, the root and project apply checks it against, what apply checks before removing it and the exact action, and for a worktree everything the worktree scanner found, with the commands that save its work.
-`n` clears the selection, `i` hides the details, `w` writes the plan to `--out` and quits, and `c` saves the plan in the reclaim cache folder and prints the `reclaim apply` command that runs it.
+`n` clears the selection, `i` hides the details and `J` and `K` scroll them, `w` writes the plan to `--out` and quits, and `c` saves the plan in the reclaim cache folder and continues to Confirm.
+
+The Confirm screen lists the plan the way `reclaim apply` does, says what is checked before every removal, and asks you to type `yes`.
+`d` runs every check of every action without removing anything and marks each row ok, gone, manual or refused, with the checks of a worktree's proof by name, so a refusal shows before you confirm.
+
+![The reclaim confirm screen after d: every action of the plan marked ok, the checks of a worktree listed by name, and the prompt to type yes](docs/screenshots/ui-confirm.svg)
+
+The Removing screen shows each action as it finishes, the one running with what it should free, the freed total against the plan and the free space of the disk; `ctrl+c` stops after the current action.
+The Done screen counts what happened, prints the commands that need `sudo` in full for you to run, repeats every failure with its reason, and names the log and the plan; `r` scans again.
+When the screen closes it prints what every run removed, and reclaim exits 1 when a run failed or was stopped.
+
+![The reclaim removing screen with four actions done, one running and eleven waiting](docs/screenshots/ui-removing.svg)
+
 `P` on every screen lists what reclaim never removes, rendered from the tables its checks use, and `?` lists the keys.
 The screen itself never removes anything.
 
@@ -196,6 +209,9 @@ Prints every action with its size, asks you to type `yes`, then carries the acti
 - `--keep-going` continues after a failed action instead of stopping.
 - `--stale-ok` accepts a plan whose scan is more than 24 hours old.
 - `--log apply.log` appends the log to that file instead of a new one in the reclaim cache folder.
+- `--dry-run` runs every check of every action and removes nothing: it prints what reclaim never removes, then one line per action, checked, gone, manual or refused with the reason, needs no `yes` and writes a log marked as a dry run.
+
+Apply also refuses any target that is, lies inside or holds an `exclude` entry of the config file, whatever the plan says.
 
 ### worktrees
 
@@ -257,7 +273,7 @@ Every key is optional, flags override the file, and an unknown key is an error t
 
 ```toml
 roots = ["~/Code", "~/Downloads"]   # replaces the default scan roots
-exclude = ["~/Code/archive"]        # never walked, never offered
+exclude = ["~/Code/archive"]        # never walked, never offered, refused by apply
 min_size = "20MB"                   # default for --min-size
 stale = "60d"                       # default for --stale
 

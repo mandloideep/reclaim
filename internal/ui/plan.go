@@ -16,15 +16,25 @@ import (
 func (p *Printer) Plan(pl *plan.Plan) {
 	p.printf("%s %s in %s, scanned %s\n", p.bold.Render("Plan:"), p.bold.Render(units.FormatSize(pl.TotalSize())),
 		plural(len(pl.Actions), "action", "actions"), p.age(pl.Scanned))
-	idxWidth := len(strconv.Itoa(len(pl.Actions)))
 	for i := range pl.Actions {
 		a := &pl.Actions[i]
-		p.println(pad(strconv.Itoa(i+1)+".", idxWidth+2) + p.Tier(a.Tier) + " " + size(a.Size) + "  " + p.ActionLine(a))
-		indent := strings.Repeat(" ", idxWidth+2+13)
+		p.println(p.PlanLine(i, len(pl.Actions), a))
 		if a.Warning != "" {
-			p.println(indent + p.warn.Render("! "+a.Warning))
+			p.println(PlanIndent(len(pl.Actions)) + p.warn.Render("! "+a.Warning))
 		}
 	}
+}
+
+// PlanLine is one action of a plan as apply lists it: its number, tier,
+// size and what it does.
+func (p *Printer) PlanLine(i, total int, a *plan.Action) string {
+	idxWidth := len(strconv.Itoa(total))
+	return pad(strconv.Itoa(i+1)+".", idxWidth+2) + p.Tier(a.Tier) + " " + size(a.Size) + "  " + p.ActionLine(a)
+}
+
+// PlanIndent lines text up under the action of a plan line.
+func PlanIndent(total int) string {
+	return strings.Repeat(" ", len(strconv.Itoa(total))+2+13)
 }
 
 // ActionLine describes what an action does in one line.
@@ -63,7 +73,8 @@ func (p *Printer) ActionLine(a *plan.Action) string {
 // Outcome prints one line of apply progress: the position, the result, the
 // bytes freed and what the action did, with the error below a failure. The
 // result is done, gone (the target no longer existed), failed, manual (needs
-// sudo, printed instead of run) or skipped (an earlier failure stopped the run).
+// sudo, printed instead of run) or skipped (an earlier failure stopped the run),
+// and in a dry run checked (every check passed) or refused (a check failed).
 func (p *Printer) Outcome(index, total int, o apply.Outcome) {
 	width := len(strconv.Itoa(total))
 	prefix := fmt.Sprintf("[%*d/%d] ", width, index+1, total)
@@ -81,6 +92,10 @@ func (p *Printer) Outcome(index, total int, o apply.Outcome) {
 		status = p.warn.Render("manual")
 	case apply.StatusFailed:
 		status = p.tierC.Render("failed")
+	case apply.StatusChecked:
+		status = p.tierA.Render("checked")
+	case apply.StatusRefused:
+		status = p.tierC.Render("refused")
 	default:
 		status = p.dim.Render("skipped")
 	}
