@@ -33,6 +33,35 @@ const lookupTimeout = 8 * time.Second
 // lookupConcurrency bounds the gh calls running at once.
 const lookupConcurrency = 6
 
+// lookupKey is one branch of one GitHub repository.
+type lookupKey struct{ repo, branch string }
+
+// lookupKeys returns the branches LookupPullRequests asks about, in the
+// order of the states, and the states of each.
+func lookupKeys(states []*finding.WorktreeState) ([]lookupKey, map[lookupKey][]*finding.WorktreeState) {
+	byKey := map[lookupKey][]*finding.WorktreeState{}
+	var keys []lookupKey
+	for _, s := range states {
+		repo, ok := GitHubRepo(s.Origin)
+		if !ok || s.Branch == "" {
+			continue
+		}
+		k := lookupKey{repo, s.Branch}
+		if _, seen := byKey[k]; !seen {
+			keys = append(keys, k)
+		}
+		byKey[k] = append(byKey[k], s)
+	}
+	return keys, byKey
+}
+
+// PullRequestLookups counts the branches LookupPullRequests would ask
+// GitHub about, for progress reports.
+func PullRequestLookups(states []*finding.WorktreeState) int {
+	keys, _ := lookupKeys(states)
+	return len(keys)
+}
+
 // LookupPullRequests asks GitHub, through gh, for the pull request of every
 // branch whose repository's origin is on GitHub, once per branch, and sets
 // PR on the states. It never changes a verdict: the commit based checks are
@@ -40,20 +69,7 @@ const lookupConcurrency = 6
 // callers report as one warning; states without an answer are left as they
 // were.
 func LookupPullRequests(ctx context.Context, env Env, states []*finding.WorktreeState) error {
-	type key struct{ repo, branch string }
-	byKey := map[key][]*finding.WorktreeState{}
-	var keys []key
-	for _, s := range states {
-		repo, ok := GitHubRepo(s.Origin)
-		if !ok || s.Branch == "" {
-			continue
-		}
-		k := key{repo, s.Branch}
-		if _, seen := byKey[k]; !seen {
-			keys = append(keys, k)
-		}
-		byKey[k] = append(byKey[k], s)
-	}
+	keys, byKey := lookupKeys(states)
 	if len(keys) == 0 {
 		return nil
 	}

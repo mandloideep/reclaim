@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	"github.com/mandloideep/reclaim/internal/finding"
@@ -71,6 +72,13 @@ func (s *Scanner) Scan(ctx context.Context, env scan.Env) ([]finding.Finding, er
 		return nil, err
 	}
 	arts := idx.ArtifactsFor(s.Name())
+	switch len(arts) {
+	case 0:
+	case 1:
+		env.Step("measuring 1 folder")
+	default:
+		env.Step("measuring " + strconv.Itoa(len(arts)) + " folders")
+	}
 	out := make([]finding.Finding, len(arts))
 	keep := make([]bool, len(arts))
 	var wg sync.WaitGroup

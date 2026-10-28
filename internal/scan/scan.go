@@ -121,6 +121,14 @@ type Env struct {
 	// Diag receives warnings and notes for the report. The runner binds it to
 	// the scanner being run.
 	Diag Diagnostics
+	// Progress receives scan events. Nil discards them, like Log and Diag.
+	// The runner binds it to the scanner being run, and it is called from
+	// several goroutines at once.
+	Progress func(Event)
+	// Shown is the filter the caller applies to the findings afterwards,
+	// such as the minimum size, so that ScannerFinished counts what the
+	// report will show. The zero filter counts everything.
+	Shown Filter
 	// Worktrees tune the worktree scanners.
 	Worktrees WorktreeOptions
 	// ReportRoots are the roots the report will record, inside which apply
@@ -332,6 +340,13 @@ func Run(ctx context.Context, scanners []Scanner, env Env, concurrency int) Resu
 		wg       sync.WaitGroup
 		sem      = make(chan struct{}, concurrency)
 	)
+	if env.Progress != nil {
+		planned := make([]PlannedScanner, len(scanners))
+		for i, s := range scanners {
+			planned[i] = PlannedScanner{Name: s.Name(), Category: s.Category()}
+		}
+		env.Progress(Event{Kind: Planned, Scanners: planned})
+	}
 	for _, s := range scanners {
 		wg.Go(func() {
 			select {
@@ -340,9 +355,28 @@ func Run(ctx context.Context, scanners []Scanner, env Env, concurrency int) Resu
 				return
 			}
 			defer func() { <-sem }()
+			// Both cases above may be ready at once, and select picks one
+			// at random, so a canceled scan must not start another scanner.
+			if ctx.Err() != nil {
+				return
+			}
 			senv := env
 			senv.Diag = diag.For(s.Name())
-			got := runOne(ctx, s, senv)
+			senv.Progress = boundProgress(env.Progress, s)
+			if senv.Progress != nil {
+				senv.Progress(Event{Kind: ScannerStarted})
+			}
+			got, err := runOne(ctx, s, senv)
+			if senv.Progress != nil {
+				shown := env.Shown.Apply(got)
+				n := 0
+				for i := range shown {
+					if shown[i].Actionable() {
+						n++
+					}
+				}
+				senv.Progress(Event{Kind: ScannerFinished, Findings: n, Size: finding.ReclaimableSize(shown), Err: err})
+			}
 			mu.Lock()
 			if isCatchAll(s) {
 				catchAll = append(catchAll, got...)
@@ -354,7 +388,7 @@ func Run(ctx context.Context, scanners []Scanner, env Env, concurrency int) Resu
 	}
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
-		diag.Warn("", "scan interrupted: "+err.Error())
+		diag.Warn("", interruptedPrefix+err.Error())
 	}
 	findings = append(findings, withoutOverlaps(catchAll, findings)...)
 	finding.Sort(findings)
@@ -390,17 +424,22 @@ func isWithin(path, parent string) bool {
 	return path == parent || strings.HasPrefix(path, strings.TrimSuffix(parent, string(filepath.Separator))+string(filepath.Separator))
 }
 
-func runOne(ctx context.Context, s Scanner, env Env) (out []finding.Finding) {
+// runOne runs one scanner and normalizes its findings. The error is the one
+// the scanner returned or the panic it raised, which is also recorded as a
+// warning.
+func runOne(ctx context.Context, s Scanner, env Env) (out []finding.Finding, failure error) {
 	defer func() {
 		if r := recover(); r != nil {
 			env.Logger().Error("scanner panicked", "scanner", s.Name(), "panic", r, "stack", string(debug.Stack()))
 			env.Diag.Warn("", fmt.Sprintf("scanner crashed and was skipped: %v", r))
 			out = nil
+			failure = fmt.Errorf("scanner crashed and was skipped: %v", r)
 		}
 	}()
 	got, err := s.Scan(ctx, env)
 	if err != nil {
 		env.Diag.Warn("", "scanner failed: "+err.Error())
+		failure = fmt.Errorf("scanner failed: %w", err)
 	}
 	for _, f := range got {
 		f.Scanner = s.Name()
@@ -418,5 +457,5 @@ func runOne(ctx context.Context, s Scanner, env Env) (out []finding.Finding) {
 		f.ID = finding.MakeID(f.Scanner, f.Target)
 		out = append(out, f)
 	}
-	return out
+	return out, failure
 }

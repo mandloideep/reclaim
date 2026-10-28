@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -353,4 +355,35 @@ func TestGitCommitTime(t *testing.T) {
 		_, err := GitCommitTime(&execx.Fake{})(context.Background(), t.TempDir())
 		require.True(t, errors.Is(err, os.ErrNotExist))
 	})
+}
+
+func TestDiscoverReportsProgress(t *testing.T) {
+	root := t.TempDir()
+	for i := range 30 {
+		touch(t, filepath.Join(root, "p"+strconv.Itoa(i), "package.json"), time.Time{})
+		mkdir(t, filepath.Join(root, "p"+strconv.Itoa(i), "src", "lib"))
+		mkdir(t, filepath.Join(root, "p"+strconv.Itoa(i), "node_modules", "dep"))
+	}
+	var mu sync.Mutex
+	var reports []Walked
+	start := time.Now()
+	ix, err := Discover(context.Background(), []string{root}, []Matcher{nameMatcher("node_modules")}, Options{Progress: func(w Walked) {
+		mu.Lock()
+		defer mu.Unlock()
+		reports = append(reports, w)
+	}})
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	require.Len(t, ix.Projects, 30)
+	require.NotEmpty(t, reports)
+	last := reports[len(reports)-1]
+	// The root, 30 projects with src and src/lib, and the node_modules
+	// folders, which are read to match them but not entered.
+	require.Equal(t, Walked{Folders: 1 + 30*4, Projects: 30, Done: true}, last)
+	for _, w := range reports[:len(reports)-1] {
+		require.False(t, w.Done)
+		require.LessOrEqual(t, w.Folders, last.Folders)
+	}
+	// At most one report per interval while walking, plus the last one.
+	require.LessOrEqual(t, len(reports)-1, int(elapsed/progressInterval)+1)
 }

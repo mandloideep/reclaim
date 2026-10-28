@@ -59,10 +59,12 @@ func (Scanner) Scan(ctx context.Context, env scan.Env) ([]finding.Finding, error
 		return nil, errors.New("no Docker client available")
 	}
 	cli := env.Docker
+	env.Step("listing containers")
 	containers, err := cli.ContainerList(ctx, container.ListOptions{All: true, Size: true})
 	if err != nil {
 		return nil, fmt.Errorf("list containers at %s: %w", cli.DaemonHost(), err)
 	}
+	env.Step("listing images, volumes and the build cache")
 	du, err := cli.DiskUsage(ctx, types.DiskUsageOptions{
 		Types: []types.DiskUsageObject{types.ImageObject, types.VolumeObject, types.BuildCacheObject},
 	})
@@ -97,6 +99,7 @@ func (Scanner) Scan(ctx context.Context, env scan.Env) ([]finding.Finding, error
 	}
 
 	var out []finding.Finding
+	env.Step("inspecting stopped containers")
 	for _, c := range containers {
 		if err := ctx.Err(); err != nil {
 			return nil, err

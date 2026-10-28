@@ -3,10 +3,13 @@
 `reclaim` finds the disk space a developer machine can get back: build artifacts, dependency folders, git worktrees that coding agents left behind, package manager caches, Docker leftovers, app caches and forgotten downloads.
 It shows everything with its size and says how each item comes back, and it removes only what you pick and confirm.
 
-![reclaim scan listing project artifacts, package caches, Docker objects, app caches and downloads by size](docs/screenshots/scan.svg)
+Run `reclaim` with no arguments in a terminal and one screen walks you through it: choose what to look at, watch the scan, then review what it found, with everything reclaim knows about the item under the cursor and what it will check before removing it.
 
-Status: phases 1 to 4 are complete.
+![The reclaim review screen: findings grouped by category and project with tier A ticked, a repository's worktrees with their merge state and pull requests, and the details of the selected build folder on the right](docs/screenshots/ui-review.svg)
+
+Status: phases 1 to 4 are complete, and phase 5, the interactive screen, is in progress.
 `scan`, `here`, `select`, `apply`, `worktrees` and `done` work on macOS and Linux, with table, JSON and Markdown output, an interactive checklist, a config file, shell completion, release binaries, a Homebrew formula, an install script and a skill for coding agents.
+The screen scans and reviews today and saves the plan you continue with; confirming and removing from the screen come next, and until then `reclaim apply` runs the plan.
 Windows is not supported.
 [docs/DESIGN.md](docs/DESIGN.md) is the specification.
 
@@ -39,6 +42,12 @@ go install github.com/mandloideep/reclaim/cmd/reclaim@latest
 `reclaim version` prints the installed version.
 
 ## Quick start
+
+```
+reclaim                         # in a terminal: scan, review and save a plan on one screen
+```
+
+The same steps one command at a time, which also work in scripts and pipes:
 
 ```
 reclaim scan                    # report what can be reclaimed; changes nothing
@@ -95,6 +104,30 @@ Branches are never deleted and nothing is ever pushed or fetched.
 
 Every command accepts `--config path` to read another config file and `--verbose` for debug logs.
 
+### ui
+
+```
+reclaim ui [path...]
+reclaim
+```
+
+Opens the interactive screen; `reclaim` alone does the same when standard input and output are a terminal, and prints the help otherwise, so `reclaim | cat` keeps working.
+The Start screen chooses what to look at: the whole machine, one folder, which is the current one unless you type another with `p`, or the git worktrees alone.
+It also ticks the scanner categories, the minimum size (`m`), the stale filter (`s`) and whether GitHub is asked about pull requests (`g`), and `o` opens the last report without scanning.
+
+![The reclaim start screen with the whole machine selected, every scanner category ticked and the last report named](docs/screenshots/ui-start.svg)
+
+While the scan runs, one row per category says what it is doing and what it has found so far; `esc` stops it and reviews what was found.
+
+![The reclaim scanning screen with project artifacts done, the worktree scanner asking GitHub about branches and Docker inspecting stopped containers](docs/screenshots/ui-scanning.svg)
+
+The Review screen is the checklist of `select` with a details pane: the full path, the tier in words, the restore command, the root and project apply checks it against, what apply checks before removing it and the exact action, and for a worktree everything the worktree scanner found, with the commands that save its work.
+`n` clears the selection, `i` hides the details, `w` writes the plan to `--out` and quits, and `c` saves the plan in the reclaim cache folder and prints the `reclaim apply` command that runs it.
+`P` on every screen lists what reclaim never removes, rendered from the tables its checks use, and `?` lists the keys.
+The screen itself never removes anything.
+
+It takes the flags of `scan`, `--min-size`, `--category`, `--stale`, `--depth`, `--all` and `--docker-label`, which prefill the Start screen, and `--out plan.json`.
+
 ### scan
 
 ```
@@ -104,6 +137,8 @@ reclaim scan [path...]
 Reports everything reclaimable, grouped by category and then by project, Docker object kind or scanner, largest first.
 With no path it walks the roots from the config file, or `~/Code`, `~/Developer`, `~/Projects`, `~/src`, `~/work` and `~/Downloads`, whichever exist, and checks package caches, Docker, app caches and Downloads.
 With paths it looks only for project artifacts and git worktrees under them.
+
+![reclaim scan listing project artifacts, package caches, Docker objects, app caches and downloads by size](docs/screenshots/scan.svg)
 
 - `--json` prints the full report as JSON, `--md` prints a Markdown summary for an issue or a document.
 - `--min-size 50MB` hides smaller findings; the default is 10 MB and `0` shows everything.
@@ -291,6 +326,7 @@ type Scanner interface {
 
 `Scan` must not change anything and must stop when `ctx` is canceled.
 Everything it needs, such as the home folder, the size walker, a runner for asking tools where their caches are and the Docker client, comes from `scan.Env`, so tests can pass fakes.
+A scanner with a long phase calls `env.Step("listing images")`, which the interactive screen shows on the scanner's row while it runs.
 Each finding says what `apply` does with it, its tier, how to get it back and, for tier C, a warning.
 
 Scanners live in family packages under `internal/scanners`: `projects` for artifact folders inside projects, `worktrees` for git worktrees, `caches` for package managers, `docker`, `appcache` and `downloads`.

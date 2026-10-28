@@ -239,8 +239,9 @@ type Backend interface {
     Apply(ctx context.Context, path string, dryRun bool, progress apply.Progress) (apply.Summary, error)
     // Protected returns the protected list in words, built by apply from the tables its checks use.
     Protected(roots []string) []apply.ProtectedEntry
-    // SavePlan builds a plan from a report and the selected findings, saves it under the state folder and returns its path.
-    SavePlan(r *finding.Report, selected []finding.Finding) (string, error)
+    // SavePlan builds a plan from a report and the selected findings, proves the selected worktrees,
+    // saves the plan under the state folder and returns it with its path and the worktrees left out.
+    SavePlan(ctx context.Context, r *finding.Report, selected []finding.Finding) (SavedPlan, error)
     // FreeSpace reports the free bytes of the volume holding path.
     FreeSpace(path string) (int64, error)
     // Ignore adds paths or targets to the ignore list.
@@ -249,7 +250,11 @@ type Backend interface {
 ```
 
 `ScanRequest` carries the mode, whole machine, one folder or worktrees, the paths, the categories, the minimum size, the stale window, the depth, the `--all` and Docker label flags and whether the GitHub lookup runs.
+`SavedPlan` holds the plan file's path, the plan as saved and the selected worktrees that checks 1 to 5 of the proof left out, with the check that failed, because the Confirm screen prints the plan's lines and names those worktrees and the screens read no files.
+`SavePlan` takes a context because the proof runs git.
 The only backend method that removes anything takes a plan path, so a review can see that no screen removes anything itself.
+The methods arrive with the screens that need them: the first pull request of phase 5 has `Scan`, `Protected` and `SavePlan`, the Confirm and Removing screens add `Apply` and `FreeSpace`, and the ignore list adds `Ignore`.
+A test parses the sources of `internal/tui` and fails if any file imports a package outside an allowlist that leaves out `os`, `os/exec`, `syscall`, cgo and the Docker client, uses a dot import or sits in a sub-package, if a screen uses anything of `apply` but the types of the protected list, outcomes and checks, or anything of `plan` but its types and `FromFinding`, or if `Backend` gains a method that is not on this list.
 Tests give the screens a fake backend and drive them with key messages, as the checklist tests do.
 `fsx.FreeSpace` reads `statfs` in `stat_darwin.go` and `stat_linux.go` and reports not supported elsewhere.
 
@@ -273,8 +278,10 @@ type Scanner interface {
 `Env` carries the roots, the home directory, the OS, the time the scan started, the folders holding installed applications, the models folder of a system wide Ollama service on Linux, an environment variable reader, a command runner for asking tools where their caches live, a Docker client that may be nil, the Docker label filter, the size walker, the shared project walk, sizes already measured in the same run, a logger and a diagnostics sink for warnings and notes.
 Everything a scanner needs comes from `Env` so tests can substitute fakes.
 `Env` also carries `Progress`, a function that receives scan events, nil to discard them like `Log` and `Diag`.
-The runner emits `ScannerStarted` and `ScannerFinished`, the latter with the finding count, the size and the error, and a scanner emits `Step` with a short text for a long phase, such as asking GitHub about branches or listing Docker images.
-The shared project walk reports the folders it has visited and the projects it has found through a callback in `project.Options`, at most ten times a second, which the project scanners forward as `Step` events.
+The runner emits `Planned` once with every scanner it will start, so a screen knows which categories are still waiting, then `ScannerStarted` and `ScannerFinished` for each, the latter with the count of findings that can be applied, their reclaimable size and the error, and a scanner emits `Step` with a short text for a long phase through `env.Step`, such as asking GitHub about branches or listing Docker images.
+The shared project walk reports the folders it has visited and the projects it has found through a callback in `project.Options`, at most ten times a second and once more when it ends, which the scan forwards as `Step` events of the project category, or of the worktree category when only the worktree scanners walk.
+The walk is shared by every scanner that reads it, so its progress belongs to the row and not to one scanner.
+A Docker scanner that cannot reach the daemon is reported as a `ScannerFinished` with the error, as it never starts.
 There is no general filesystem abstraction.
 The walker needs device ids, inodes and link counts, which an in-memory filesystem would have to fake, so scanner tests build real fixtures in temp directories instead.
 Scanners run concurrently with a bounded worker count.
@@ -588,6 +595,7 @@ Only the rows that fit in the window are rendered, so the checklist stays respon
 The plan file is JSON and `select` tells the user where it was written, so editing it by hand is always an option.
 For users who never want a screen, `--preset` and `--json` piped through `jq` give the same result.
 The tree is `ui.Tree`: it holds the findings, the selection, the expansion state, the filters, the sort and the cursor, builds its rows from the shared grouping and renders only the visible ones.
+A repository row of worktrees shows its counts per verdict in the few words its row has room for, "1 removable, 1 pushed, 1 work, 1 in use", in place of its size, which its details show; a worktree row shows its tool, its branch and its verdict in words, and a finding that reclaim does not measure because it never offers it, such as another clone, shows a dash for its size.
 The checklist of `select` and the review screen of the interactive mode embed the same tree, so there is one implementation and one set of tests; the checklist keeps its keys, outcome and footer, and the review screen adds the details pane, the tabs and its own keys.
 
 ## Interactive mode
@@ -626,11 +634,14 @@ reclaim                                                                    v0.3.
 enter scan   space toggle   m min size   s stale   g github   p path   o open last report   x ignored   P protected   ? help   q quit
 ```
 
-- The three modes map to `scan`, `here` and `worktrees`.
+- The three modes map to `scan`, `scan path` and `worktrees`; the folder breakdown of `here` is the second tab of "This folder" on the Review screen.
 "Whole machine" uses the roots the configuration or the defaults give, "This folder" takes a path, default the current directory, and "Worktrees" runs the three worktree scanners alone, with no minimum size and with worktrees held by a live lock listed too, exactly as `reclaim worktrees` does.
 Paths given on the command line select "This folder" for one path, or the `scan path...` behavior for several.
+"This folder" looks at project artifacts and worktrees in the folder, as `scan path` does, and ticking another category looks outside it too, as `--all` does.
+- Up and down choose the mode, left and right move along the scanner row, and space ticks the category under that cursor.
 - The scanner row toggles whole categories, which is what `--category` does with a category name.
-Scanners the configuration disables start unticked and say so.
+A ticked category runs the scanners of it that the configuration leaves enabled, or that `--category` selected, so a disabled scanner such as `ollama` stays off when its category is ticked.
+Scanners the configuration disables start unticked and say so; ticking a category whose scanners are all disabled runs them, as `--category` would.
 - `m` cycles the minimum size through 0, 10 MB, 50 MB, 100 MB and 1 GB, and `s` cycles the stale filter through off, 30 days, 90 days, 180 days and a year.
 These are the completion choices of the flags, so the screen and the shell agree.
 - `g` toggles the GitHub lookup for this run, which `[worktrees] github` sets by default; off keeps the scan offline.
@@ -664,6 +675,10 @@ The GitHub lookup failing, because `gh` is missing, signed out or offline, is on
 - `esc` cancels the context.
 `scan.Run` returns the findings collected so far with a warning that the scan was interrupted, and the review screen opens on them with that warning visible.
 - When the scan finishes, the report is saved as `last-report.json`, exactly as `scan`, `here` and `worktrees` do, so `reclaim select` afterwards sees the same report.
+Its scope names the command the scan matches with the flags the screen set, such as `reclaim scan --min-size=10MB` or `reclaim worktrees`, so the provenance line of `select` and the title of the Review screen say what it covered.
+A scan stopped with `esc` is not saved, because a partial report is not what `select` should read next.
+Whether a scan was stopped is read from its report, which carries the "scan interrupted" warning when a scanner did not finish, so a scan that finished just before `esc` is saved and reviewed as finished.
+The scope's `--category` names exactly the scanners that ran whenever they differ from what the command runs by default with the configuration, whole categories where all of a category ran.
 
 ### Review
 
@@ -714,7 +729,9 @@ Worktrees keep the shape the tables and the checklist have: grouped by repositor
 Every worktree row shows its verdict in the words the scanner writes, such as `squash, PR #41 merged`, `pushed, PR #44 open`, `in use, pid 4242`, `12 modified, 3 untracked`, `stale lock, pid 50949 gone`, `outside the scanned roots` or `another clone of this origin`, and rows that are listed only cannot be ticked.
 The repository row shows the counts per verdict, "1 removable, 1 pushed, 1 holding work, 1 in use".
 A Codex task folder shows under its worktrees as the row that goes last, "task folder, removed once empty", and the Confirm list orders it after them, as the plan does.
-Selected totals count a finding inside another selected finding once, as the report totals do, so the footer, the Confirm screen and the table agree.
+Selected totals count a finding inside another selected finding once, as the report totals do, so the footer, the Confirm screen and the table agree; a plan's total counts its actions the same way.
+While the plan is being saved no key acts, so the screen never ends with a plan written that it did not name.
+Plan files are named by reserving `plans/plan-<timestamp>.json`, or the same name with `-2` and up, with an exclusive create, so two screens saving in the same second never replace each other's plan.
 
 ### Confirm
 

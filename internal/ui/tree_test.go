@@ -56,8 +56,8 @@ func press(t *testing.T, m *Checklist, keys ...string) tea.Cmd {
 func moveTo(t *testing.T, m *Checklist, s string) {
 	t.Helper()
 	press(t, m, "home")
-	for range len(m.rows) {
-		if strings.Contains(m.current().title, s) {
+	for range len(m.tree.rows) {
+		if strings.Contains(m.tree.current().title, s) {
 			return
 		}
 		press(t, m, "down")
@@ -118,7 +118,7 @@ func TestChecklistGroupToggleNeverTouchesTierC(t *testing.T) {
 
 	// Tier C is selected when ticked on its own.
 	press(t, m, "enter", "down")
-	require.Equal(t, "/Users/me/Code/lib/dist", m.findings[m.current().leaf].Target)
+	require.Equal(t, "/Users/me/Code/lib/dist", m.tree.findings[m.tree.current().leaf].Target)
 	require.Contains(t, m.View(), "[ ] C    5.0 MB  dist  dist")
 	require.Contains(t, m.View(), "! may be the only copy", "tier C rows show their warning")
 	press(t, m, "space")
@@ -161,14 +161,14 @@ func TestChecklistAttentionCannotBeSelected(t *testing.T) {
 func TestChecklistFilterAndTier(t *testing.T) {
 	m := newTestChecklist(report())
 	press(t, m, "/", "h", "o", "m", "e")
-	require.True(t, m.filtering)
+	require.True(t, m.tree.filtering)
 	view := m.View()
 	require.Contains(t, view, "/home")
 	require.Contains(t, view, "Package caches")
 	require.Contains(t, view, "~/Library/Caches/Homebrew")
 	require.NotContains(t, view, "Project artifacts")
 	press(t, m, "enter")
-	require.False(t, m.filtering)
+	require.False(t, m.tree.filtering)
 	require.Contains(t, m.View(), "filter: home")
 
 	// A group toggle under a filter changes only what the filter shows.

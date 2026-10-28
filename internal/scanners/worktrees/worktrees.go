@@ -233,6 +233,9 @@ type target struct {
 // nil.
 func classifyAll(ctx context.Context, env *scan.Env, targets []target) ([]*finding.Finding, error) {
 	states := make([]*finding.WorktreeState, len(targets))
+	if len(targets) > 0 {
+		env.Step("checking " + plural(len(targets), "worktree", "worktrees"))
+	}
 	parallel(ctx, len(targets), func(i int) {
 		states[i] = worktree.ClassifyEntry(ctx, wenv(env), targets[i].repo, targets[i].entry)
 	})
@@ -240,6 +243,9 @@ func classifyAll(ctx context.Context, env *scan.Env, targets []target) ([]*findi
 		return nil, err
 	}
 	if env.Worktrees.GitHub {
+		if n := worktree.PullRequestLookups(states); n > 0 {
+			env.Step("asking GitHub about " + plural(n, "branch", "branches"))
+		}
 		if err := worktree.LookupPullRequests(ctx, wenv(env), states); err != nil {
 			env.Diag.Warn("", "pull request state is not shown: "+err.Error())
 		}
@@ -690,4 +696,12 @@ func subdirs(dir string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// plural formats a count with the singular or plural noun.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }

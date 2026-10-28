@@ -222,10 +222,10 @@ func hints(s *finding.WorktreeState) []string {
 			out = append(out, "gh pr create --head "+Quote(s.Branch))
 		}
 	}
-	if slices.Contains(s.Unknown, partSubmodules) {
+	if slices.Contains(s.Unknown, PartSubmodules) {
 		out = append(out, "git -C "+p+" submodule foreach git push")
 	}
-	if slices.Contains(s.Unknown, partNested) {
+	if slices.Contains(s.Unknown, PartNested) {
 		out = append(out, "commit and push the work in the repositories inside "+p)
 	}
 	if s.Locked && !s.LockLive {

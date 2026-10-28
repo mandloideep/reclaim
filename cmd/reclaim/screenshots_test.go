@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +23,9 @@ import (
 
 	"github.com/mandloideep/reclaim/internal/dockerx"
 	"github.com/mandloideep/reclaim/internal/execx"
+	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/scan"
+	"github.com/mandloideep/reclaim/internal/tui"
 	"github.com/mandloideep/reclaim/internal/ui"
 )
 
@@ -86,6 +91,12 @@ func TestScreenshots(t *testing.T) {
 	}
 	// The checklist takes over the whole screen, so no prompt sits above it.
 	shots["select"] = m.View() + "\n"
+
+	// The interactive screen, over the same machine, with the report of the
+	// scan above as the last one, started in the storefront project.
+	require.NoError(t, saveReport(a.lastReportPath(), report))
+	a.getwd = func() (string, error) { return filepath.Join(a.home, "Code", "storefront"), nil }
+	shots["ui-start"], shots["ui-scanning"], shots["ui-review"] = uiScreens(t, a)
 
 	dir := filepath.Join("testdata", "screenshots")
 	for name, got := range shots {
@@ -274,6 +285,74 @@ func screenshotApp(t *testing.T) (*app, *bytes.Buffer) {
 	}
 	a.docker = func() (dockerx.API, error) { return fake, nil }
 	return a, out
+}
+
+// uiScreens renders the Start, Scanning and Review screens of the
+// interactive mode. The scan is the real one; its progress is replayed in a
+// fixed order with the worktree and Docker scanners still running, so the
+// Scanning screen does not depend on which scanner finished first.
+func uiScreens(t *testing.T, a *app) (start, scanning, review string) {
+	t.Helper()
+	now := a.now
+	defer func() { a.now = now }()
+	d := newDriverWith(t, a, nil, uiFlags{minSize: defaultMinSize, out: "plan.json"}, 124, 20, func(o *tui.Options) {
+		o.Version = "v0.3.0"
+		o.Backend = &curatedScan{Backend: o.Backend, hold: map[string]bool{"git-worktrees": true, "docker": true},
+			after: func() { a.now = func() time.Time { return screenshotNow.Add(7 * time.Second) } }}
+	})
+	start = d.m.View() + "\n"
+	d.beforeDone = func() {
+		d.m.Update(tea.WindowSizeMsg{Width: 104, Height: 14})
+		scanning = d.m.View() + "\n"
+		d.m.Update(tea.WindowSizeMsg{Width: 124, Height: 34})
+	}
+	d.key("enter")
+	d.moveTo("~/Code/storefront  1 removable")
+	d.key("enter")
+	d.moveTo("~/Code/ripgrep-fork")
+	d.key("enter", "down")
+	return start, scanning, d.m.View() + "\n"
+}
+
+// curatedScan runs the real scan and replays its progress in the order of
+// the plan, with the last report of the project walk, and without the end
+// of the scanners it holds, which then show as running.
+type curatedScan struct {
+	tui.Backend
+	hold  map[string]bool
+	after func()
+}
+
+func (c *curatedScan) Scan(ctx context.Context, req tui.ScanRequest, progress func(scan.Event)) (*finding.Report, error) {
+	var mu sync.Mutex
+	var events []scan.Event
+	r, err := c.Backend.Scan(ctx, req, func(ev scan.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, ev)
+	})
+	var planned, walk scan.Event
+	byScanner := map[string][]scan.Event{}
+	for _, ev := range events {
+		switch {
+		case ev.Kind == scan.Planned:
+			planned = ev
+		case ev.Kind == scan.Step && ev.Scanner == "":
+			walk = ev
+		case ev.Kind == scan.ScannerFinished && c.hold[ev.Scanner]:
+		default:
+			byScanner[ev.Scanner] = append(byScanner[ev.Scanner], ev)
+		}
+	}
+	progress(planned)
+	progress(walk)
+	for _, p := range planned.Scanners {
+		for _, ev := range byScanner[p.Name] {
+			progress(ev)
+		}
+	}
+	c.after()
+	return r, err
 }
 
 // setTimes sets the access and modification times of path and everything
