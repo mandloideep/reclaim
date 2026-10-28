@@ -133,11 +133,14 @@ A plan action with the `None` action, which marks a finding listed for attention
 
 `--dry-run` runs every verification of every action and removes nothing: the path checks, the checks right before removal, checks 1 to 5 of the worktree proof, the Docker use checks, the cache location query and the `sudo` marking.
 It needs no confirmation, prints the protected list first, then one line per action with `checked`, `gone`, `manual` or `refused` and the reason, and writes a log whose start entry carries `"dry_run": true` and whose action entries carry those statuses.
+Its default log is named `dry-run-<timestamp>.log`, so it is never mistaken for a run that removed something.
+A dry run checks every action whatever fails, as `--keep-going` would, and exits 1 when any action would be refused.
+Docker has no dry run of a build cache prune, so a dry run of that action checks that the daemon answers.
 The outcome of every action carries the checks that ran, each with its name, its result and a detail, as worktree outcomes do since phase 4, and the log entry of every action lists them.
 `apply` refuses a target that is, lies under or contains an `exclude` path of the configuration or an entry of the ignore list, whatever the plan says, so the user's own protected paths hold at removal time and not only at scan time.
 `apply.ProtectedList` renders in words the tables the path checks use: the system paths, the protected home folders, the four component rule, the `.git` and project root rules, the recorded roots of the plan, and the user's `exclude` and ignore entries, each marked with where it comes from.
 The interactive screen shows it and `--dry-run` prints it, so what the user sees cannot drift from what the checks do.
-Progress is reported at both edges of every action, when it starts and when it finishes, so a caller can show the running action; `reclaim apply` keeps printing one line per outcome.
+Progress is reported at both edges of every action, when it starts and when it finishes, so a caller can show the running action, and once before the first action with the path of the log the run writes; `reclaim apply` keeps printing one line per outcome.
 
 `RunCommand` actions are limited to a fixed list.
 The package cache clean commands are exact argument lists.
@@ -253,7 +256,8 @@ type Backend interface {
 `SavedPlan` holds the plan file's path, the plan as saved and the selected worktrees that checks 1 to 5 of the proof left out, with the check that failed, because the Confirm screen prints the plan's lines and names those worktrees and the screens read no files.
 `SavePlan` takes a context because the proof runs git.
 The only backend method that removes anything takes a plan path, so a review can see that no screen removes anything itself.
-The methods arrive with the screens that need them: the first pull request of phase 5 has `Scan`, `Protected` and `SavePlan`, the Confirm and Removing screens add `Apply` and `FreeSpace`, and the ignore list adds `Ignore`.
+The methods arrive with the screens that need them: the first pull request of phase 5 had `Scan`, `Protected` and `SavePlan`, the Confirm and Removing screens added `Apply` and `FreeSpace`, and the ignore list adds `Ignore`.
+The guard test also checks that `Apply` takes nothing but a context, a plan path, the dry run flag and the progress callbacks.
 A test parses the sources of `internal/tui` and fails if any file imports a package outside an allowlist that leaves out `os`, `os/exec`, `syscall`, cgo and the Docker client, uses a dot import or sits in a sub-package, if a screen uses anything of `apply` but the types of the protected list, outcomes and checks, or anything of `plan` but its types and `FromFinding`, or if `Backend` gains a method that is not on this list.
 Tests give the screens a fake backend and drive them with key messages, as the checklist tests do.
 `fsx.FreeSpace` reads `statfs` in `stat_darwin.go` and `stat_linux.go` and reports not supported elsewhere.
@@ -715,6 +719,7 @@ For a Docker object: its kind, tags, when it last ran and what uses it.
 For a repository row: the full origin URL, the default branch, the fetch time with a note that merge state is as of that fetch, and the counts of worktrees in each state.
 For a Claude session row: that Claude Code cannot resume those sessions and which project folder is gone.
 The pane sits to the right when the window is at least 120 columns wide and below the list otherwise, and `i` hides it to give the list the whole window.
+`J` and `K`, shift and the vim keys, scroll the pane one line at a time, so a worktree's hints and `--force` command can be read in any window, and moving the cursor starts the pane at the top again; `?` lists them.
 - `n` clears the selection, the counterpart of `a`.
 - `x` adds the finding or every path below the group to the ignore list after a one line confirmation that names the path and says how to undo it, and drops the rows from the tree.
 - `w` writes the plan to `--out` and quits, saying where it was written and how to apply it, exactly as `select` does, for people who want to read or edit the plan first.
