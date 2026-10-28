@@ -199,19 +199,19 @@ func ClassifyEntry(ctx context.Context, env Env, repo *Repo, e Entry) *finding.W
 	if n, err := countHidden(ctx, env, s.Path); err != nil {
 		unknown("hidden", err)
 	} else if n > 0 {
-		block(partHidden, hiddenWords(n))
+		block(PartHidden, hiddenWords(n))
 	}
 	if n, err := countSubmodules(ctx, env, s.Path); err != nil {
 		unknown("gitlinks", err)
 	} else if n > 0 {
-		block(partSubmodules, submoduleWords(n))
+		block(PartSubmodules, submoduleWords(n))
 	}
 	if nested, size, err := nestedRepos(ctx, env.Walker, s.Path); err != nil {
 		unknown("nested", err)
 	} else {
 		s.Size = size
 		if len(nested) > 0 {
-			block(partNested, nestedWords(nested))
+			block(PartNested, nestedWords(nested))
 		}
 	}
 	if s.Head != "" {
@@ -297,13 +297,17 @@ func countHidden(ctx context.Context, env Env, dir string) (int, error) {
 // The parts of Unknown that a blocker explains: git reported them, and what
 // it reported makes the worktree one reclaim never removes.
 const (
-	partHidden     = "hidden-changes"
-	partSubmodules = "submodules"
-	partNested     = "nested-repositories"
+	// PartHidden means tracked files are marked assume-unchanged or
+	// skip-worktree, so git status cannot see changes to them.
+	PartHidden = "hidden-changes"
+	// PartSubmodules means the worktree holds submodules.
+	PartSubmodules = "submodules"
+	// PartNested means repositories lie inside the worktree.
+	PartNested = "nested-repositories"
 )
 
 // blockedParts are the parts of Unknown that blockers explain.
-func blockedParts() []string { return []string{partHidden, partSubmodules, partNested} }
+func blockedParts() []string { return []string{PartHidden, PartSubmodules, PartNested} }
 
 // failedParts are the parts of Unknown that git could not report.
 func failedParts(s *finding.WorktreeState) []string {
