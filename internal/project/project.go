@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mandloideep/reclaim/internal/fsx"
@@ -319,7 +320,24 @@ type Options struct {
 	// Exclude lists clean absolute paths the walk never enters. A root that
 	// is excluded, or lies inside an excluded path, is not walked at all.
 	Exclude []string
+	// Progress, when set, receives what the walk has covered: at most ten
+	// times a second while it runs, from the walk's goroutines, and once more
+	// with Done set when it has finished.
+	Progress func(Walked)
 }
+
+// Walked is what a walk has covered so far.
+type Walked struct {
+	// Folders counts the directories read.
+	Folders int
+	// Projects counts the projects found.
+	Projects int
+	// Done is set on the last report, once the walk has finished.
+	Done bool
+}
+
+// progressInterval is the least time between two progress reports.
+const progressInterval = 100 * time.Millisecond
 
 func (o *Options) excluded(path string) bool {
 	return slices.ContainsFunc(o.Exclude, func(ex string) bool { return IsWithin(path, ex) })
@@ -400,6 +418,9 @@ func Discover(ctx context.Context, roots []string, matchers []Matcher, opts Opti
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if opts.Progress != nil {
+		opts.Progress(ds.walked(true))
+	}
 	ds.resolveCommitTimes()
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -437,6 +458,35 @@ type discovery struct {
 	projects   map[string]*Project
 	artifacts  []Artifact
 	unreadable []fsx.Unreadable
+
+	// folders counts the directories read, and reported is when progress
+	// was last reported, in nanoseconds since the Unix epoch.
+	folders  atomic.Int64
+	reported atomic.Int64
+}
+
+// walked is what the walk has covered so far.
+func (ds *discovery) walked(done bool) Walked {
+	ds.mu.Lock()
+	projects := len(ds.projects)
+	ds.mu.Unlock()
+	return Walked{Folders: int(ds.folders.Load()), Projects: projects, Done: done}
+}
+
+// progress counts a directory read and reports progress when the last
+// report is old enough. Only the goroutine that moves the report time
+// forward reports, so reports stay at most ten a second.
+func (ds *discovery) progress() {
+	ds.folders.Add(1)
+	if ds.opts.Progress == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := ds.reported.Load()
+	if now-last < int64(progressInterval) || !ds.reported.CompareAndSwap(last, now) {
+		return
+	}
+	ds.opts.Progress(ds.walked(false))
 }
 
 func (ds *discovery) visit(t task) {
@@ -448,6 +498,7 @@ func (ds *discovery) visit(t task) {
 		ds.addUnreadable(t.path, err)
 		return
 	}
+	ds.progress()
 	d := newDir(t.path, t.parent, entries)
 	d.Project = t.owner
 
