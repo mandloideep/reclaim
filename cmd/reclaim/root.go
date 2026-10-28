@@ -17,6 +17,13 @@ import (
 // go install build, the module version from the build info is used.
 var version string
 
+// Command groups of the help, in the order it lists them: the interactive
+// screen first, then the steps it walks through.
+const (
+	groupInteractive = "interactive"
+	groupSteps       = "steps"
+)
+
 func newRootCmd(a *app) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "reclaim",
@@ -24,6 +31,8 @@ func newRootCmd(a *app) *cobra.Command {
 		Long: "reclaim finds build artifacts, dependency folders, package manager caches, Docker leftovers,\n" +
 			"app caches and forgotten downloads, shows them with sizes and removes only what you select\n" +
 			"and confirm.\n\n" +
+			"  reclaim                   in a terminal, the interactive screen: scan, review, plan\n" +
+			"  reclaim ui                the same screen, with the scan flags\n" +
 			"  reclaim scan              report what can be reclaimed, read only\n" +
 			"  reclaim here              what takes space in this folder, and what can go\n" +
 			"  reclaim select            pick findings from the last report and write a plan\n" +
@@ -36,7 +45,20 @@ func newRootCmd(a *app) *cobra.Command {
 			"and flags override the file.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// Bare reclaim opens the interactive screen when both standard
+		// input and output are terminals, and prints the help otherwise,
+		// so reclaim | cat and reclaim > file keep printing the help.
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if a.interactive == nil || !a.interactive() {
+				return cmd.Help()
+			}
+			return a.uiCommand(cmd, nil, uiFlags{minSize: defaultMinSize, out: "plan.json"})
+		},
 	}
+	root.AddGroup(
+		&cobra.Group{ID: groupInteractive, Title: "Interactive:"},
+		&cobra.Group{ID: groupSteps, Title: "Step by step, for scripts too:"},
+	)
 	root.SetIn(a.stdin)
 	root.SetOut(a.stdout)
 	root.SetErr(a.stderr)
@@ -47,13 +69,20 @@ func newRootCmd(a *app) *cobra.Command {
 	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
 		a.configRequired = cmd.Flags().Changed("config")
 	}
-	root.AddCommand(
+	steps := []*cobra.Command{
 		newScanCmd(a),
 		newHereCmd(a),
 		newSelectCmd(a),
 		newApplyCmd(a),
 		newWorktreesCmd(a),
 		newDoneCmd(a),
+	}
+	for _, c := range steps {
+		c.GroupID = groupSteps
+	}
+	root.AddCommand(newUICmd(a))
+	root.AddCommand(steps...)
+	root.AddCommand(
 		newSkillCmd(a),
 		newScannersCmd(a),
 		newVersionCmd(a),

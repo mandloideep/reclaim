@@ -113,6 +113,14 @@ func (a *app) selectCommand(cmd *cobra.Command, f selectFlags) error {
 			selected = append(selected, numbered[i])
 		}
 	}
+	return a.writePlan(cmd.Context(), report, selected, f.out)
+}
+
+// writePlan builds a plan from the selected findings, proves the selected
+// worktrees and writes the plan to out, saying where it was written and how
+// to apply it. select and the w key of the interactive screen both end
+// here.
+func (a *app) writePlan(ctx context.Context, report *finding.Report, selected []finding.Finding, out string) error {
 	if len(selected) == 0 {
 		a.sayf("%s\n", "Nothing selected, no plan written.")
 		return nil
@@ -121,34 +129,39 @@ func (a *app) selectCommand(cmd *cobra.Command, f selectFlags) error {
 	if err != nil {
 		return err
 	}
-	a.proveWorktrees(cmd.Context(), pl)
+	for _, msg := range a.proveWorktrees(ctx, pl) {
+		a.sayf("Left out of the plan: %s\n", msg)
+	}
 	if len(pl.Actions) == 0 {
 		a.sayf("%s\n", "Nothing left to remove, no plan written.")
 		return nil
 	}
-	if err := plan.Save(f.out, pl); err != nil {
+	if err := plan.Save(out, pl); err != nil {
 		return err
 	}
 	a.sayf("Wrote %s: %d actions, %s. Review it, then run: reclaim apply %s\n",
-		f.out, len(pl.Actions), units.FormatSize(pl.TotalSize()), f.out)
+		out, len(pl.Actions), units.FormatSize(pl.TotalSize()), out)
 	return nil
 }
 
 // proveWorktrees runs the proof for every worktree in the plan before it is
 // written, the first of the two times DESIGN.md requires, and drops the
-// ones that fail it, saying why. Apply proves them again before acting.
-func (a *app) proveWorktrees(ctx context.Context, pl *plan.Plan) {
+// ones that fail it. It returns why each was left out. Apply proves them
+// again before acting.
+func (a *app) proveWorktrees(ctx context.Context, pl *plan.Plan) []string {
 	opts := apply.Options{Home: a.home, Exec: a.exec, Getwd: a.getwd}
+	var leftOut []string
 	pl.Actions = slices.DeleteFunc(pl.Actions, func(act plan.Action) bool {
 		if act.Action != finding.ActionGitWorktreeRemove {
 			return false
 		}
 		if _, err := apply.ProveWorktree(ctx, opts, pl.Roots, &act); err != nil {
-			a.sayf("Left out of the plan: %v\n", err)
+			leftOut = append(leftOut, err.Error())
 			return true
 		}
 		return false
 	})
+	return leftOut
 }
 
 // parseSelection parses 1 based indices and ranges such as "1,4-9 12" into 0

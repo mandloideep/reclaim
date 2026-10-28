@@ -280,6 +280,11 @@ type scanRequest struct {
 	scope    *finding.Scope
 	// worktrees tune the worktree scanners.
 	worktrees scan.WorktreeOptions
+	// progress receives the scan's events, nil to discard them.
+	progress func(scan.Event)
+	// shown is the filter the caller applies to the report afterwards, so
+	// the progress counts what the report will show.
+	shown scan.Filter
 }
 
 // runScan runs the scanners and builds a report. Filesystem findings may live
@@ -290,6 +295,23 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 	walker := req.walker
 	if walker == nil {
 		walker = fsx.NewWalker(0)
+	}
+	walkOpts := project.Options{
+		Depth:      req.depth,
+		Home:       a.home,
+		Exclude:    req.exclude,
+		CommitTime: project.GitCommitTime(a.exec),
+	}
+	if req.progress != nil {
+		// The shared walk shows on the project row, or on the worktree row
+		// when only the worktree scanners walk.
+		row := finding.CategoryWorktree
+		if slices.ContainsFunc(req.scanners, func(s scan.Scanner) bool { return s.Category() == finding.CategoryProject }) {
+			row = finding.CategoryProject
+		}
+		walkOpts.Progress = func(w project.Walked) {
+			req.progress(scan.Event{Kind: scan.Step, Category: row, Folders: w.Folders, Projects: w.Projects})
+		}
 	}
 	env := scan.Env{
 		Roots:              req.roots,
@@ -303,15 +325,12 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 		DockerLabels:       req.labels,
 		Walker:             walker,
 		Sizes:              req.sizes,
-		Projects: project.NewSource(req.roots, reg.ProjectMatchers(), project.Options{
-			Depth:      req.depth,
-			Home:       a.home,
-			Exclude:    req.exclude,
-			CommitTime: project.GitCommitTime(a.exec),
-		}),
-		Log:       a.logger(),
-		Diag:      diag,
-		Worktrees: req.worktrees,
+		Projects:           project.NewSource(req.roots, reg.ProjectMatchers(), walkOpts),
+		Log:                a.logger(),
+		Diag:               diag,
+		Progress:           req.progress,
+		Shown:              req.shown,
+		Worktrees:          req.worktrees,
 	}
 
 	selected := req.scanners
@@ -323,6 +342,10 @@ func (a *app) runScan(ctx context.Context, reg *scanners.Registry, req scanReque
 			cli, err := a.docker()
 			if err != nil {
 				diag.For(s.Name()).Warn("", "Docker is not available: "+err.Error())
+				if req.progress != nil {
+					req.progress(scan.Event{Kind: scan.ScannerFinished, Scanner: s.Name(), Category: s.Category(),
+						Err: fmt.Errorf("not available: %w", err)})
+				}
 				selected = slices.DeleteFunc(slices.Clone(selected), func(x scan.Scanner) bool { return x.Category() == finding.CategoryDocker })
 				continue
 			}
