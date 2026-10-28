@@ -1,0 +1,14 @@
+[1mScanning the whole machine[0m                                                                  [2m0:07 elapsed[0m
+
+  [1;32mdone      [0mProject artifacts   [2m8 projects in 29 folders                        [0m   9 findings     8.7 GB
+  running   Git worktrees       [2masking GitHub about 3 branches                  [0m
+  [1;32mdone      [0mPackage caches      [2m                                                [0m   4 findings     5.8 GB
+  running   Docker              [2minspecting stopped containers                   [0m
+  [1;32mdone      [0mApp caches          [2m                                                [0m   5 findings     5.2 GB
+  [1;32mdone      [0mDownloads           [2m                                                [0m    1 finding   120.0 MB
+
+  [1mFound so far: 19 findings, 19.8 GB reclaimable[0m
+
+
+
+[1mesc[0m stops the scan and shows what was found so far

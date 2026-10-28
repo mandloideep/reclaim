@@ -1,0 +1,34 @@
+[1mReview[0m                     [2mreclaim scan --min-size=10MB, just now: 27 findings and 2 for attention only, 26.2 GB reclaimable[0m
+
+[2msort: size  tier: all[0m
+
+  [-] ▾ [1mProject artifacts[0m  8.7 GB  [2m9 items[0m[2m, 8 selected[0m                           [2m│[0m [1m~/Code/ripgrep-fork/target[0m
+    [x] ▾ ~/Code/ripgrep-fork  3.9 GB  [2m1 item[0m[2m, 1 selected[0m                        [2m│[0m 3.9 GB, tier A: rebuilds itself the next
+[7m>[0m     [x] [1;32mA[0m    3.9 GB  target[2m  rust-target[0m[2m  used 21w ago[0m                         [2m│[0m time the project builds or installs
+    [x] ▸ ~/Code/ml-pipeline  2.4 GB  [2m2 items[0m[2m, 2 selected[0m                        [2m│[0m Scanner: rust-target
+    [x] ▸ ~/Code/storefront  1.7 GB  [2m3 items[0m[2m, 3 selected[0m                         [2m│[0m Restore: cargo build
+    [x] ▸ ~/Code/weather  698.0 MB  [2m2 items[0m[2m, 2 selected[0m                          [2m│[0m Last used: 21w ago (2026-05-08)
+    [ ] ▸ ~/Code/blog  24.0 MB  [2m1 item[0m                                           [2m│[0m In root ~/Code.
+  [-] ▾ [1mGit worktrees[0m  280.0 MB  [2m3 items[0m[2m, 1 selected[0m                             [2m│[0m Project ~/Code/ripgrep-fork, which apply
+    [-] ▾ ~/Code/storefront  [2m1 removable, 1 pushed, 1 work[0m[2m, 1 selected[0m           [2m│[0m never removes.
+      [x] [1;32mA[0m  184.0 MB  claude-code  fix/checkout-rounding  [2msquash, PR #41 merged[0m [2m│[0m [2mApply checks before removing: inside the[0m
+      [ ] [1;33mB[0m   96.0 MB  claude-code  feat/gift-cards  [2mpushed, PR #44 open[0m         [2m│[0m [2mroot, not a protected folder, not the[0m
+       -     231.0 MB  codex  detached a5e1d0c9  [33m12 modified, 3 untracked[0m        [2m│[0m [2mproject root, no .git entry or project[0m
+  [-] ▾ [1mPackage caches[0m  5.8 GB  [2m4 items[0m[2m, 1 selected[0m                              [2m│[0m [2mmanifest, no symbolic link, not a mount[0m
+    [ ] [1;33mB[0m    2.1 GB  ~/go/pkg/mod[2m  go-modcache[0m[2m  used 3d ago[0m                      [2m│[0m [2mpoint, still a folder.[0m
+    [ ] [1;33mB[0m    1.8 GB  ~/.npm/_cacache[2m  npm-cache[0m[2m  used 3d ago[0m                     [2m│[0m Apply will: remove ~/Code/ripgrep-
+    [x] [1;32mA[0m  940.0 MB  ~/Library/Caches/go-build[2m  go-build-cache[0m[2m  used 3d ago[0m      [2m│[0m fork/target[2m  rust-target[0m
+    [ ] [1;33mB[0m  870.0 MB  ~/Library/Caches/Homebrew[2m  homebrew-cache[0m[2m  used 3d ago[0m      [2m│[0m 
+  [-] ▾ [1mDocker[0m  6.1 GB  [2m6 items[0m[2m, 3 selected[0m                                      [2m│[0m 
+    [x] ▸ Build cache  3.2 GB  [2m1 item[0m[2m, 1 selected[0m                                [2m│[0m 
+    [x] ▸ Stopped containers  48.0 MB  [2m1 item[0m[2m, 1 selected[0m                        [2m│[0m 
+    [x] ▸ Dangling images  1.2 GB  [2m1 item[0m[2m, 1 selected[0m                            [2m│[0m 
+    [ ] ▸ Unused images  1.5 GB  [2m2 items[0m                                         [2m│[0m 
+    [ ] ▸ Volumes  205.0 MB  [2m1 item[0m                                              [2m│[0m 
+  [-] ▾ [1mApp caches[0m  5.2 GB  [2m5 items[0m[2m, 3 selected[0m                                  [2m│[0m 
+    [ ] ▸ ollama  2.0 GB  [2m1 item[0m                                                 [2m│[0m 
+    [x] ▸ xcode-derived-data  1.4 GB  [2m1 item[0m[2m, 1 selected[0m                         [2m│[0m 
+    [ ] ▸ playwright  930.0 MB  [2m1 item[0m                                           [2m│[0m 
+
+[1mSelected: 16 items, 16.4 GB[0m[2m   w writes plan.json   c continues[0m
+[1mspace[0m toggle  [1menter[0m open  [1m/[0m filter  [1mt[0m tier  [1ms[0m sort  [1ma[0m all tier A  [1mn[0m none  [1mi[0m details  [1mw[0m save plan  [1mc[0m continue  [1m?[0m help
