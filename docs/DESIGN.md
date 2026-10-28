@@ -64,6 +64,7 @@ A `go install` build prints the module version from the build info, which is the
 It takes the scan flags with the same meaning, so `reclaim ui ~/Code/app` looks at project artifacts under that folder and `--all` adds the caches, Docker and Downloads, exactly as `scan` does.
 The flags prefill the start screen and the user can still change them there.
 `--report` opens the review screen on an existing report and skips the start and scanning screens, the way `select --report` does.
+A report read this way, or the last report `o` opens, shows without what the `exclude` entries and the ignore list name, as a scan would.
 `--out` names the plan file the `w` key writes, default `plan.json`, as for `select`.
 `ui` refuses to run when standard input or standard output is not a terminal and says which commands to use instead.
 Bare `reclaim` with no arguments runs `ui` when both are terminals and prints the help otherwise, so `reclaim | cat` and `reclaim > file` keep printing the help.
@@ -101,6 +102,7 @@ See "Handling long lists".
 Before the list or the checklist, `select` prints one provenance line: the command that produced the report, how long ago and when, how many findings it holds, how many more are listed for attention only, and their reclaimable total.
 When the report came from `here` or from a scan given paths, the line says that it covers only those folders, not the whole machine, and suggests `reclaim scan`.
 A report written before scopes existed is described as coming from an older reclaim.
+`select` drops from the report what the `exclude` entries and the ignore list name, so an entry added after the scan still keeps it out of the plan.
 
 The checklist opens only when standard input and standard output are both terminals and `--preset` is not given.
 Otherwise `select` prints a numbered list, grouped exactly like the scan table, and reads a selection such as `1,4-9,12` from standard input, so scripts and tests keep working.
@@ -240,7 +242,8 @@ It imports neither `os` nor `os/exec`, keeps no global state, and receives every
 ```go
 type Backend interface {
     // Scan runs the scanners the request names and reports progress through events.
-    Scan(ctx context.Context, req ScanRequest, progress func(scan.Event)) (*finding.Report, error)
+    // For one folder it also returns the folder breakdown of the measuring walk.
+    Scan(ctx context.Context, req ScanRequest, progress func(scan.Event)) (ScanResult, error)
     // Apply runs the plan file at path and reports progress through the callbacks.
     // With dryRun it runs every check and removes nothing.
     Apply(ctx context.Context, path string, dryRun bool, progress apply.Progress) (apply.Summary, error)
@@ -251,8 +254,9 @@ type Backend interface {
     SavePlan(ctx context.Context, r *finding.Report, selected []finding.Finding) (SavedPlan, error)
     // FreeSpace reports the free bytes of the volume holding path.
     FreeSpace(path string) (int64, error)
-    // Ignore adds paths or targets to the ignore list.
-    Ignore(entries []string) error
+    // Ignore adds paths or targets to the ignore list and drops others, and returns the list as written.
+    // It writes the ignore list and nothing else.
+    Ignore(add, drop []string) ([]string, error)
 }
 ```
 
@@ -261,7 +265,8 @@ type Backend interface {
 `SavePlan` takes a context because the proof runs git.
 The only backend method that removes anything takes a plan path, so a review can see that no screen removes anything itself.
 The methods arrive with the screens that need them: the first pull request of phase 5 had `Scan`, `Protected` and `SavePlan`, the Confirm and Removing screens added `Apply` and `FreeSpace`, and the ignore list adds `Ignore`.
-The guard test also checks that `Apply` takes nothing but a context, a plan path, the dry run flag and the progress callbacks.
+The guard test also checks that `Apply` takes nothing but a context, a plan path, the dry run flag and the progress callbacks, and that `Ignore` takes only the entries to add and drop and returns the list.
+`Ignore` takes two lists rather than the one the first draft of this interface gave it, because `d` on the Start screen takes entries off the list and no second method is wanted for that.
 The real backend's `Apply` runs only a plan file its own `SavePlan` wrote, compared by SHA-256, so what runs is exactly what the Confirm screen showed; a plan edited since is refused and goes through `reclaim apply`, which prints it again.
 Canceling the context of `Apply` stops the run through `apply.Options.Stop`, and every action runs under a context that is never canceled, so no stop cuts off an action halfway.
 A test parses the sources of `internal/tui` and fails if any file imports a package outside an allowlist that leaves out `os`, `os/exec`, `syscall`, cgo and the Docker client, uses a dot import or sits in a sub-package, if a screen uses anything of `apply` but the types of the protected list, outcomes and checks, or anything of `plan` but its types, `FromFinding` and `MaxAge`, or if `Backend` gains a method that is not on this list.
@@ -646,10 +651,13 @@ reclaim                                                                    v0.3.
 enter scan   space toggle   m min size   s stale   g github   p path   o open last report   x ignored   P protected   ? help   q quit
 ```
 
-- The three modes map to `scan`, `scan path` and `worktrees`; the folder breakdown of `here` is the second tab of "This folder" on the Review screen.
+- The three modes map to `scan`, `here` and `worktrees`; the folder breakdown of `here` is the second tab of "This folder" on the Review screen.
 "Whole machine" uses the roots the configuration or the defaults give, "This folder" takes a path, default the current directory, and "Worktrees" runs the three worktree scanners alone, with no minimum size and with worktrees held by a live lock listed too, exactly as `reclaim worktrees` does.
 Paths given on the command line select "This folder" for one path, or the `scan path...` behavior for several.
-"This folder" looks at project artifacts and worktrees in the folder, as `scan path` does, and ticking another category looks outside it too, as `--all` does.
+"This folder" runs the single measuring walk of `here`, so the findings tab and the folder tab come from one walk: the project scanners take their sizes from it, the project walk below the folder has no depth limit, `--depth` is the depth of the breakdown, three levels when it is not given, and the report's scope is `here`.
+It looks at project artifacts and worktrees in the folder, and a category ticked beyond those runs in addition, looking outside the folder as `--all` does.
+Several paths on the command line scan as `scan path...` does, with no folder tab.
+The project row of the Scanning screen says how many folders the measuring walk has seen while it runs, before the scanners start.
 - Up and down choose the mode, left and right move along the scanner row, and space ticks the category under that cursor.
 - The scanner row toggles whole categories, which is what `--category` does with a category name.
 A ticked category runs the scanners of it that the configuration leaves enabled, or that `--category` selected, so a disabled scanner such as `ollama` stays off when its category is ticked.
@@ -659,7 +667,7 @@ These are the completion choices of the flags, so the screen and the shell agree
 - `g` toggles the GitHub lookup for this run, which `[worktrees] github` sets by default; off keeps the scan offline.
 - `p` edits the path of "This folder".
 - `o` opens the review screen on the last report without scanning, with the provenance line that says where it came from.
-- `x` opens the persistent ignore list, described below, where `d` removes the entry under the cursor after a one line confirmation.
+- `x` opens the persistent ignore list, described below, with its file, where `d` removes the entry under the cursor after a one line confirmation and `esc` goes back; the settings line counts its entries as "Ignored: 2".
 - The "Never removed" line names the kinds of folders reclaim never removes, and `P`, here and on every other screen, opens the protected list that `apply.ProtectedList` renders, with the user's own `exclude` and ignore entries under the built in rules, each marked with where it comes from.
 
 ### Scanning
@@ -730,12 +738,16 @@ The pane sits to the right when the window is at least 120 columns wide and belo
 `J` and `K`, shift and the vim keys, scroll the pane one line at a time, so a worktree's hints and `--force` command can be read in any window, and moving the cursor starts the pane at the top again; `?` lists them.
 - `n` clears the selection, the counterpart of `a`.
 - `x` adds the finding or every path below the group to the ignore list after a one line confirmation that names the path and says how to undo it, and drops the rows from the tree.
+A Docker object or an Ollama model goes on the list by its target entry; stale worktree registrations have neither and say so.
+`y` confirms, and any other key, `q` included, keeps everything as it was.
+On the folder tab `x` adds the entry's own path, so nothing in it is offered again.
 - `w` writes the plan to `--out` and quits, saying where it was written and how to apply it, exactly as `select` does, for people who want to read or edit the plan first.
 - `c` continues to Confirm.
 With nothing selected it says so and stays, and with a report older than `apply` accepts, 24 hours, it says to scan again and stays, because the plan it saved would be refused.
 - Warnings and notes are the last node of the tree, closed by default, never selectable, with the full text in the details pane.
 - In "This folder" mode a second tab, reached with `tab`, shows the folder breakdown of `here`: the entries by size down to `--depth`, with the reclaimable bytes inside each, the tier of entries that are findings and the state words of linked worktrees.
 A row that is a finding can be ticked there too, and the selection is shared with the findings tab.
+`enter` and the arrows open and close folders, and the details pane shows a finding's details or, for any other entry, its size and what is reclaimable below it.
 - The help overlay points an agent at `reclaim skill`; `done` and `skill` stay command line only, because they are for an agent at the end of a task and the screen is for a person.
 
 Worktrees keep the shape the tables and the checklist have: grouped by repository, the tool as a column, in the order Claude Code, Codex, other tools, manual, then stale registrations and other clones.
@@ -851,7 +863,7 @@ Some things should never be offered again: a `dist` the user keeps on purpose, a
 The `x` key on the Review screen adds a finding's path, or every path below a group, to the persistent ignore list described under "Configuration", and the Start screen opens the list so entries can be removed.
 Docker objects and other non path findings are ignored by their target, written as `docker:<id>` or `ollama:<model>`.
 Every command treats the entries exactly as `exclude` entries, and `apply` refuses them at removal time as well.
-
+The `Ignore` backend method writes the file through `config.EditIgnore`, which keeps every line it does not add or drop, comments included, and writes nothing else.
 
 ## Plan file
 
@@ -956,10 +968,14 @@ Disabled scanners do not run, and `reclaim scanners` marks them disabled.
 - `[worktrees] github`, default true, lets the worktree scanners and `done` ask `gh` for pull request state; `false` keeps a machine offline.
 
 An `exclude` entry may also name a non path target, `docker:<id>` or `ollama:<model>`, which drops the finding with that target.
+A Docker entry names a container or image by its id or the first 12 or more hex digits of it, a volume by its name, and the build cache as `docker:docker-build-cache`; an Ollama entry without a tag names the model's `latest` tag.
+`apply` refuses an action whose target such an entry names, as it refuses a path under an `exclude` path.
 
 A second optional file, `ignore` next to `config.toml`, holds the persistent ignore list the interactive screen writes: one entry per line, a path starting with `~/` or absolute, or a target such as `docker:<id>`, with `#` comments and blank lines ignored.
 It is a separate file and not a key of `config.toml` because reclaim cannot rewrite a TOML file the user edits by hand without losing their comments and layout.
-reclaim writes it atomically, through a temporary file and a rename, and it can be edited by hand.
+reclaim writes it atomically, through a temporary file and a rename, and it can be edited by hand; a file reclaim creates starts with three comment lines that say what it is.
+Paths are written starting with `~/` when they lie under the home folder, so the file reads the way the screen shows paths.
+A line that is neither a comment, a path nor a target entry is an error that names the file and the line.
 Every command treats its entries exactly as `exclude` entries, `apply` refuses them at removal time, and `reclaim scanners` says how many entries it holds and where it is.
 
 Flags override the config file: `--min-size` and `--stale` replace the file's values, paths given to `scan` replace its roots, and `--category` runs exactly the scanners it selects, disabled or not.
@@ -1006,7 +1022,7 @@ A second one scans a whole fake machine, with projects, package and app caches, 
 - A test renders the protected list and asserts that every path of the system and home denylists appears in it, so the overlay cannot drift from the tables.
 - The ignore list has a test proving an ignored path is dropped by every scanner, never enters a plan, and is refused by apply when a hand edited plan names it, and the same for an `exclude` path.
 - The review screen test includes the worktree fixture repository and asserts on the verdict words, the listed only rows and the repository row counts.
-- `TestScreenshots` also renders the six screens from the fixture machine at the fixed time, and `scripts/screenshots.sh` renders them as `docs/screenshots/ui-*.svg`; the README leads with the review screen.
+- `TestScreenshots` also renders the six screens and the folder tab from the fixture machine at the fixed time, and `scripts/screenshots.sh` renders them as `docs/screenshots/ui-*.svg`; the README leads with the review screen.
 - CI runs `go test -race` on macOS and Linux and `golangci-lint`, and a separate job on `ubuntu-latest` runs the Docker integration test against the runner's daemon with `RECLAIM_DOCKER_TESTS=1`, failing if the test skips.
 
 ## Releasing
@@ -1034,7 +1050,7 @@ Phase 1 delivered `scan`, `here`, `select --preset`, `apply`, the project scanne
 Phase 2 delivered the interactive checklist, the app cache scanners, the Downloads scanner, Markdown output, the config file, report provenance, Docker grouping, the location check before clean commands and the Docker integration test in CI.
 Phase 3 delivered GoReleaser and the release workflow, the Homebrew tap, shell completion values, the README with screenshots rendered from a fixture, `docs/RELEASING.md`, Xcode's custom DerivedData location, the Linux system wide Ollama models, a blank tier column for attention findings and the release tag in `reclaim version`.
 Phase 4 delivered `internal/worktree` with the classification, the merge checks and the GitHub lookup, the `git-worktrees`, `codex-worktrees` and `worktree-registrations` scanners, the `GitWorktreeRemove` and `GitWorktreePrune` actions with plan validation and the six checks in apply, the `worktrees`, `done` and `skill` commands, the agent skill and `docs/AGENTS.md`, the `claude-sessions` and `codex-plugin-backups` scanners, `scripts/install.sh` with its CI job, worktrees in `here`, and the `worktrees` screenshot.
-Phase 5 delivers the interactive mode: `reclaim ui` and bare `reclaim`, scan progress events and the project walk progress, the findings tree shared with `select`, the six screens, `apply --dry-run`, checks on every outcome, the protected list in words, progress at both edges of every action, `fsx.FreeSpace`, plans saved under the reclaim folder, the ignore list, `exclude` and ignored entries refused at removal time, target entries in `exclude`, and screenshots of every screen.
+Phase 5 delivered the interactive mode: `reclaim ui` and bare `reclaim` with `--report`, scan progress events and the project and measuring walk progress, the findings tree shared with `select`, the Start, Scanning, Review, Confirm, Removing and Done screens with the details pane and the folder tab of "This folder" from the single walk of `here`, `apply --dry-run`, checks on every outcome, the protected list in words, progress at both edges of every action, a stop between actions, `fsx.FreeSpace`, plans saved under the reclaim folder and applied only as saved, the ignore list with `x` on Review, its list on Start and its count in `reclaim scanners`, `exclude` and ignore entries dropped by every command and refused by `apply`, `done --remove` and the screen at removal time, target entries in `exclude` and the ignore list, and screenshots of every screen.
 
 Each phase is a pull request or a short series of pull requests.
 Every pull request passes CI and includes tests for what it adds.
