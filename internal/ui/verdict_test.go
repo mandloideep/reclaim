@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/plan"
 	"github.com/mandloideep/reclaim/internal/worktree"
 )
 
@@ -130,4 +131,14 @@ func key(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyDown}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+}
+
+func TestActionLineWorktrees(t *testing.T) {
+	p := NewPlain(nil, "/Users/me", now)
+	rm := &plan.Action{Action: finding.ActionGitWorktreeRemove, Scanner: "git-worktrees",
+		Command: []string{"git", "-C", "/Users/me/Code/app", "worktree", "remove", "/Users/me/Code/app/.claude/worktrees/a"}}
+	require.Equal(t, "git -C ~/Code/app worktree remove ~/Code/app/.claude/worktrees/a  git-worktrees", p.ActionLine(rm))
+	prune := &plan.Action{Action: finding.ActionGitWorktreePrune, Registrations: []string{"/x", "/y"},
+		Command: []string{"git", "-C", "/Users/me/Code/app", "worktree", "prune"}}
+	require.Equal(t, "git -C ~/Code/app worktree prune  2 stale registrations", p.ActionLine(prune))
 }

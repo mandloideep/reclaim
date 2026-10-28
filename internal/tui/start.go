@@ -51,8 +51,10 @@ type startScreen struct {
 	github  bool
 
 	editing bool
-	input   textinput.Model
-	status  string
+	// edited is the line the folder input started with.
+	edited string
+	input  textinput.Model
+	status string
 }
 
 func newStart(m *Model) *startScreen {
@@ -172,10 +174,13 @@ func (s *startScreen) key(msg tea.KeyMsg) tea.Cmd {
 	case "p":
 		s.mode = ModeFolder
 		s.editing = true
-		s.input.SetValue(strings.Join(s.paths, " "))
-		if len(s.paths) == 1 {
-			s.input.SetValue(s.m.path(s.paths[0]))
+		// Several folders from the command line show as one line; enter
+		// keeps them unless the line was changed to one folder.
+		s.edited = ""
+		if len(s.paths) > 0 {
+			s.edited = s.folderText()
 		}
+		s.input.SetValue(s.edited)
 		s.input.CursorEnd()
 		return s.input.Focus()
 	case "o":
@@ -193,7 +198,7 @@ func (s *startScreen) editKey(msg tea.KeyMsg) tea.Cmd {
 	case tea.KeyEnter:
 		s.editing = false
 		s.input.Blur()
-		if v := strings.TrimSpace(s.input.Value()); v != "" {
+		if v := strings.TrimSpace(s.input.Value()); v != "" && v != s.edited {
 			s.paths = []string{v}
 		}
 		return nil

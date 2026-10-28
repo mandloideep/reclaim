@@ -62,13 +62,23 @@ func (m *Model) findingDetails(r *finding.Report, f *finding.Finding) []detailLi
 			out = append(out, detailLine{text, style})
 		}
 	}
-	what := f.Path
-	if what == "" {
+	// The path, or for a target that is no path, such as a Docker image or
+	// a repository's stale registrations, its name and then the target.
+	what, name := f.Path, f.Name
+	switch {
+	case what == "" && f.Name != "":
+		what, name = f.Name, ""
+	case what == "":
 		what = f.Target
 	}
 	add(m.path(what), boldLine)
-	if f.Name != "" && f.Name != f.Path {
-		add(f.Name, plainLine)
+	if name != "" && name != f.Path {
+		add(name, plainLine)
+	}
+	if f.Action == finding.ActionGitWorktreePrune {
+		for _, r := range f.Registrations {
+			add("  "+m.path(r)+", gone", dimLine)
+		}
 	}
 	add(sizeText(f.Size)+", "+tierWords(f), plainLine)
 	add("Scanner: "+f.Scanner, plainLine)
@@ -122,6 +132,16 @@ func (m *Model) findingDetails(r *finding.Report, f *finding.Finding) []detailLi
 func tierWords(f *finding.Finding) string {
 	if !f.Actionable() {
 		return "listed for attention only"
+	}
+	switch {
+	case f.Action == finding.ActionGitWorktreePrune:
+		return "tier " + string(f.Tier) + ": registrations of worktrees whose folders are gone; pruning them lets git worktree add reuse the paths"
+	case f.Category == finding.CategoryWorktree && f.Kind == finding.KindEmptyDir:
+		return "tier " + string(f.Tier) + ": a task folder, removed only once the worktrees in it are gone"
+	case f.Category == finding.CategoryWorktree && f.Tier == finding.TierA:
+		return "tier A: committed, pushed and merged, so the work is in the default branch"
+	case f.Category == finding.CategoryWorktree && f.Tier == finding.TierB:
+		return "tier B: committed and pushed but not merged, so the work is safe on the remote"
 	}
 	switch f.Tier {
 	case finding.TierA:

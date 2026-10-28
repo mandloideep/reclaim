@@ -179,6 +179,11 @@ type Tree struct {
 	tier      finding.Tier
 	sort      sortMode
 	status    string
+	// changed is set when the selection changed since selCount and selSize
+	// were computed; selCount is -1 before the first time.
+	changed  bool
+	selCount int
+	selSize  int64
 
 	styles treeStyles
 }
@@ -202,6 +207,7 @@ func NewTree(r *finding.Report, opts TreeOptions) *Tree {
 		opts:     opts,
 		findings: Ordered(Sections(r.Findings, shortener(opts.Home))),
 		expanded: map[string]bool{},
+		selCount: -1,
 		width:    100,
 		height:   20,
 		input:    in,
@@ -311,9 +317,15 @@ func (t *Tree) Selected() []finding.Finding {
 // SelectedSize returns the number of selected findings and their total
 // size, counting a finding that lies inside another selected finding once,
 // as report totals do.
+// It is computed again only after the selection changed, because every
+// frame shows it.
 func (t *Tree) SelectedSize() (int, int64) {
-	sel := t.Selected()
-	return len(sel), finding.ReclaimableSize(sel)
+	if t.changed || t.selCount < 0 {
+		sel := t.Selected()
+		t.selCount, t.selSize = len(sel), finding.ReclaimableSize(sel)
+		t.changed = false
+	}
+	return t.selCount, t.selSize
 }
 
 // SelectNone clears the selection, the counterpart of selecting every tier
@@ -323,6 +335,7 @@ func (t *Tree) SelectNone() int {
 	for i := range t.selected {
 		if t.selected[i] {
 			t.selected[i] = false
+			t.changed = true
 			n++
 		}
 	}
@@ -422,6 +435,7 @@ func (t *Tree) HandleKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		for _, i := range t.visibleLeaves(t.tree) {
 			if t.findings[i].Tier == finding.TierA && t.findings[i].Actionable() && !t.selected[i] {
 				t.selected[i] = true
+				t.changed = true
 				n++
 			}
 		}
@@ -516,6 +530,7 @@ func (t *Tree) toggle() {
 			return
 		}
 		t.selected[n.leaf] = !t.selected[n.leaf]
+		t.changed = true
 		t.rebuild()
 		return
 	}
@@ -533,6 +548,7 @@ func (t *Tree) toggle() {
 	all := len(targets) > 0 && !slices.ContainsFunc(targets, func(i int) bool { return !t.selected[i] })
 	for _, i := range targets {
 		t.selected[i] = !all
+		t.changed = true
 	}
 	if skippedC > 0 {
 		t.status = fmt.Sprintf("%s left as they were; tick tier C items one by one", plural(skippedC, "tier C item", "tier C items"))
@@ -711,7 +727,11 @@ func (t *Tree) View() string {
 		lines = append(lines, cut.Render(t.renderRow(i)))
 	}
 	if t.matched == 0 && len(lines) < t.height {
-		lines = append(lines, cut.Render(t.styles.dim.Render("  nothing matches the filters; esc clears the text filter, t cycles the tier filter")))
+		empty := "  nothing matches the filters; esc clears the text filter, t cycles the tier filter"
+		if len(t.findings) == 0 {
+			empty = "  nothing reclaimable was found"
+		}
+		lines = append(lines, cut.Render(t.styles.dim.Render(empty)))
 	}
 	for len(lines) < t.height {
 		lines = append(lines, "")

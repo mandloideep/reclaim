@@ -677,6 +677,8 @@ The GitHub lookup failing, because `gh` is missing, signed out or offline, is on
 - When the scan finishes, the report is saved as `last-report.json`, exactly as `scan`, `here` and `worktrees` do, so `reclaim select` afterwards sees the same report.
 Its scope names the command the scan matches with the flags the screen set, such as `reclaim scan --min-size=10MB` or `reclaim worktrees`, so the provenance line of `select` and the title of the Review screen say what it covered.
 A scan stopped with `esc` is not saved, because a partial report is not what `select` should read next.
+Whether a scan was stopped is read from its report, which carries the "scan interrupted" warning when a scanner did not finish, so a scan that finished just before `esc` is saved and reviewed as finished.
+The scope's `--category` names exactly the scanners that ran whenever they differ from what the command runs by default with the configuration, whole categories where all of a category ran.
 
 ### Review
 
@@ -727,7 +729,9 @@ Worktrees keep the shape the tables and the checklist have: grouped by repositor
 Every worktree row shows its verdict in the words the scanner writes, such as `squash, PR #41 merged`, `pushed, PR #44 open`, `in use, pid 4242`, `12 modified, 3 untracked`, `stale lock, pid 50949 gone`, `outside the scanned roots` or `another clone of this origin`, and rows that are listed only cannot be ticked.
 The repository row shows the counts per verdict, "1 removable, 1 pushed, 1 holding work, 1 in use".
 A Codex task folder shows under its worktrees as the row that goes last, "task folder, removed once empty", and the Confirm list orders it after them, as the plan does.
-Selected totals count a finding inside another selected finding once, as the report totals do, so the footer, the Confirm screen and the table agree.
+Selected totals count a finding inside another selected finding once, as the report totals do, so the footer, the Confirm screen and the table agree; a plan's total counts its actions the same way.
+While the plan is being saved no key acts, so the screen never ends with a plan written that it did not name.
+Plan files are named by reserving `plans/plan-<timestamp>.json`, or the same name with `-2` and up, with an exclusive create, so two screens saving in the same second never replace each other's plan.
 
 ### Confirm
 

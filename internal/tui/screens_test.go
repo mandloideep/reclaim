@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/stretchr/testify/require"
 
@@ -257,4 +258,28 @@ func TestNarrowWindow(t *testing.T) {
 	fits()
 	require.True(t, strings.HasPrefix(h.view(), "Review  "), "the title keeps its space before the facts")
 	require.Contains(t, h.flat(), "The scan was stopped before it finished: these are the findings so far, and the warnings say what was not scanned.")
+}
+
+func TestStartScreenKeepsSeveralFolders(t *testing.T) {
+	start := defaultStart()
+	start.Paths = []string{"/Users/me/Code/a", "/Users/me/Code/b"}
+	be := &fakeBackend{report: fixtureReport()}
+	h := newHarness(t, be, start, 140, 30)
+	h.press("p", "enter", "enter")
+	require.Equal(t, []string{"/Users/me/Code/a", "/Users/me/Code/b"}, be.requests[0].Paths, "an unchanged line keeps both folders")
+}
+
+// TestHelpFitsANarrowWindow checks that the help wraps at 80 columns and
+// scrolls to its closing sentence.
+func TestHelpFitsANarrowWindow(t *testing.T) {
+	h := reviewHarness(t, 80, 24)
+	h.press("?")
+	for l := range strings.SplitSeq(h.view(), "\\n") {
+		require.LessOrEqual(t, lipgloss.Width(l), 80, l)
+	}
+	require.Contains(t, h.flat(), "a group ticks its tier A and B items, never tier C")
+	for range 5 {
+		h.update(tea.KeyMsg{Type: tea.KeyPgDown})
+	}
+	require.Contains(t, h.flat(), closing)
 }

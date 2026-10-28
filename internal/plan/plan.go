@@ -204,13 +204,16 @@ func SelectTiers(fs []finding.Finding, tiers []finding.Tier) []finding.Finding {
 	return out
 }
 
-// TotalSize sums the sizes of the actions.
+// TotalSize sums the sizes of the actions, counting an action whose path
+// lies inside the path of another once, as part of the outer one, the way
+// report totals and the interactive screen count them.
 func (p *Plan) TotalSize() int64 {
-	var n int64
+	fs := make([]finding.Finding, len(p.Actions))
 	for i := range p.Actions {
-		n += p.Actions[i].Size
+		a := &p.Actions[i]
+		fs[i] = finding.Finding{Path: a.Path, Kind: a.Kind, Action: a.Action, Size: a.Size}
 	}
-	return n
+	return finding.ReclaimableSize(fs)
 }
 
 // Load reads and validates a plan file. Unknown fields are rejected so that a

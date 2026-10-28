@@ -336,3 +336,13 @@ func TestActionLabel(t *testing.T) {
 	require.Equal(t, "/p", (&Action{Path: "/p", Target: "/p"}).Label())
 	require.Equal(t, "t", (&Action{Target: "t"}).Label())
 }
+
+func TestTotalSizeCountsNestedOnce(t *testing.T) {
+	wt := "/Users/me/Code/app/.claude/worktrees/a"
+	p := &Plan{Actions: []Action{
+		{Action: finding.ActionGitWorktreeRemove, Path: wt, Kind: finding.KindDir, Size: 300},
+		{Action: finding.ActionRemovePath, Path: wt + "/node_modules", Kind: finding.KindDir, Size: 200},
+		{Action: finding.ActionDockerRemoveImage, Target: "sha256:x", Size: 50},
+	}}
+	require.Equal(t, int64(350), p.TotalSize())
+}

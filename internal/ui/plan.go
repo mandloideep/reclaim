@@ -45,6 +45,16 @@ func (p *Printer) ActionLine(a *plan.Action) string {
 		return "docker remove " + a.Label()
 	case finding.ActionDockerPruneBuildCache:
 		return "docker prune " + a.Label()
+	case finding.ActionGitWorktreeRemove, finding.ActionGitWorktreePrune:
+		// The exact git command plan validation ties to the action, never
+		// with --force.
+		line := p.ShortCommand(strings.Join(a.Command, " "))
+		if a.Action == finding.ActionGitWorktreePrune {
+			line += p.dim.Render("  " + plural(len(a.Registrations), "stale registration", "stale registrations"))
+		} else {
+			line += p.dim.Render("  " + a.Scanner)
+		}
+		return line
 	default:
 		return string(a.Action) + " " + a.Label()
 	}

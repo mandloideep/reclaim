@@ -107,6 +107,8 @@ func TestRunCanceledBeforeStart(t *testing.T) {
 	require.Empty(t, res.Findings)
 	require.Len(t, rec.events, 1, "only the plan: a scanner that never started sends nothing")
 	require.True(t, slices.ContainsFunc(res.Warnings, func(w finding.Warning) bool { return w.Message == "scan interrupted: context canceled" }))
+	require.True(t, Interrupted(res.Warnings))
+	require.False(t, Interrupted(Run(context.Background(), []Scanner{s}, Env{}, 1).Warnings), "a finished run is not interrupted")
 }
 
 func TestRunCountsWhatTheReportShows(t *testing.T) {

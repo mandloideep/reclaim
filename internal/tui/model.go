@@ -267,6 +267,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // key handles a key: the overlays first, then a text input that wants every
 // key, then the keys of every screen, then the screen's own.
 func (m *Model) key(msg tea.KeyMsg) tea.Cmd {
+	// While the plan is being saved no key acts, not even q, so the screen
+	// never ends with a plan written that nobody was told about.
+	if m.screen == screenReview && m.review.saving {
+		return nil
+	}
 	if msg.String() == "ctrl+c" {
 		return m.quit()
 	}
@@ -286,6 +291,8 @@ func (m *Model) key(msg tea.KeyMsg) tea.Cmd {
 	}
 	switch msg.String() {
 	case "?":
+		m.viewport = viewport.New(m.width, m.bodyHeight(1))
+		m.viewport.SetContent(m.helpText())
 		m.overlay = overlayHelp
 		return nil
 	case "P":
@@ -368,7 +375,7 @@ func (m *Model) tick() tea.Cmd {
 // scanDone opens the Review screen on the report, or goes back to Start
 // with the error.
 func (m *Model) scanDone(msg scanDoneMsg) {
-	interrupted := m.scanning != nil && m.scanning.stopping
+	interrupted := msg.report != nil && scan.Interrupted(msg.report.Warnings)
 	m.stopScan()
 	if msg.err != nil || msg.report == nil {
 		m.screen = screenStart
@@ -424,8 +431,8 @@ func (m *Model) View() string {
 	}
 	switch m.overlay {
 	case overlayHelp:
-		f.body = m.helpText()
-		f.footer = m.footer(m.st.keys("esc", "close"))
+		f.body = m.viewport.View()
+		f.footer = m.footer(m.st.keys("up/down", "scroll", "esc", "close"))
 	case overlayProtected:
 		f.title = "Never removed"
 		f.facts = "rendered by apply from the tables its checks use"
@@ -489,7 +496,15 @@ func (m *Model) helpText() string {
 	var b strings.Builder
 	b.WriteString(m.st.bold.Render("Keys") + "\n\n")
 	for _, k := range keys {
-		b.WriteString("  " + pad(m.st.key.Render(k[0]), 14) + k[1] + "\n")
+		// The description wraps under itself, so a narrow window cuts
+		// nothing.
+		for i, l := range wrapText(k[1], m.width-16) {
+			key := strings.Repeat(" ", 14)
+			if i == 0 {
+				key = pad(m.st.key.Render(k[0]), 14)
+			}
+			b.WriteString("  " + key + l + "\n")
+		}
 	}
 	b.WriteString("\n")
 	if m.screen == screenReview {
@@ -508,7 +523,7 @@ func (m *Model) helpText() string {
 // comes from.
 func (m *Model) protectedText() string {
 	var b strings.Builder
-	for _, l := range wrapText("reclaim never removes these, whatever a plan says; apply checks every target against them right before removing it.", m.width) {
+	for _, l := range wrapText("reclaim never removes what the built in rules and the scanned roots protect, whatever a plan says: apply checks every target against them right before removing it. Your exclude entries keep the scan out of those folders, so nothing in them is offered.", m.width) {
 		b.WriteString(l + "\n")
 	}
 	width := max(m.width-4, 20)
@@ -561,7 +576,7 @@ func sourceTitle(s apply.ProtectedSource) string {
 	case apply.ProtectedRoot:
 		return "Scanned roots"
 	case apply.ProtectedExclude:
-		return "Your exclude entries (config file)"
+		return "Your exclude entries (config file), which the scan skips"
 	default:
 		return string(s)
 	}

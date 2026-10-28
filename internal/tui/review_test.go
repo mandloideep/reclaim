@@ -101,7 +101,8 @@ func TestReviewDetails(t *testing.T) {
 	flat = h.details()
 	require.Contains(t, flat, "Pull request: #41 merged https://github.com/acme/storefront/pull/41")
 	require.Contains(t, flat, "Apply checks before removing: linked worktree, the path rules, the state computed again")
-	require.Contains(t, flat, "Apply will: GitWorktreeRemove")
+	require.Contains(t, flat, "Apply will: git -C ~/Code/storefront worktree remove ~/Code/storefront/.claude/worktrees/agent-3f9c1e2a")
+	require.Contains(t, flat, "tier A: committed, pushed and merged, so the work is in the default branch")
 
 	// The repository row: origin, default branch, fetch and counts.
 	h.moveTo("~/Code/storefront")
@@ -257,7 +258,7 @@ func TestProtectedList(t *testing.T) {
 		"Never removed", "System paths (built in)", "/Users", "/System",
 		"Folders of your home folder (built in)", "~/Documents", "~/Desktop", "~/Library",
 		"Rules (built in)", "nothing inside a .git directory",
-		"Scanned roots", "~/Code", "Your exclude entries (config file)", "~/Code/archive",
+		"Scanned roots", "~/Code", "Your exclude entries (config file), which the scan skips", "~/Code/archive",
 	} {
 		require.Contains(t, view, want)
 	}
@@ -268,4 +269,18 @@ func TestProtectedList(t *testing.T) {
 	// On Review the roots are the report's.
 	h.press("enter", "P")
 	require.Equal(t, []string{"/Users/me", "/Users/me/Code"}, h.be.roots[1])
+}
+
+// TestQuitWaitsForThePlan checks that no key ends the screen while the plan
+// is being saved, so a plan is never written without the screen saying so.
+func TestQuitWaitsForThePlan(t *testing.T) {
+	h := reviewHarness(t, 140, 40)
+	h.background = true
+	h.press("c")
+	require.True(t, h.m.review.saving)
+	h.press("q", "ctrl+c")
+	require.False(t, h.quit)
+	h.settle()
+	require.True(t, h.quit)
+	require.Equal(t, OutcomePlanSaved, h.m.Result().Outcome)
 }

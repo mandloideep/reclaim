@@ -466,3 +466,32 @@ func TestUISummaryWhenQuitting(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Nothing selected, no plan written.\n", out.String())
 }
+
+// TestUIScopeNamesWhatRan checks that the saved report says which scanners
+// ran, so select's provenance line does not misstate what it covers.
+func TestUIScopeNamesWhatRan(t *testing.T) {
+	a, _ := testApp(t, "")
+	writeTree(t, filepath.Dir(a.configPath), map[string]string{"config.toml": "[scanners]\ndisable = [\"ollama\"]\n"})
+	writeTree(t, a.home, map[string]string{"Code/app/package.json": "{}"})
+	cfg, err := a.loadConfig()
+	require.NoError(t, err)
+	be := &uiBackend{a: a, cfg: cfg}
+	scopeOf := func(req tui.ScanRequest) []string {
+		t.Helper()
+		r, err := be.Scan(context.Background(), req, nil)
+		require.NoError(t, err)
+		return r.Scope.Args
+	}
+	require.Equal(t, []string{"--min-size=10MB"}, scopeOf(tui.ScanRequest{Categories: finding.Categories(), MinSize: 10_000_000}),
+		"every category the configuration leaves enabled is a plain scan")
+	require.Equal(t, []string{"--category=project", "--min-size=0"}, scopeOf(tui.ScanRequest{Categories: []finding.Category{finding.CategoryProject}}))
+
+	be.categories = []string{"node"}
+	args := scopeOf(tui.ScanRequest{Categories: []finding.Category{finding.CategoryProject}})
+	require.Len(t, args, 2)
+	require.True(t, strings.HasPrefix(args[0], "--category=node_modules"), args[0])
+	require.NotContains(t, args[0], "project", "only the node scanners ran")
+
+	be.categories = nil
+	require.Empty(t, scopeOf(tui.ScanRequest{Mode: tui.ModeWorktrees, Depth: 2}), "worktrees takes no flags here")
+}

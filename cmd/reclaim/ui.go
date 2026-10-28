@@ -287,13 +287,23 @@ func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func
 	if len(selected) == 0 {
 		return nil, errors.New("no scanners selected: the ticked categories have no scanner to run")
 	}
-	command := "scan"
+	command, depth := "scan", req.Depth
 	if req.Mode == tui.ModeWorktrees {
-		command = "worktrees"
+		// As reclaim worktrees, which takes no --depth.
+		command, depth = "worktrees", 0
+	}
+	// What scan runs by default with the configuration, which the scope
+	// leaves unsaid.
+	byDefault, err := enabledScanners(reg.All(), nil, b.cfg.Disable)
+	if err != nil {
+		return nil, err
+	}
+	if req.Mode == tui.ModeFolder && !req.All {
+		byDefault = scan.UnderRoots(byDefault)
 	}
 	report := a.runScan(ctx, reg, scanRequest{
-		scanners: selected, roots: roots, exclude: b.cfg.Exclude, depth: req.Depth, labels: labels,
-		scope:     &finding.Scope{Command: command, Args: scopeArgs(req, paths), Paths: paths, Roots: roots},
+		scanners: selected, roots: roots, exclude: b.cfg.Exclude, depth: depth, labels: labels,
+		scope:     &finding.Scope{Command: command, Args: scopeArgs(req, paths, selected, reg.All(), byDefault), Paths: paths, Roots: roots},
 		worktrees: scan.WorktreeOptions{GitHub: req.GitHub, InUse: req.Mode == tui.ModeWorktrees},
 		progress:  progress,
 		shown:     scan.Filter{MinSize: req.MinSize, Stale: req.Stale, Now: a.now(), Exclude: b.cfg.Exclude},
@@ -301,7 +311,7 @@ func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func
 	report.Findings = scan.Filter{MinSize: req.MinSize, Stale: req.Stale, Now: a.now()}.Apply(report.Findings)
 	// A scan that was stopped returns what it found so far, which is not
 	// what select should read next.
-	if ctx.Err() == nil {
+	if !scan.Interrupted(report.Warnings) {
 		a.saveLastReport(report)
 	}
 	return report, nil
@@ -357,7 +367,10 @@ func (b *uiBackend) resolve(p string) (string, error) {
 
 // scopeArgs writes the scan the screen ran as the flags of the command it
 // matches, so select and the provenance line say what it covered.
-func scopeArgs(req tui.ScanRequest, paths []string) []string {
+// The --category of the args names exactly the scanners that ran, whole
+// categories where all of a category ran, whenever they differ from what
+// the command runs by default with the configuration.
+func scopeArgs(req tui.ScanRequest, paths []string, ran, all, byDefault []scan.Scanner) []string {
 	args := slices.Clone(paths)
 	if req.Mode == tui.ModeWorktrees {
 		return args
@@ -365,12 +378,21 @@ func scopeArgs(req tui.ScanRequest, paths []string) []string {
 	if req.All {
 		args = append(args, "--all")
 	}
-	if len(req.Categories) < len(finding.Categories()) {
-		names := make([]string, len(req.Categories))
-		for i, c := range req.Categories {
-			names[i] = string(c)
+	if !sameScanners(ran, byDefault) {
+		var selectors []string
+		for _, c := range finding.Categories() {
+			got := scan.OnlyCategory(ran, c)
+			switch {
+			case len(got) == 0:
+			case len(got) == len(scan.OnlyCategory(all, c)):
+				selectors = append(selectors, string(c))
+			default:
+				for _, s := range got {
+					selectors = append(selectors, s.Name())
+				}
+			}
 		}
-		args = append(args, "--category="+strings.Join(names, ","))
+		args = append(args, "--category="+strings.Join(selectors, ","))
 	}
 	if req.Depth > 0 {
 		args = append(args, "--depth="+strconv.Itoa(req.Depth))
@@ -383,6 +405,19 @@ func scopeArgs(req tui.ScanRequest, paths []string) []string {
 		args = append(args, "--stale="+strconv.Itoa(int(req.Stale/(24*time.Hour)))+"d")
 	}
 	return args
+}
+
+// sameScanners reports whether two lists hold the same scanners.
+func sameScanners(a, b []scan.Scanner) bool {
+	names := func(ss []scan.Scanner) []string {
+		out := make([]string, len(ss))
+		for i, s := range ss {
+			out[i] = s.Name()
+		}
+		slices.Sort(out)
+		return slices.Compact(out)
+	}
+	return slices.Equal(names(a), names(b))
 }
 
 // flagSize writes a size the way --min-size takes it.
@@ -426,8 +461,10 @@ func (b *uiBackend) SavePlan(ctx context.Context, r *finding.Report, selected []
 	return tui.SavedPlan{Path: path, Plan: pl, LeftOut: leftOut}, nil
 }
 
-// newPlanPath returns a plan file name under the reclaim folder that no
-// plan uses yet, plans/plan-<timestamp>.json.
+// newPlanPath reserves a plan file name under the reclaim folder that no
+// plan uses yet, plans/plan-<timestamp>.json, by creating it empty and
+// exclusively, so two screens saving in the same second never pick the same
+// name. plan.Save then replaces the empty file.
 func (a *app) newPlanPath() (string, error) {
 	if a.stateDir == "" {
 		return "", errors.New("no folder to save the plan in")
@@ -443,12 +480,15 @@ func (a *app) newPlanPath() (string, error) {
 			name = fmt.Sprintf("plan-%s-%d.json", stamp, i)
 		}
 		path := filepath.Join(dir, name)
-		_, err := os.Lstat(path)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		switch {
-		case errors.Is(err, os.ErrNotExist):
+		case err == nil:
+			if err := f.Close(); err != nil {
+				return "", fmt.Errorf("reserve %s: %w", path, err)
+			}
 			return path, nil
-		case err != nil:
-			return "", fmt.Errorf("inspect %s: %w", path, err)
+		case !errors.Is(err, os.ErrExist):
+			return "", fmt.Errorf("reserve %s: %w", path, err)
 		}
 	}
 }

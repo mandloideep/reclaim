@@ -388,7 +388,7 @@ func Run(ctx context.Context, scanners []Scanner, env Env, concurrency int) Resu
 	}
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
-		diag.Warn("", "scan interrupted: "+err.Error())
+		diag.Warn("", interruptedPrefix+err.Error())
 	}
 	findings = append(findings, withoutOverlaps(catchAll, findings)...)
 	finding.Sort(findings)

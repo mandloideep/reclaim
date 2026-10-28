@@ -1,6 +1,11 @@
 package scan
 
-import "github.com/mandloideep/reclaim/internal/finding"
+import (
+	"slices"
+	"strings"
+
+	"github.com/mandloideep/reclaim/internal/finding"
+)
 
 // EventKind says what a scan event reports.
 type EventKind int
@@ -80,4 +85,16 @@ func boundProgress(progress func(Event), s Scanner) func(Event) {
 		}
 		progress(ev)
 	}
+}
+
+// interruptedPrefix starts the warning a scan whose context ended adds.
+const interruptedPrefix = "scan interrupted: "
+
+// Interrupted reports whether the warnings of a run say the scan was
+// interrupted before every scanner finished, which is what decides that
+// its report is partial: it is shown but not saved as the last report.
+func Interrupted(ws []finding.Warning) bool {
+	return slices.ContainsFunc(ws, func(w finding.Warning) bool {
+		return w.Scanner == "" && strings.HasPrefix(w.Message, interruptedPrefix)
+	})
 }

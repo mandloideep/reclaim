@@ -14,9 +14,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// screenImports is everything the screens may import: the standard library
+// packages that touch nothing outside the process, the terminal libraries,
+// and the reclaim packages for findings, plans, scan events, sizes, the
+// findings tree and the protected list. os, os/exec, syscall, cgo, the
+// Docker client and reclaim's own executors are not on it.
+func screenImports() []string {
+	return []string{
+		"context", "errors", "fmt", "io", "path/filepath", "slices", "strconv", "strings", "time",
+		"github.com/charmbracelet/bubbles/textinput", "github.com/charmbracelet/bubbles/viewport",
+		"github.com/charmbracelet/bubbletea", "github.com/charmbracelet/lipgloss",
+		"github.com/mandloideep/reclaim/internal/apply", "github.com/mandloideep/reclaim/internal/finding",
+		"github.com/mandloideep/reclaim/internal/plan", "github.com/mandloideep/reclaim/internal/scan",
+		"github.com/mandloideep/reclaim/internal/ui", "github.com/mandloideep/reclaim/internal/units",
+	}
+}
+
+// testImports are the further packages the tests use, which also leave the
+// disk alone.
+func testImports() []string {
+	return []string{"go/ast", "go/parser", "go/token", "reflect", "sync", "testing", "github.com/stretchr/testify/require"}
+}
+
 // TestScreensCannotRemoveAnything proves from the source that the screens
-// have no way to remove anything themselves: no file of the package imports
-// os or os/exec, the only names they use from apply are the types of the
+// have no way to remove anything themselves: every file of the package
+// imports only what screenImports allows, which leaves out os, os/exec,
+// syscall and cgo, the only names they use from apply are the types of the
 // protected list, the only names they use from plan are the plan types and
 // the conversion of a finding into an action for the details pane, and the
 // Backend interface has no method that removes anything. The tests import
@@ -25,6 +48,10 @@ import (
 func TestScreensCannotRemoveAnything(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	require.NoError(t, err)
+	// No sub-package can hide code the package imports under another name.
+	nested, err := filepath.Glob("*/*.go")
+	require.NoError(t, err)
+	require.Empty(t, nested, "internal/tui has no sub-packages")
 	allowed := map[string][]string{
 		"apply": {"ProtectedEntry", "ProtectedSource", "ProtectedSystem", "ProtectedHome", "ProtectedRule", "ProtectedRoot", "ProtectedExclude"},
 		"plan":  {"Plan", "FromFinding"},
@@ -42,11 +69,14 @@ func TestScreensCannotRemoveAnything(t *testing.T) {
 		for _, imp := range f.Imports {
 			path, err := strconv.Unquote(imp.Path.Value)
 			require.NoError(t, err)
-			require.NotContains(t, []string{"os", "os/exec", "syscall", "io/fs", "github.com/mandloideep/reclaim/internal/execx",
-				"github.com/mandloideep/reclaim/internal/fsx", "github.com/mandloideep/reclaim/internal/dockerx"}, path,
-				"%s imports %s", name, path)
+			allowedImports := screenImports()
+			if test {
+				allowedImports = append(allowedImports, testImports()...)
+			}
+			require.Contains(t, allowedImports, path, "%s imports %s, which is not on the list of what the screens may use", name, path)
 			local := filepath.Base(path)
 			if imp.Name != nil {
+				require.NotContains(t, []string{".", "_"}, imp.Name.Name, "%s imports %s with %s", name, path, imp.Name.Name)
 				local = imp.Name.Name
 			}
 			imports[local] = filepath.Base(path)
