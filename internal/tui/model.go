@@ -47,6 +47,13 @@ type Options struct {
 	LastReport *finding.Report
 	// OutPath is the plan file w writes, shown on the Review screen.
 	OutPath string
+	// Report, when set, opens the Review screen on it at once, skipping
+	// Start and Scanning, as select --report does.
+	Report *finding.Report
+	// Ignore is the ignore list, each entry a clean absolute path or a
+	// target entry, and IgnorePath the file it lives in.
+	Ignore     []string
+	IgnorePath string
 }
 
 // StartOptions prefill the Start screen from the command line and the
@@ -169,6 +176,7 @@ type (
 	scanDoneMsg struct {
 		seq    int
 		report *finding.Report
+		folder *Folder
 		err    error
 	}
 	tickMsg struct {
@@ -229,9 +237,14 @@ type Model struct {
 	protected []apply.ProtectedEntry
 
 	lastReport *finding.Report
-	seq        int
-	cancel     context.CancelFunc
-	result     Result
+	// lastFolder is the breakdown of the scan that wrote lastReport, nil
+	// when it measured no single folder.
+	lastFolder *Folder
+	// ignore is the ignore list as last written.
+	ignore []string
+	seq    int
+	cancel context.CancelFunc
+	result Result
 }
 
 var _ tea.Model = (*Model)(nil)
@@ -256,9 +269,13 @@ func New(opts Options) *Model {
 		width:      100,
 		height:     30,
 		lastReport: opts.LastReport,
+		ignore:     opts.Ignore,
 		plain:      ui.NewPlain(nil, opts.Home, opts.Now()),
 	}
 	m.start = newStart(m)
+	if opts.Report != nil {
+		m.openReview(opts.Report, nil, false)
+	}
 	return m
 }
 
@@ -306,6 +323,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == screenReview {
 			m.review.planSaved(msg)
 		}
+		return m, nil
+	case ignoredMsg:
+		m.ignored(msg)
 		return m, nil
 	case applyBeginMsg, applyStartingMsg, applyFinishedMsg, applyDoneMsg:
 		m.applyMsg(msg)
@@ -414,9 +434,9 @@ func (m *Model) key(msg tea.KeyMsg) tea.Cmd {
 func (m *Model) typing() bool {
 	switch m.screen {
 	case screenStart:
-		return m.start.editing
+		return m.start.editing || m.start.asking != ""
 	case screenReview:
-		return m.review.tree.Filtering()
+		return m.review.tree.Filtering() || len(m.review.asking) > 0
 	case screenConfirm:
 		return m.confirm.typing()
 	}
@@ -474,8 +494,8 @@ func (m *Model) startScan(req ScanRequest) tea.Cmd {
 	m.screen = screenScanning
 	backend, send := m.opts.Backend, m.opts.Send
 	run := func() tea.Msg {
-		r, err := backend.Scan(ctx, req, func(ev scan.Event) { send(scanEventMsg{seq: seq, event: ev}) })
-		return scanDoneMsg{seq: seq, report: r, err: err}
+		res, err := backend.Scan(ctx, req, func(ev scan.Event) { send(scanEventMsg{seq: seq, event: ev}) })
+		return scanDoneMsg{seq: seq, report: res.Report, folder: res.Folder, err: err}
 	}
 	return tea.Batch(run, m.tick())
 }
@@ -504,15 +524,16 @@ func (m *Model) scanDone(msg scanDoneMsg) {
 		return
 	}
 	if !interrupted {
-		m.lastReport = msg.report
+		m.lastReport, m.lastFolder = msg.report, msg.folder
 		m.result.Scanned = true
 	}
-	m.openReview(msg.report, interrupted)
+	m.openReview(msg.report, msg.folder, interrupted)
 }
 
-// openReview shows the Review screen on a report.
-func (m *Model) openReview(r *finding.Report, interrupted bool) {
-	m.review = newReview(m, r, interrupted)
+// openReview shows the Review screen on a report, without what the ignore
+// list names, with the folder tab when the scan measured one folder.
+func (m *Model) openReview(r *finding.Report, folder *Folder, interrupted bool) {
+	m.review = newReview(m, m.withoutIgnored(r), folder, interrupted)
 	m.screen = screenReview
 }
 

@@ -245,7 +245,7 @@ func TestNarrowWindow(t *testing.T) {
 	flat := h.flat()
 	require.Contains(t, flat, "Whole machine ~/Code, ~/Downloads, worktrees, package caches, Docker, app caches")
 	require.Contains(t, flat, "anything outside the scanned roots. P shows the full list")
-	require.Contains(t, flat, "o open last report P protected ? help q quit", "the footer wraps instead of losing keys")
+	require.Contains(t, flat, "o open last report x ignored P protected ? help q quit", "the footer wraps instead of losing keys")
 
 	h.background = true
 	h.press("enter")

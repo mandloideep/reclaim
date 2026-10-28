@@ -6,7 +6,7 @@
     Worktrees       [2mlinked git worktrees of the repositories under ~/Code, ~/Downloads, and Codex worktrees[0m
 
   Scanners   [x] [7mProject artifacts[0m  [x] Git worktrees  [x] Package caches  [x] Docker  [x] App caches  [x] Downloads
-  Hide findings under 10.0 MB     Stale projects only: off     Ask GitHub about pull requests: on
+  Hide findings under 10.0 MB     Stale projects only: off     Ask GitHub about pull requests: on     Ignored: 0
 
   [2mLast report: reclaim scan, just now: 27 findings and 2 for attention only, 26.2 GB reclaimable.  o opens it[0m
   Never removed: your home folder, ~/Documents, ~/Desktop, project roots, .git folders, anything outside the scanned roots.
@@ -17,4 +17,4 @@
 
 
 
-[1menter[0m scan  [1mspace[0m toggle  [1mm[0m min size  [1ms[0m stale  [1mg[0m github  [1mp[0m path  [1mo[0m open last report  [1mP[0m protected  [1m?[0m help  [1mq[0m quit
+[1menter[0m scan  [1mspace[0m toggle  [1mm[0m min size  [1ms[0m stale  [1mg[0m github  [1mp[0m path  [1mo[0m open last report  [1mx[0m ignored  [1mP[0m protected  [1m?[0m help  [1mq[0m quit

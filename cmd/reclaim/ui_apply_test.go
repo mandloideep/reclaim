@@ -101,7 +101,7 @@ func TestUISavePlanReleasesItsReservedName(t *testing.T) {
 	cfg, err := a.loadConfig()
 	require.NoError(t, err)
 	be := &uiBackend{a: a, cfg: cfg}
-	r, err := be.Scan(context.Background(), tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{root},
+	r, err := scanReport(context.Background(), be, tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{root},
 		Categories: []finding.Category{finding.CategoryProject}}, nil)
 	require.NoError(t, err)
 	selected := plan.SelectTiers(r.Findings, []finding.Tier{finding.TierA})
@@ -132,7 +132,7 @@ func savedFixturePlan(t *testing.T, a *app) (*uiBackend, tui.SavedPlan, string) 
 	cfg, err := a.loadConfig()
 	require.NoError(t, err)
 	be := &uiBackend{a: a, cfg: cfg}
-	r, err := be.Scan(context.Background(), tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{root},
+	r, err := scanReport(context.Background(), be, tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{root},
 		Categories: []finding.Category{finding.CategoryProject}}, nil)
 	require.NoError(t, err)
 	saved, err := be.SavePlan(context.Background(), r, plan.SelectTiers(r.Findings, []finding.Tier{finding.TierA}))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -49,6 +50,35 @@ type fakeBackend struct {
 	// applyErr makes the real run fail before its first action, as for a
 	// plan apply refuses.
 	applyErr error
+
+	// folder is the breakdown Scan returns, as for one folder; ignore is
+	// the ignore list Ignore keeps, ignoreErr makes Ignore fail, and
+	// ignores records every change, "+entry" or "-entry".
+	folder    *Folder
+	ignore    []string
+	ignoreErr error
+	ignores   []string
+}
+
+// Ignore keeps the ignore list in memory; it writes nothing.
+func (f *fakeBackend) Ignore(add, drop []string) ([]string, error) {
+	f.record("Ignore")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ignoreErr != nil {
+		return nil, f.ignoreErr
+	}
+	for _, e := range drop {
+		f.ignores = append(f.ignores, "-"+e)
+		f.ignore = slices.DeleteFunc(f.ignore, func(x string) bool { return x == e })
+	}
+	for _, e := range add {
+		f.ignores = append(f.ignores, "+"+e)
+		if !slices.Contains(f.ignore, e) {
+			f.ignore = append(f.ignore, e)
+		}
+	}
+	return slices.Clone(f.ignore), nil
 }
 
 func (f *fakeBackend) record(call string) {
@@ -57,7 +87,7 @@ func (f *fakeBackend) record(call string) {
 	f.calls = append(f.calls, call)
 }
 
-func (f *fakeBackend) Scan(ctx context.Context, req ScanRequest, progress func(scan.Event)) (*finding.Report, error) {
+func (f *fakeBackend) Scan(ctx context.Context, req ScanRequest, progress func(scan.Event)) (ScanResult, error) {
 	f.record("Scan")
 	f.mu.Lock()
 	f.requests = append(f.requests, req)
@@ -69,9 +99,9 @@ func (f *fakeBackend) Scan(ctx context.Context, req ScanRequest, progress func(s
 		<-ctx.Done()
 		r := *f.report
 		r.Warnings = append(r.Warnings, finding.Warning{Message: "scan interrupted: " + ctx.Err().Error()})
-		return &r, nil
+		return ScanResult{Report: &r}, nil
 	}
-	return f.report, f.scanErr
+	return ScanResult{Report: f.report, Folder: f.folder}, f.scanErr
 }
 
 func (f *fakeBackend) Protected(roots []string) []apply.ProtectedEntry {
@@ -193,6 +223,12 @@ func categories() []CategoryChoice {
 
 func newHarness(t *testing.T, be *fakeBackend, start StartOptions, width, height int) *harness {
 	t.Helper()
+	return newHarnessWith(t, be, start, width, height, nil)
+}
+
+// newHarnessWith is newHarness with edit changing the options first.
+func newHarnessWith(t *testing.T, be *fakeBackend, start StartOptions, width, height int, edit func(*Options)) *harness {
+	t.Helper()
 	h := &harness{t: t, be: be}
 	if start.Categories == nil {
 		start.Categories = categories()
@@ -200,16 +236,21 @@ func newHarness(t *testing.T, be *fakeBackend, start StartOptions, width, height
 	if start.Roots == nil {
 		start.Roots = []string{"/Users/me/Code", "/Users/me/Downloads"}
 	}
-	h.m = New(Options{
-		Backend:  be,
-		Send:     h.send,
-		Home:     "/Users/me",
-		Version:  "v0.3.0",
-		Now:      func() time.Time { return now },
-		Renderer: lipgloss.NewRenderer(io.Discard),
-		Start:    start,
-		OutPath:  "plan.json",
-	})
+	opts := Options{
+		Backend:    be,
+		Send:       h.send,
+		Home:       "/Users/me",
+		Version:    "v0.3.0",
+		Now:        func() time.Time { return now },
+		Renderer:   lipgloss.NewRenderer(io.Discard),
+		Start:      start,
+		OutPath:    "plan.json",
+		IgnorePath: "/Users/me/.config/reclaim/ignore",
+	}
+	if edit != nil {
+		edit(&opts)
+	}
+	h.m = New(opts)
 	h.m.Update(tea.WindowSizeMsg{Width: width, Height: height})
 	return h
 }
@@ -256,12 +297,24 @@ func (h *harness) press(keys ...string) {
 		// A character typed into a text input that already has the keys
 		// only edits it; its command is the cursor's blink, which waits
 		// half a second and is not run here.
-		if h.m.overlay == overlayNone && h.m.typing() && msg.Type == tea.KeyRunes {
+		if h.m.overlay == overlayNone && h.m.typing() && !h.answering() && msg.Type == tea.KeyRunes {
 			h.m.Update(msg)
 			continue
 		}
 		h.update(msg)
 	}
+}
+
+// answering reports whether the screen waits for the answer to a one line
+// confirmation, whose y runs a command, rather than for text.
+func (h *harness) answering() bool {
+	switch h.m.screen {
+	case screenStart:
+		return h.m.start.asking != ""
+	case screenReview:
+		return len(h.m.review.asking) > 0
+	}
+	return false
 }
 
 // update sends a message and runs what follows from it.
@@ -300,7 +353,7 @@ func (h *harness) deliver(msg tea.Msg) {
 		}
 	case tea.QuitMsg:
 		h.quit = true
-	case scanDoneMsg, planSavedMsg, applyDoneMsg:
+	case scanDoneMsg, planSavedMsg, applyDoneMsg, ignoredMsg:
 		h.flushSent()
 		h.update(msg)
 	}

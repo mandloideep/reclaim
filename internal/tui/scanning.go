@@ -50,6 +50,9 @@ type categoryRow struct {
 	// walked is set once the shared project walk has reported on this row.
 	walked            bool
 	folders, projects int
+	// measured says how far the measuring walk of "This folder" got, which
+	// runs before the scanners.
+	measured string
 }
 
 func (r *categoryRow) running() []string {
@@ -74,7 +77,7 @@ func (r *categoryRow) state() rowState {
 		return rowWarning
 	case allDone && len(r.running()) == 0:
 		return rowDone
-	case len(r.started) > 0 || len(r.finished) > 0 || r.walked:
+	case len(r.started) > 0 || len(r.finished) > 0 || r.walked || r.measured != "":
 		return rowRunning
 	default:
 		return rowWaiting
@@ -126,7 +129,11 @@ func (s *scanningScreen) event(ev scan.Event) {
 		s.row(ev.Category).started[ev.Scanner] = true
 	case scan.Step:
 		r := s.row(ev.Category)
-		if ev.Scanner == "" {
+		switch {
+		case ev.Scanner == "" && ev.Text != "":
+			r.measured = ev.Text
+			return
+		case ev.Scanner == "":
 			r.walked, r.folders, r.projects = true, ev.Folders, ev.Projects
 			return
 		}
@@ -230,8 +237,11 @@ func (s *scanningScreen) view() frame {
 // running, or why it failed.
 func (s *scanningScreen) rowText(r *categoryRow, state rowState) string {
 	var parts []string
-	if r.walked {
+	switch {
+	case r.walked:
 		parts = append(parts, plural(r.projects, "project", "projects")+" in "+plural(r.folders, "folder", "folders"))
+	case r.measured != "":
+		parts = append(parts, r.measured)
 	}
 	switch state {
 	case rowWarning:

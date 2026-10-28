@@ -39,6 +39,12 @@ type driver struct {
 	beforeDone func()
 }
 
+// scanReport runs a scan through the backend and returns its report.
+func scanReport(ctx context.Context, be *uiBackend, req tui.ScanRequest, progress func(scan.Event)) (*finding.Report, error) {
+	res, err := be.Scan(ctx, req, progress)
+	return res.Report, err
+}
+
 func newDriver(t *testing.T, a *app, args []string, f uiFlags) *driver {
 	t.Helper()
 	return newDriverWith(t, a, args, f, 140, 40, func(*tui.Options) {})
@@ -276,7 +282,7 @@ func TestUIBackendScan(t *testing.T) {
 		events = append(events, ev)
 	}
 
-	r, err := be.Scan(context.Background(), tui.ScanRequest{Mode: tui.ModeMachine, Categories: finding.Categories(), MinSize: 10_000_000, GitHub: true}, record)
+	r, err := scanReport(context.Background(), be, tui.ScanRequest{Mode: tui.ModeMachine, Categories: finding.Categories(), MinSize: 10_000_000, GitHub: true}, record)
 	require.NoError(t, err)
 	require.NotEmpty(t, r.Findings)
 	require.Equal(t, scan.Planned, events[0].Kind, "Docker is available in the fixture, so the plan comes first")
@@ -300,7 +306,7 @@ func TestUIBackendScan(t *testing.T) {
 	require.FileExists(t, a.lastReportPath())
 
 	// A folder typed with ~ scans project artifacts and worktrees under it.
-	r, err = be.Scan(context.Background(), tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{"~/Code/storefront"},
+	r, err = scanReport(context.Background(), be, tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{"~/Code/storefront"},
 		Categories: []finding.Category{finding.CategoryProject, finding.CategoryWorktree}, MinSize: 0}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{filepath.Join(a.home, "Code", "storefront")}, r.Roots)
@@ -310,7 +316,7 @@ func TestUIBackendScan(t *testing.T) {
 	require.True(t, r.Scope.Partial())
 
 	// Worktrees lists the ones in use too, whatever their size.
-	r, err = be.Scan(context.Background(), tui.ScanRequest{Mode: tui.ModeWorktrees}, nil)
+	r, err = scanReport(context.Background(), be, tui.ScanRequest{Mode: tui.ModeWorktrees}, nil)
 	require.NoError(t, err)
 	require.Equal(t, "worktrees", r.Scope.Command)
 	require.True(t, slices.ContainsFunc(r.Findings, func(f finding.Finding) bool {
@@ -321,14 +327,14 @@ func TestUIBackendScan(t *testing.T) {
 	require.NoError(t, os.Remove(a.lastReportPath()))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	r, err = be.Scan(ctx, tui.ScanRequest{Mode: tui.ModeMachine, Categories: finding.Categories()}, nil)
+	r, err = scanReport(ctx, be, tui.ScanRequest{Mode: tui.ModeMachine, Categories: finding.Categories()}, nil)
 	require.NoError(t, err)
 	require.True(t, slices.ContainsFunc(r.Warnings, func(w finding.Warning) bool { return strings.HasPrefix(w.Message, "scan interrupted") }))
 	_, err = os.Stat(a.lastReportPath())
 	require.ErrorIs(t, err, os.ErrNotExist)
 
 	// A folder that does not exist is an error the Start screen shows.
-	_, err = be.Scan(context.Background(), tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{"~/nope"}, Categories: finding.Categories()}, nil)
+	_, err = scanReport(context.Background(), be, tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{"~/nope"}, Categories: finding.Categories()}, nil)
 	require.Error(t, err)
 }
 
@@ -389,7 +395,7 @@ func TestUISavePlanNamesAndProof(t *testing.T) {
 	cfg, err := a.loadConfig()
 	require.NoError(t, err)
 	be := &uiBackend{a: a, cfg: cfg}
-	r, err := be.Scan(context.Background(), tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{f.Dir},
+	r, err := scanReport(context.Background(), be, tui.ScanRequest{Mode: tui.ModeFolder, Paths: []string{f.Dir},
 		Categories: []finding.Category{finding.CategoryWorktree}}, nil)
 	require.NoError(t, err)
 	before := snapshot(t, f.Dir)
@@ -487,7 +493,7 @@ func TestUIScopeNamesWhatRan(t *testing.T) {
 	be := &uiBackend{a: a, cfg: cfg}
 	scopeOf := func(req tui.ScanRequest) []string {
 		t.Helper()
-		r, err := be.Scan(context.Background(), req, nil)
+		r, err := scanReport(context.Background(), be, req, nil)
 		require.NoError(t, err)
 		return r.Scope.Args
 	}

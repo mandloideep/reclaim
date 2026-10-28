@@ -28,7 +28,7 @@
   [-] ▾ [1mApp caches[0m  5.2 GB  [2m5 items[0m[2m, 3 selected[0m                                  [2m│[0m 
     [ ] ▸ ollama  2.0 GB  [2m1 item[0m                                                 [2m│[0m 
     [x] ▸ xcode-derived-data  1.4 GB  [2m1 item[0m[2m, 1 selected[0m                         [2m│[0m 
-    [ ] ▸ playwright  930.0 MB  [2m1 item[0m                                           [2m│[0m 
 
 [1mSelected: 16 items, 16.4 GB[0m[2m   w writes plan.json   c continues[0m
-[1mspace[0m toggle  [1menter[0m open  [1m/[0m filter  [1mt[0m tier  [1ms[0m sort  [1ma[0m all tier A  [1mn[0m none  [1mi[0m details  [1mw[0m save plan  [1mc[0m continue  [1m?[0m help
+[1mspace[0m toggle  [1menter[0m open  [1m/[0m filter  [1mt[0m tier  [1ms[0m sort  [1ma[0m all tier A  [1mn[0m none  [1mx[0m ignore  [1mi[0m details  [1mw[0m save plan  [1mc[0m continue
+[1m?[0m help

@@ -25,7 +25,6 @@ import (
 	"github.com/mandloideep/reclaim/internal/apply"
 	"github.com/mandloideep/reclaim/internal/dockerx"
 	"github.com/mandloideep/reclaim/internal/execx"
-	"github.com/mandloideep/reclaim/internal/finding"
 	"github.com/mandloideep/reclaim/internal/scan"
 	"github.com/mandloideep/reclaim/internal/tui"
 	"github.com/mandloideep/reclaim/internal/ui"
@@ -317,6 +316,21 @@ func uiScreens(t *testing.T, a *app) map[string]string {
 			return nil
 		}
 	}
+	// The folder tab of This folder over the storefront project, before
+	// anything is removed. The last report is put back afterwards, so the
+	// Start screen below names the whole machine scan.
+	last, err := os.ReadFile(a.lastReportPath())
+	require.NoError(t, err)
+	storefront := filepath.Join(a.home, "Code", "storefront")
+	f := newDriverWith(t, a, []string{storefront}, uiFlags{minSize: defaultMinSize, out: "plan.json"}, 124, 22, func(o *tui.Options) {
+		o.Version = "v0.3.0"
+	})
+	f.key("enter", "tab")
+	f.moveTo(".claude/")
+	f.key("enter", "down", "enter", "down")
+	shots["ui-folder"] = f.m.View() + "\n"
+	require.NoError(t, os.WriteFile(a.lastReportPath(), last, 0o644))
+
 	d := newDriverWith(t, a, nil, uiFlags{minSize: defaultMinSize, out: "plan.json"}, 124, 20, func(o *tui.Options) {
 		o.Version = "v0.3.0"
 		o.Backend = &curatedScan{Backend: o.Backend, hold: map[string]bool{"git-worktrees": true, "docker": true},
@@ -391,7 +405,7 @@ func (c *curatedScan) FreeSpace(string) (int64, error) {
 	return 50_600_000_000, nil
 }
 
-func (c *curatedScan) Scan(ctx context.Context, req tui.ScanRequest, progress func(scan.Event)) (*finding.Report, error) {
+func (c *curatedScan) Scan(ctx context.Context, req tui.ScanRequest, progress func(scan.Event)) (tui.ScanResult, error) {
 	var mu sync.Mutex
 	var events []scan.Event
 	r, err := c.Backend.Scan(ctx, req, func(ev scan.Event) {
@@ -405,7 +419,7 @@ func (c *curatedScan) Scan(ctx context.Context, req tui.ScanRequest, progress fu
 		switch {
 		case ev.Kind == scan.Planned:
 			planned = ev
-		case ev.Kind == scan.Step && ev.Scanner == "":
+		case ev.Kind == scan.Step && ev.Scanner == "" && ev.Text == "":
 			walk = ev
 		case ev.Kind == scan.ScannerFinished && c.hold[ev.Scanner]:
 		default:

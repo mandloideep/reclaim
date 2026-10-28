@@ -28,8 +28,9 @@ type Mode int
 const (
 	// ModeMachine scans the whole machine, as reclaim scan does.
 	ModeMachine Mode = iota
-	// ModeFolder scans one folder, or the folders given on the command
-	// line, as reclaim scan with paths does.
+	// ModeFolder scans one folder with the single measuring walk of
+	// reclaim here, which also gives the folder tab its breakdown, or the
+	// folders given on the command line, as reclaim scan with paths does.
 	ModeFolder
 	// ModeWorktrees runs the worktree scanners alone, as reclaim worktrees
 	// does.
@@ -53,6 +54,8 @@ type ScanRequest struct {
 	// Zero keeps every finding.
 	Stale time.Duration
 	// Depth limits the project walk below each root, zero for no limit.
+	// For one folder it is the depth of the folder breakdown instead, as
+	// for reclaim here, and the project walk has no limit.
 	Depth int
 	// All looks outside the folders of ModeFolder too, as --all does.
 	All bool
@@ -61,6 +64,42 @@ type ScanRequest struct {
 	DockerLabels []string
 	// GitHub lets the worktree scanners ask gh for pull request state.
 	GitHub bool
+}
+
+// ScanResult is what a scan found.
+type ScanResult struct {
+	// Report is the report, as reclaim scan, here or worktrees writes it.
+	Report *finding.Report
+	// Folder is the breakdown of the folder "This folder" measured, nil
+	// for the other modes and for several folders.
+	Folder *Folder
+}
+
+// Folder is the breakdown of one folder by size, from the measuring walk of
+// reclaim here, for the folder tab of the Review screen.
+type Folder struct {
+	// Path is the folder.
+	Path string
+	// Size is its size, everything below it included.
+	Size int64
+	// Entries are its entries, largest first.
+	Entries []FolderEntry
+}
+
+// FolderEntry is one entry of a folder breakdown.
+type FolderEntry struct {
+	// Name is the base name and Path the full path.
+	Name, Path string
+	// Dir reports whether the entry is a folder.
+	Dir bool
+	// Size is the size of the entry, everything below it included.
+	Size int64
+	// Worktree is the state in words of a linked worktree, empty for any
+	// other entry.
+	Worktree string
+	// Entries are the entries of a folder, largest first, down to the
+	// depth of the breakdown.
+	Entries []FolderEntry
 }
 
 // SavedPlan is a plan the backend built and saved.
@@ -77,13 +116,14 @@ type SavedPlan struct {
 // Backend is everything the screens need from the machine. cmd/reclaim
 // implements it over the scan, plan and apply code; tests give the screens
 // a fake. The screens never remove anything themselves; the only method
-// here that removes anything is Apply, and it takes a plan path.
+// here that removes anything is Apply, and it takes a plan path. Ignore
+// writes the ignore list and nothing else.
 type Backend interface {
 	// Scan runs the scanners the request names and reports progress
 	// through events. Canceling ctx stops the scan and returns what was
 	// found so far, with a warning that the scan was interrupted. A
 	// finished scan is saved as the last report, as reclaim scan does.
-	Scan(ctx context.Context, req ScanRequest, progress func(scan.Event)) (*finding.Report, error)
+	Scan(ctx context.Context, req ScanRequest, progress func(scan.Event)) (ScanResult, error)
 	// Protected returns the protected list in words, built by apply from
 	// the tables its checks use.
 	Protected(roots []string) []apply.ProtectedEntry
@@ -99,4 +139,9 @@ type Backend interface {
 	Apply(ctx context.Context, path string, dryRun bool, progress apply.Progress) (apply.Summary, error)
 	// FreeSpace reports the free bytes of the volume holding path.
 	FreeSpace(path string) (int64, error)
+	// Ignore adds entries to the ignore list and drops entries from it,
+	// each a clean absolute path or a target entry such as docker:<id>,
+	// and returns the list as written. It writes the ignore list and
+	// nothing else.
+	Ignore(add, drop []string) ([]string, error)
 }

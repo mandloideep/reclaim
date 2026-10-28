@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/mandloideep/reclaim/internal/finding"
 )
 
 // styles are the colors of the screen, from the 16 ANSI colors the tables
@@ -16,6 +18,7 @@ import (
 // itself, A green, B yellow and C red.
 type styles struct {
 	title, bold, dim, warn, good, bad, cursor, key lipgloss.Style
+	tierA, tierB, tierC                            lipgloss.Style
 }
 
 func newStyles(re *lipgloss.Renderer) styles {
@@ -28,7 +31,23 @@ func newStyles(re *lipgloss.Renderer) styles {
 		bad:    re.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
 		cursor: re.NewStyle().Reverse(true),
 		key:    re.NewStyle().Bold(true),
+		tierA:  re.NewStyle().Foreground(lipgloss.Color("2")).Bold(true),
+		tierB:  re.NewStyle().Foreground(lipgloss.Color("3")).Bold(true),
+		tierC:  re.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
 	}
+}
+
+// tier renders a tier letter in its color, as the findings tree does.
+func (s styles) tier(t finding.Tier) string {
+	switch t {
+	case finding.TierA:
+		return s.tierA.Render("A")
+	case finding.TierB:
+		return s.tierB.Render("B")
+	case finding.TierC:
+		return s.tierC.Render("C")
+	}
+	return " "
 }
 
 // keys renders the keys of a footer and what they do, such as "enter scan",

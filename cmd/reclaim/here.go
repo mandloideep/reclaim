@@ -50,6 +50,20 @@ func toHereNodes(nodes []*fsx.Node, worktrees map[string]string) []*hereNode {
 	return out
 }
 
+// unreadableWarnings are the warnings for the entries a measuring walk
+// could not read, the first 20 by path and then how many more.
+func unreadableWarnings(us []fsx.Unreadable) []finding.Warning {
+	var out []finding.Warning
+	for i, u := range us {
+		if i == 20 {
+			out = append(out, finding.Warning{Message: fmt.Sprintf("%d more unreadable entries not counted", len(us)-20)})
+			break
+		}
+		out = append(out, finding.Warning{Path: u.Path, Message: "not counted: " + u.Err.Error()})
+	}
+	return out
+}
+
 // worktreeMarks classifies the linked worktrees among the folders of the
 // breakdown, without asking GitHub, and returns their state in words.
 func (a *app) worktreeMarks(ctx context.Context, root *fsx.Node) map[string]string {
@@ -150,13 +164,7 @@ func (a *app) hereCommand(cmd *cobra.Command, args []string, path string, f here
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("here interrupted: %w", err)
 	}
-	for i, u := range treeRes.Unreadable {
-		if i == 20 {
-			report.Warnings = append(report.Warnings, finding.Warning{Message: fmt.Sprintf("%d more unreadable entries not counted", len(treeRes.Unreadable)-20)})
-			break
-		}
-		report.Warnings = append(report.Warnings, finding.Warning{Path: u.Path, Message: "not counted: " + u.Err.Error()})
-	}
+	report.Warnings = append(report.Warnings, unreadableWarnings(treeRes.Unreadable)...)
 
 	if f.out != "" {
 		if err := saveReport(f.out, report); err != nil {

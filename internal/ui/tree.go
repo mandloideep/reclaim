@@ -162,6 +162,8 @@ type Tree struct {
 	opts     TreeOptions
 	findings []finding.Finding
 	selected []bool
+	// dropped marks the findings Drop took out of the tree.
+	dropped  []bool
 	tree     []*node
 	expanded map[string]bool
 
@@ -223,6 +225,7 @@ func NewTree(r *finding.Report, opts TreeOptions) *Tree {
 		},
 	}
 	t.selected = make([]bool, len(t.findings))
+	t.dropped = make([]bool, len(t.findings))
 	for i := range t.findings {
 		t.selected[i] = t.findings[i].Tier == finding.TierA && t.findings[i].Actionable()
 	}
@@ -342,6 +345,75 @@ func (t *Tree) SelectNone() int {
 	}
 	t.rebuild()
 	return n
+}
+
+// Drop takes the findings drop reports out of the tree, such as the ones
+// the user just put on the ignore list, and clears their selection. It
+// returns how many it took out.
+func (t *Tree) Drop(drop func(*finding.Finding) bool) int {
+	n := 0
+	for i := range t.findings {
+		if !t.dropped[i] && drop(&t.findings[i]) {
+			t.dropped[i], t.selected[i] = true, false
+			t.changed = true
+			n++
+		}
+	}
+	t.rebuild()
+	return n
+}
+
+// CurrentFindings returns the findings the row under the cursor stands
+// for: its finding, or the findings below its group or category that the
+// filters show. A warning stands for none.
+func (t *Tree) CurrentFindings() []finding.Finding {
+	n := t.current()
+	if n == nil {
+		return nil
+	}
+	var out []finding.Finding
+	for _, i := range t.visibleLeaves([]*node{n}) {
+		out = append(out, t.findings[i])
+	}
+	return out
+}
+
+// Findings returns the findings the tree holds, in tree order, without the
+// ones Drop took out.
+func (t *Tree) Findings() []finding.Finding {
+	var out []finding.Finding
+	for i := range t.findings {
+		if !t.dropped[i] {
+			out = append(out, t.findings[i])
+		}
+	}
+	return out
+}
+
+// IsSelected reports whether the finding with this id is selected.
+func (t *Tree) IsSelected(id string) bool {
+	i := slices.IndexFunc(t.findings, func(f finding.Finding) bool { return f.ID == id })
+	return i >= 0 && t.selected[i]
+}
+
+// SetSelected ticks or unticks the finding with this id, for a view that
+// shares the selection, such as the folder tab of the review screen. It
+// returns why it could not, for a finding listed for attention only or one
+// the tree does not hold.
+func (t *Tree) SetSelected(id string, on bool) string {
+	i := slices.IndexFunc(t.findings, func(f finding.Finding) bool { return f.ID == id })
+	switch {
+	case i < 0 || t.dropped[i]:
+		return "this is not among the findings"
+	case !t.findings[i].Actionable():
+		return "this is listed for attention only; reclaim never removes it"
+	}
+	if t.selected[i] != on {
+		t.selected[i] = on
+		t.changed = true
+		t.rebuild()
+	}
+	return ""
 }
 
 // Filtering reports whether the text filter is being typed, when every key
@@ -590,6 +662,9 @@ func (t *Tree) isExpanded(n *node) bool {
 // matches reports whether a finding passes the text and tier filters. The
 // text matches the name, path, scanner, project and group title.
 func (t *Tree) matches(n *node) bool {
+	if t.dropped[n.leaf] {
+		return false
+	}
 	f := &t.findings[n.leaf]
 	if t.tier != "" && f.Tier != t.tier {
 		return false

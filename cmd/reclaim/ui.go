@@ -39,6 +39,7 @@ type uiFlags struct {
 	all          bool
 	dockerLabels []string
 	out          string
+	report       string
 }
 
 // notTerminal is the refusal of ui when standard input or output is not a
@@ -56,8 +57,10 @@ func newUICmd(a *app) *cobra.Command {
 			"scan, review what it found with everything reclaim knows about each item, and save a plan.\n" +
 			"It takes the scan flags with the same meaning, which prefill the start screen: with paths it\n" +
 			"looks at the project artifacts and worktrees under them, and --all adds the caches, Docker and\n" +
-			"Downloads. Nothing is removed by the screen: c saves a plan for reclaim apply, and w writes it\n" +
-			"to --out to read or edit first. reclaim with no arguments opens the same screen in a terminal.",
+			"Downloads. One folder is measured as reclaim here measures it, and the review screen shows its\n" +
+			"breakdown on a second tab. --report opens the review screen on a saved report without scanning.\n" +
+			"Nothing is removed until yes is typed on the confirm screen: c saves a plan and shows it, and w\n" +
+			"writes it to --out to read or edit first. reclaim with no arguments opens the same screen.",
 		ValidArgsFunction: folders,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.uiCommand(cmd, args, f)
@@ -67,16 +70,18 @@ func newUICmd(a *app) *cobra.Command {
 	fl.StringVar(&f.minSize, "min-size", defaultMinSize, "hide findings smaller than this, such as 50MB or 1GiB")
 	fl.StringSliceVar(&f.categories, "category", nil, "only run these categories, ecosystems or scanners, such as docker,node")
 	fl.StringVar(&f.stale, "stale", "", "only show project findings with no activity for this long, such as 90d")
-	fl.IntVar(&f.depth, "depth", 0, "how many levels below each root to look for projects, 0 for no limit")
+	fl.IntVar(&f.depth, "depth", 0, "how many levels below each root to look for projects, 0 for no limit; for one folder, the levels of its breakdown")
 	fl.BoolVar(&f.all, "all", false, "with paths, also check package caches, Docker, app caches and Downloads")
 	fl.StringArrayVar(&f.dockerLabels, "docker-label", nil, "only report Docker objects with this label, key=value or key; repeatable")
 	fl.StringVar(&f.out, "out", "plan.json", "plan file the w key writes")
+	fl.StringVar(&f.report, "report", "", "open the review screen on this report, without scanning")
 	completeFlag(cmd, "min-size", oneOf(sizeChoices))
 	completeFlag(cmd, "category", listOf(categoryChoices))
 	completeFlag(cmd, "stale", oneOf(staleChoices))
 	completeFlag(cmd, "depth", cobra.NoFileCompletions)
 	completeFlag(cmd, "docker-label", cobra.NoFileCompletions)
 	completeFlag(cmd, "out", filesWithExt("json"))
+	completeFlag(cmd, "report", filesWithExt("json"))
 	return cmd
 }
 
@@ -139,11 +144,20 @@ func (a *app) uiOptions(ctx context.Context, args []string, f uiFlags, changed f
 	if err != nil {
 		return tui.Options{}, err
 	}
-	var last *finding.Report
+	// Reports saved before an exclude or ignore entry was added show
+	// without what it names, as a scan would.
+	var last, report *finding.Report
 	if r, err := loadReport(a.lastReportPath()); err == nil {
+		r.Findings = excludedDropped(cfg, r.Findings)
 		last = r
 	}
-	return tui.Options{
+	if f.report != "" {
+		if report, err = loadReport(f.report); err != nil {
+			return tui.Options{}, err
+		}
+		report.Findings = excludedDropped(cfg, report.Findings)
+	}
+	opts := tui.Options{
 		Context:    ctx,
 		Backend:    &uiBackend{a: a, cfg: cfg, categories: f.categories},
 		Send:       send,
@@ -154,8 +168,13 @@ func (a *app) uiOptions(ctx context.Context, args []string, f uiFlags, changed f
 		TickEvery:  time.Second,
 		Start:      start,
 		LastReport: last,
+		Report:     report,
 		OutPath:    f.out,
-	}, nil
+	}
+	if cfg.Ignore != nil {
+		opts.Ignore, opts.IgnorePath = slices.Clone(cfg.Ignore.Entries), cfg.Ignore.Path
+	}
+	return opts, nil
 }
 
 // uiSummary prints what the screen did once it has closed: every plan it
@@ -303,20 +322,26 @@ type uiBackend struct {
 
 var _ tui.Backend = (*uiBackend)(nil)
 
-// Scan runs the scan the Start screen describes, with the code scan and
-// worktrees use, and saves a scan that finished as the last report.
-func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func(scan.Event)) (*finding.Report, error) {
+// uiFolderDepth is how many levels of a folder the folder tab shows when
+// --depth does not say.
+const uiFolderDepth = 3
+
+// Scan runs the scan the Start screen describes, with the code scan, here
+// and worktrees use, and saves a scan that finished as the last report.
+// One folder is measured by the single walk of reclaim here, which gives
+// the folder tab its breakdown and the project scanners their sizes.
+func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func(scan.Event)) (tui.ScanResult, error) {
 	a, cfg := b.a, b.config()
 	reg := scanners.New()
 	selected, err := b.scanners(reg.All(), req)
 	if err != nil {
-		return nil, err
+		return tui.ScanResult{}, err
 	}
 	var labels []dockerx.Label
 	for _, l := range req.DockerLabels {
 		label, err := dockerx.ParseLabel(l)
 		if err != nil {
-			return nil, fmt.Errorf("docker label: %w", err)
+			return tui.ScanResult{}, fmt.Errorf("docker label: %w", err)
 		}
 		labels = append(labels, label)
 	}
@@ -326,7 +351,7 @@ func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func
 		for _, p := range req.Paths {
 			r, err := b.resolve(p)
 			if err != nil {
-				return nil, err
+				return tui.ScanResult{}, err
 			}
 			roots = append(roots, r)
 		}
@@ -338,7 +363,7 @@ func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func
 		roots = a.uiRoots(cfg)
 	}
 	if len(selected) == 0 {
-		return nil, errors.New("no scanners selected: the ticked categories have no scanner to run")
+		return tui.ScanResult{}, errors.New("no scanners selected: the ticked categories have no scanner to run")
 	}
 	command, depth := "scan", req.Depth
 	if req.Mode == tui.ModeWorktrees {
@@ -349,26 +374,99 @@ func (b *uiBackend) Scan(ctx context.Context, req tui.ScanRequest, progress func
 	// leaves unsaid.
 	byDefault, err := enabledScanners(reg.All(), nil, cfg.Disable)
 	if err != nil {
-		return nil, err
+		return tui.ScanResult{}, err
 	}
 	if req.Mode == tui.ModeFolder && !req.All {
 		byDefault = scan.UnderRoots(byDefault)
 	}
-	report := a.runScan(ctx, reg, scanRequest{
+	sreq := scanRequest{
 		scanners: selected, roots: roots, exclude: cfg.ExcludedPaths(), excludeTargets: cfg.ExcludedTargets(), depth: depth, labels: labels,
-		scope:     &finding.Scope{Command: command, Args: scopeArgs(req, paths, selected, reg.All(), byDefault), Paths: paths, Roots: roots},
+		scope:     &finding.Scope{Command: command, Args: scopeArgs(req, a.typed(paths), selected, reg.All(), byDefault), Paths: paths, Roots: roots},
 		worktrees: scan.WorktreeOptions{GitHub: req.GitHub, InUse: req.Mode == tui.ModeWorktrees},
 		progress:  progress,
 		shown: scan.Filter{MinSize: req.MinSize, Stale: req.Stale, Now: a.now(), Exclude: cfg.ExcludedPaths(),
 			ExcludeTargets: cfg.ExcludedTargets()},
-	})
+	}
+	var tree *fsx.Node
+	var treeRes fsx.Result
+	if req.Mode == tui.ModeFolder && len(roots) == 1 {
+		if tree, treeRes, err = b.measure(ctx, &sreq, req, progress); err != nil {
+			return tui.ScanResult{}, err
+		}
+	}
+	report := a.runScan(ctx, reg, sreq)
 	report.Findings = scan.Filter{MinSize: req.MinSize, Stale: req.Stale, Now: a.now()}.Apply(report.Findings)
+	report.Warnings = append(report.Warnings, unreadableWarnings(treeRes.Unreadable)...)
 	// A scan that was stopped returns what it found so far, which is not
 	// what select should read next.
 	if !scan.Interrupted(report.Warnings) {
 		a.saveLastReport(report)
 	}
-	return report, nil
+	res := tui.ScanResult{Report: report}
+	if tree != nil && ctx.Err() == nil {
+		res.Folder = &tui.Folder{Path: tree.Path, Size: tree.Size, Entries: folderEntries(tree.Children, a.worktreeMarks(ctx, tree))}
+	}
+	return res, nil
+}
+
+// measure runs the single measuring walk of reclaim here over the one
+// folder of the request and turns the scan into the one here runs: the
+// project scanners take their sizes from the walk, the walk below the
+// folder has no depth limit, the request's depth is the breakdown's, and
+// the scope says here. A walk the user stopped returns no tree, and the
+// scan then stops too.
+func (b *uiBackend) measure(ctx context.Context, sreq *scanRequest, req tui.ScanRequest, progress func(scan.Event)) (*fsx.Node, fsx.Result, error) {
+	root := sreq.roots[0]
+	treeDepth := req.Depth
+	if treeDepth <= 0 {
+		treeDepth = uiFolderDepth
+	}
+	opts := fsx.TreeOptions{Depth: treeDepth, DirSizes: true}
+	if progress != nil {
+		opts.Progress = func(dirs int64) {
+			progress(scan.Event{Kind: scan.Step, Category: finding.CategoryProject, Text: "measuring the folder, " + plural(int(dirs), "folder", "folders")})
+		}
+	}
+	walker := fsx.NewWalker(0)
+	tree, res, err := walker.Tree(ctx, root, opts)
+	if err != nil && ctx.Err() == nil {
+		return nil, fsx.Result{}, err
+	}
+	args := b.a.typed([]string{root})
+	if req.Depth > 0 {
+		args = append(args, "--depth="+strconv.Itoa(req.Depth))
+	}
+	sreq.scope = &finding.Scope{Command: "here", Args: args, Paths: []string{root}, Roots: []string{root}}
+	sreq.depth = 0
+	if err == nil {
+		sreq.walker, sreq.sizes = walker, res.DirSizes
+		return tree, res, nil
+	}
+	return nil, fsx.Result{}, nil
+}
+
+// typed writes paths the way a person types them on the command line, the
+// home folder as ~, so the command a report names reads as one.
+func (a *app) typed(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = p
+		if rel, ok := strings.CutPrefix(p, a.home+string(filepath.Separator)); ok && a.home != "" {
+			out[i] = "~/" + rel
+		}
+	}
+	return out
+}
+
+// folderEntries turns the nodes of a measuring walk into the entries of
+// the folder tab, with the state in words of the linked worktrees.
+func folderEntries(nodes []*fsx.Node, worktrees map[string]string) []tui.FolderEntry {
+	out := make([]tui.FolderEntry, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, tui.FolderEntry{Name: n.Name, Path: n.Path, Dir: n.IsDir, Size: n.Size, Worktree: worktrees[n.Path],
+			Entries: folderEntries(n.Children, worktrees)})
+	}
+	return out
 }
 
 // scanners picks the scanners of the ticked categories: the ones the
@@ -654,6 +752,26 @@ func (b *uiBackend) runOf(saved tui.SavedPlan) tui.Run {
 // FreeSpace reports the free bytes of the volume holding path.
 func (b *uiBackend) FreeSpace(path string) (int64, error) {
 	return fsx.FreeSpace(path)
+}
+
+// Ignore adds entries to the ignore list next to the configuration file and
+// drops entries from it, with config.EditIgnore, which writes that file and
+// nothing else. The scans, the protected list and the runs that follow use
+// the list as written.
+func (b *uiBackend) Ignore(add, drop []string) ([]string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.cfg.Ignore == nil || b.cfg.Ignore.Path == "" {
+		return nil, errors.New("there is no configuration folder to keep the ignore list in")
+	}
+	ig, err := config.EditIgnore(b.cfg.Ignore.Path, b.a.home, add, drop)
+	if err != nil {
+		return nil, err
+	}
+	c := *b.cfg
+	c.Ignore = ig
+	b.cfg = &c
+	return slices.Clone(ig.Entries), nil
 }
 
 // newPlanPath reserves a plan file name under the reclaim folder that no
