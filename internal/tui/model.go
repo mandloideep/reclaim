@@ -99,9 +99,21 @@ const (
 	// OutcomePlanSaved means the screen saved a plan under the reclaim
 	// folder and nothing was applied.
 	OutcomePlanSaved
-	// OutcomeApplied means the plan was applied after yes was typed.
+	// OutcomeApplied means the last thing the screen did was apply a plan
+	// after yes was typed.
 	OutcomeApplied
 )
+
+// Run is one plan the screen applied after yes was typed.
+type Run struct {
+	// Plan is the plan file that ran.
+	Plan SavedPlan
+	// Summary is what apply.Run reported.
+	Summary apply.Summary
+	// Err is the error apply.Run or the backend returned, such as a stale
+	// plan or failed actions.
+	Err error
+}
 
 // Result is what the screen leaves for the caller to print once the
 // alternate screen has closed.
@@ -115,8 +127,13 @@ type Result struct {
 	// Plan is the last plan the screen saved, for OutcomePlanSaved and
 	// OutcomeApplied.
 	Plan SavedPlan
-	// Summary is the result of applying the plan, for OutcomeApplied.
-	Summary apply.Summary
+	// Runs are the plans applied, in order: a second pass after r adds
+	// one, and none is forgotten.
+	Runs []Run
+	// Pending is the plan of a run that started but whose end the screen
+	// did not see, because the program ended while it ran; the caller
+	// waits for it and reports it.
+	Pending *SavedPlan
 	// Scanned reports whether a scan finished and was saved as the last
 	// report.
 	Scanned bool
@@ -328,13 +345,14 @@ func (m *Model) applyMsg(msg tea.Msg) {
 		if msg.seq != m.seq {
 			return
 		}
-		m.cancel = nil
+		m.stopRun()
 		if msg.dryRun {
 			m.confirm.dryRunDone(msg.summary, msg.err)
 			return
 		}
 		m.removing.done(msg.summary, msg.err)
-		m.result.Outcome, m.result.Summary = OutcomeApplied, msg.summary
+		m.result.Outcome, m.result.Pending = OutcomeApplied, nil
+		m.result.Runs = append(m.result.Runs, Run{Plan: m.removing.saved, Summary: msg.summary, Err: msg.err})
 		m.screen = screenDone
 	}
 }
@@ -349,7 +367,14 @@ func (m *Model) key(msg tea.KeyMsg) tea.Cmd {
 	}
 	// While the plan is removed, q does nothing and ctrl+c stops after the
 	// current action, so no action is ever cut off half done.
-	if m.screen == screenRemoving {
+	if m.screen == screenRemoving && m.overlay == overlayNone {
+		switch msg.String() {
+		case "?", "P":
+		default:
+			return m.removing.key(msg)
+		}
+	}
+	if m.screen == screenRemoving && msg.String() == "ctrl+c" {
 		return m.removing.key(msg)
 	}
 	if msg.String() == "ctrl+c" {
@@ -599,7 +624,11 @@ func (m *Model) helpText() string {
 	case screenDone:
 		keys = doneHelp()
 	}
-	keys = append(keys, [2]string{"P", "what reclaim never removes"}, [2]string{"?", "this help"}, [2]string{"q", "quit"})
+	keys = append(keys, [2]string{"P", "what reclaim never removes"}, [2]string{"?", "this help"})
+	if m.screen != screenRemoving {
+		// q does nothing while a plan is removed.
+		keys = append(keys, [2]string{"q", "quit"})
+	}
 	var b strings.Builder
 	b.WriteString(m.st.bold.Render("Keys") + "\n\n")
 	for _, k := range keys {
@@ -679,6 +708,7 @@ func (m *Model) startApply(path string, dryRun bool) tea.Cmd {
 func (m *Model) startRemoving(saved SavedPlan) tea.Cmd {
 	m.removing = newRemoving(m, saved)
 	m.screen = screenRemoving
+	m.result.Outcome, m.result.Pending = OutcomeApplied, &saved
 	run := m.startApply(saved.Path, false)
 	return tea.Batch(run, m.tick(), m.removing.spinner.Tick)
 }

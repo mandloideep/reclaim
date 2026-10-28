@@ -46,6 +46,9 @@ type fakeBackend struct {
 	applyWait bool
 	outcome   func(a plan.Action, dry bool) apply.Outcome
 	free      int64
+	// applyErr makes the real run fail before its first action, as for a
+	// plan apply refuses.
+	applyErr error
 }
 
 func (f *fakeBackend) record(call string) {
@@ -108,6 +111,9 @@ func (f *fakeBackend) Apply(ctx context.Context, path string, dryRun bool, progr
 	f.applied = append(f.applied, mark+path)
 	p := f.lastPlan
 	f.mu.Unlock()
+	if f.applyErr != nil && !dryRun {
+		return apply.Summary{}, f.applyErr
+	}
 	log := "/Users/me/Library/Caches/reclaim/logs/apply-20261027T153045Z.log"
 	if progress.Begin != nil {
 		progress.Begin(log)

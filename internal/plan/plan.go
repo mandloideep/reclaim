@@ -223,6 +223,12 @@ func Load(path string) (*Plan, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read plan %s: %w", path, err)
 	}
+	return Parse(path, data)
+}
+
+// Parse decodes and validates the contents of the plan file at path, as
+// Load does once it has read them.
+func Parse(path string, data []byte) (*Plan, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var p Plan

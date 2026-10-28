@@ -933,3 +933,30 @@ func TestComponentCount(t *testing.T) {
 	require.Equal(t, 2, componentCount("/Users/me"))
 	require.Equal(t, 4, componentCount("/Users/me/Code/app"))
 }
+
+// TestStopFinishesTheRunningAction proves Options.Stop stops a run between
+// actions: the action that runs when it closes finishes, with its context
+// still live, and the rest are not run.
+func TestStopFinishesTheRunningAction(t *testing.T) {
+	e := newEnv(t)
+	cache := filepath.Join(e.home, ".npm", "_cacache")
+	write(t, filepath.Join(cache, "a"), 400)
+	later := filepath.Join(e.root, "web", "node_modules")
+	write(t, filepath.Join(later, "x"), 10)
+	stop := make(chan struct{})
+	fake := &execx.Fake{
+		Tools:   map[string]string{"npm": "/usr/bin/npm"},
+		Outputs: map[string]string{"npm config get cache": filepath.Dir(cache)},
+		OnRun: func([]string) error {
+			close(stop) // ctrl+c arrives while the command runs
+			return os.Remove(filepath.Join(cache, "a"))
+		},
+	}
+	p := newPlan([]string{e.root, e.home}, commandAction(cache, "npm", "cache", "clean", "--force"), removeAction(later, finding.KindDir))
+	sum, err := Run(t.Context(), p, Options{Home: e.home, Walker: fsx.NewWalker(1), Exec: fake, Stop: stop})
+	require.ErrorContains(t, err, "apply interrupted: stopped after the action that was running")
+	require.Equal(t, StatusDone, sum.Outcomes[0].Status)
+	require.Equal(t, int64(400), sum.Outcomes[0].Freed)
+	require.Equal(t, StatusNotRun, sum.Outcomes[1].Status)
+	require.True(t, exists(filepath.Join(later, "x")))
+}

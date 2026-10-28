@@ -4,12 +4,12 @@
   [1;32mdone     [0m  ~1.2 GB  docker remove dangling image 9f3c1a7be2d4
   [1;32mdone     [0m   3.2 GB  docker prune build cache (2 unused records)
   [1;32mdone     [0m 184.0 MB  git -C ~/Code/storefront worktree remove ~/Code/storefront/.claude/worktrees/agent-3f9c1e2a[2m  git-workt[0m
+                      [2mlinked worktree ok, path ok, work exists elsewhere ok, head unchanged ok, not the working directory[0m
+                      [2mok, git worktree remove ok[0m
   ⣾  remove ~/Code/ripgrep-fork/target[2m  rust-target[0m, 3.9 GB expected
             [2m11 more waiting[0m
 
 Disk free on the volume of ~: 41.2 GB when this started, 50.6 GB now
 
-
-
-[1mctrl+c[0m stops after the current action
+[1mctrl+c[0m stops after the current action  [1m?[0m help
 [2mlog: ~/Library/Caches/reclaim/logs/apply-20261005T093007Z.log[0m

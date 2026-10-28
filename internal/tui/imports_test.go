@@ -40,9 +40,10 @@ func testImports() []string {
 // have no way to remove anything themselves: every file of the package
 // imports only what screenImports allows, which leaves out os, os/exec,
 // syscall and cgo, the only names they use from apply are the types of the
-// protected list, the only names they use from plan are the plan types and
-// the conversion of a finding into an action for the details pane, and the
-// Backend interface has no method that removes anything. The tests import
+// protected list, the only names they use from plan are the plan types, the
+// age limit apply checks and the conversion of a finding into an action for
+// the details pane, and the Backend interface has no method that removes
+// anything. The tests import
 // neither os nor os/exec either, so no test can create on disk what it then
 // claims a screen removed.
 func TestScreensCannotRemoveAnything(t *testing.T) {
@@ -55,7 +56,7 @@ func TestScreensCannotRemoveAnything(t *testing.T) {
 	allowed := map[string][]string{
 		"apply": {"ProtectedEntry", "Progress", "Summary", "Outcome", "Check", "Status",
 			"StatusDone", "StatusGone", "StatusManual", "StatusFailed", "StatusNotRun", "StatusChecked", "StatusRefused"},
-		"plan": {"Plan", "Action", "FromFinding"},
+		"plan": {"Plan", "Action", "FromFinding", "MaxAge"},
 	}
 	fset := token.NewFileSet()
 	checked := 0

@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -140,6 +141,11 @@ type Options struct {
 	Now func() time.Time
 	// Progress reports the run at both edges of every action.
 	Progress Progress
+	// Stop, when it is closed, stops the run between actions: the action
+	// that runs finishes, and the rest are marked not run. Unlike canceling
+	// ctx, which also cuts off the command or Docker call that runs, it
+	// never leaves an action half done.
+	Stop <-chan struct{}
 	// Getwd returns the working directory of the process, which apply never
 	// removes a worktree around. Nil uses os.Getwd.
 	Getwd func() (string, error)
@@ -194,7 +200,7 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (Summary, error) {
 		switch {
 		case stopped:
 			o = Outcome{Action: a, Status: StatusNotRun}
-		case ctx.Err() != nil:
+		case ctx.Err() != nil || closed(opts.Stop):
 			o = Outcome{Action: a, Status: StatusNotRun}
 			stopped = true
 		default:
@@ -227,6 +233,9 @@ func Run(ctx context.Context, p *plan.Plan, opts Options) (Summary, error) {
 	if err := ctx.Err(); err != nil {
 		return sum, fmt.Errorf("apply interrupted: %w", err)
 	}
+	if closed(opts.Stop) && slices.ContainsFunc(sum.Outcomes, func(o Outcome) bool { return o.Status == StatusNotRun }) {
+		return sum, errors.New("apply interrupted: stopped after the action that was running")
+	}
 	if sum.Failed > 0 {
 		if opts.DryRun {
 			return sum, fmt.Errorf("%d of %d actions would be refused", sum.Failed, len(p.Actions))
@@ -241,6 +250,10 @@ type runner struct {
 	docker    dockerx.API
 	dockerErr error
 	dockerSet bool
+	// containers holds the containers a dry run found removable so far,
+	// which no longer keep their images in use when the real run reaches
+	// them.
+	containers map[string]bool
 	// checked holds the paths a dry run found removable so far. A folder
 	// removed once empty, such as a Codex task folder, still holds the
 	// worktrees earlier actions remove, so a dry run counts it empty when
@@ -296,6 +309,12 @@ func (r *runner) one(ctx context.Context, p *plan.Plan, a *plan.Action) Outcome 
 		o.Status = StatusFailed
 	case r.opts.DryRun:
 		o.Status = StatusChecked
+		if a.Action == finding.ActionDockerRemoveContainer {
+			if r.containers == nil {
+				r.containers = map[string]bool{}
+			}
+			r.containers[a.Target] = true
+		}
 		if a.Path != "" && (a.Action == finding.ActionRemovePath || a.Action == finding.ActionGitWorktreeRemove) {
 			if r.checked == nil {
 				r.checked = map[string]bool{}
@@ -558,6 +577,16 @@ func truncate(s string) string {
 		return s
 	}
 	return s[:maxOutput] + "\n[output truncated]"
+}
+
+// closed reports whether a stop channel is closed. A nil channel never is.
+func closed(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
 }
 
 func errString(err error) string {

@@ -232,7 +232,7 @@ func (s *confirmScreen) view() frame {
 		}
 	}
 	head = append(head, "")
-	tail := make([]string, 0, 8)
+	tail := make([]string, 0, 4)
 	tail = append(tail, "", tierLine(pl))
 	for _, l := range wrapText("Every target is checked again right before it is removed: inside a scanned root, not a protected folder, "+
 		"not a project root, no symbolic link, still the same thing. Nothing is deleted until you confirm.", width) {
@@ -242,27 +242,51 @@ func (s *confirmScreen) view() frame {
 	if s.checking {
 		status = fmt.Sprintf("Checking %d of %d without removing anything...", len(s.results), len(pl.Actions))
 	}
-	if s.dryLog != "" && !s.checking {
-		status += "  Log: " + s.m.path(s.dryLog)
-	}
-	tail = append(tail, "")
+	var notes []string
 	for _, l := range wrapText(status, width) {
-		tail = append(tail, st.warn.Render(l))
+		notes = append(notes, st.warn.Render(l))
 	}
-	tail = append(tail, st.bold.Render(fmt.Sprintf("Type yes to remove these %s (%s): ", plural(len(pl.Actions), "item", "items"), sizeText(pl.TotalSize())))+s.input.View())
+	if s.dryLog != "" && !s.checking {
+		// On its own line, so the path can be selected in one piece.
+		notes = append(notes, st.dim.Render("Log: "+s.m.path(s.dryLog)))
+	}
+	prompt := st.bold.Render(fmt.Sprintf("Type yes to remove these %s (%s): ", plural(len(pl.Actions), "item", "items"), sizeText(pl.TotalSize()))) + s.input.View()
 
 	footer := s.m.footer(st.keys("yes enter", "remove", "d", "checks everything without removing", "up/down", "scroll", "esc", "back", "?", "help"))
-	room := max(s.m.bodyHeight(len(footer))-len(head)-len(tail), 3)
+	// The prompt always shows, under the plan with at least two lines of
+	// it. In a short window the explanations below the plan give way
+	// first, when the plan would show fewer than six lines with them, then
+	// the lines above it, then the notes over the prompt.
+	height := s.m.bodyHeight(len(footer))
+	bottom := append(append([]string{""}, notes...), prompt)
 	lines := s.planLines()
-	s.offset = min(s.offset, max(len(lines)-room, 0))
-	shown := lines[s.offset:min(s.offset+room, len(lines))]
-	if s.offset > 0 || s.offset+room < len(lines) {
-		shown = append([]string(nil), shown...)
-		if len(shown) > 0 {
-			shown[len(shown)-1] = st.dim.Render(fmt.Sprintf("  %d of %d lines; up and down scroll", min(s.offset+room, len(lines)), len(lines)))
-		}
+	const minRoom = 2
+	if len(head)+len(tail)+len(bottom)+min(len(lines), 6) > height {
+		tail = nil
+	}
+	if len(head)+len(bottom)+minRoom > height {
+		head = nil
+	}
+	for len(bottom) > 1 && len(bottom)+minRoom > height {
+		bottom = bottom[1:]
+	}
+	room := max(height-len(head)-len(tail)-len(bottom), 1)
+	scrolls := len(lines) > room
+	if scrolls && room >= minRoom {
+		// The last line of the room says where the list is.
+		room--
+	}
+	if scrolls {
+		s.offset = min(s.offset, len(lines)-room)
+	} else {
+		s.offset = 0
+	}
+	shown := append([]string(nil), lines[s.offset:min(s.offset+room, len(lines))]...)
+	if scrolls && len(shown) < height-len(head)-len(tail)-len(bottom) {
+		shown = append(shown, st.dim.Render(fmt.Sprintf("  lines %d to %d of %d; up and down scroll", s.offset+1, s.offset+len(shown), len(lines))))
 	}
 	body := append(append(head, shown...), tail...)
+	body = append(body, bottom...)
 	return frame{title: "Confirm", facts: plural(len(pl.Actions), "item", "items") + ", " + sizeText(pl.TotalSize()),
 		body: strings.Join(body, "\n"), footer: footer}
 }

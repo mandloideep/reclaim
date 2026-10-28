@@ -36,7 +36,7 @@ func dryRunFixture(t *testing.T, e env) (*plan.Plan, *execx.Fake, *dockerx.Fake)
 		Command: []string{"xcrun", "simctl", "runtime", "delete", runtime}}
 	p := newPlan([]string{e.root, e.home},
 		dockerAction(finding.ActionDockerRemoveContainer, "c-stopped", 10),
-		dockerAction(finding.ActionDockerRemoveImage, "sha256:old", 10),
+		withTags(dockerAction(finding.ActionDockerRemoveImage, "sha256:old", 10), "old:1"),
 		dockerAction(finding.ActionDockerRemoveVolume, "vol-free", 20),
 		dockerAction(finding.ActionDockerPruneBuildCache, "docker-build-cache", 300),
 		removeAction(nm, finding.KindDir),
@@ -67,7 +67,7 @@ func TestDryRunRemovesNothing(t *testing.T) {
 		o.Exec = ex
 		o.Docker = func() (dockerx.API, error) { return dk, nil }
 	})
-	require.ErrorContains(t, err, "3 of 11 actions would be refused")
+	require.ErrorContains(t, err, "2 of 11 actions would be refused")
 	require.True(t, sum.DryRun)
 	statuses := make([]Status, len(sum.Outcomes))
 	for i, o := range sum.Outcomes {
@@ -80,7 +80,7 @@ func TestDryRunRemovesNothing(t *testing.T) {
 		}
 	}
 	require.Equal(t, []Status{
-		StatusChecked, StatusRefused, StatusChecked, StatusChecked, // Docker: the image is in use
+		StatusChecked, StatusChecked, StatusChecked, StatusChecked, // Docker: the image is freed by the container before it
 		StatusChecked, StatusChecked, StatusRefused, StatusRefused, StatusGone, // paths
 		StatusChecked, StatusManual, // the clean command and the sudo one
 	}, statuses)
@@ -112,7 +112,7 @@ func TestDryRunRemovesNothing(t *testing.T) {
 	}
 	require.Equal(t, []string{CheckRules, CheckExcluded, CheckObject, CheckMounts, CheckLastLook}, names(sum.Outcomes[4].Checks))
 	require.Equal(t, []string{CheckAllowed, CheckExcluded, CheckTool, CheckLocation}, names(sum.Outcomes[9].Checks))
-	require.Equal(t, []string{CheckDaemon, CheckDockerUse}, names(sum.Outcomes[1].Checks), "the image in use fails at its use check")
+	require.Equal(t, []string{CheckDaemon, CheckDockerUse, CheckTags}, names(sum.Outcomes[1].Checks), "the image the container before it uses counts as unused")
 }
 
 // TestDryRunReportsWhatARealRunDoes runs the same plan dry and then for
@@ -121,9 +121,6 @@ func TestDryRunRemovesNothing(t *testing.T) {
 func TestDryRunReportsWhatARealRunDoes(t *testing.T) {
 	e := newEnv(t)
 	p, ex, dk := dryRunFixture(t, e)
-	// Removing the container would free its image for the real run, which a
-	// dry run cannot know, so this comparison leaves it out.
-	p.Actions = p.Actions[1:]
 	mod := func(dry bool) func(*Options) {
 		return func(o *Options) {
 			o.DryRun, o.KeepGoing = dry, true
@@ -140,8 +137,8 @@ func TestDryRunReportsWhatARealRunDoes(t *testing.T) {
 			require.Equal(t, dry.Outcomes[i].Err.Error(), actual.Outcomes[i].Err.Error(), "the same refusal")
 		}
 	}
-	require.False(t, exists(p.Actions[3].Path), "the real run removed what the dry run checked")
-	require.True(t, exists(p.Actions[6].Path), "and kept what it refused")
+	require.False(t, exists(p.Actions[4].Path), "the real run removed what the dry run checked")
+	require.True(t, exists(p.Actions[7].Path), "and kept what it refused")
 }
 
 // TestExcludedTargetsAreRefused proves apply refuses a target that is, lies

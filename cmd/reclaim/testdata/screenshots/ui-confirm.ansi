@@ -25,8 +25,8 @@ By tier: A 16.4 GB in 16 items.
 [2mEvery target is checked again right before it is removed: inside a scanned root, not a protected folder, not a project root,[0m
 [2mno symbolic link, still the same thing. Nothing is deleted until you confirm.[0m
 
-[33mChecked without removing anything: 16 ok, 0 gone, 0 for you to run, 0 refused.  Log: ~/Library/Caches/reclaim/logs/dry-run-[0m
-[33m20261005T093007Z.log[0m
+[33mChecked without removing anything: 16 ok, 0 gone, 0 for you to run, 0 refused.[0m
+[2mLog: ~/Library/Caches/reclaim/logs/dry-run-20261005T093007Z.log[0m
 [1mType yes to remove these 16 items (16.4 GB): [0m[7m [0m            
 
 

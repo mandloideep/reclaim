@@ -8,7 +8,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/mandloideep/reclaim/internal/finding"
+	"github.com/mandloideep/reclaim/internal/plan"
 	"github.com/mandloideep/reclaim/internal/ui"
+	"github.com/mandloideep/reclaim/internal/units"
 )
 
 // wideDetails is the narrowest window that shows the details pane to the
@@ -89,6 +91,12 @@ func (s *reviewScreen) key(msg tea.KeyMsg) tea.Cmd {
 		sel := s.tree.Selected()
 		if len(sel) == 0 {
 			s.status = "Nothing is selected; tick what should go first."
+			return nil
+		}
+		if age := s.m.opts.Now().Sub(s.report.Created); age > plan.MaxAge {
+			// apply refuses a plan whose scan is this old, because the disk
+			// may have changed, so the screen says so before anything else.
+			s.status = "This scan is " + units.FormatAge(age) + " old and apply refuses plans from scans older than " + units.FormatAge(plan.MaxAge) + "; scan again from Start."
 			return nil
 		}
 		s.saving = true

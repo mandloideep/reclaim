@@ -132,8 +132,10 @@ The Confirm screen lists the plan the way `reclaim apply` does, says what is che
 
 The Removing screen shows each action as it finishes, the one running with what it should free, the freed total against the plan and the free space of the disk; `ctrl+c` stops after the current action.
 The Done screen counts what happened, prints the commands that need `sudo` in full for you to run, repeats every failure with its reason, and names the log and the plan; `r` scans again.
+When the screen closes it prints what every run removed, and reclaim exits 1 when a run failed or was stopped.
 
 ![The reclaim removing screen with four actions done, one running and eleven waiting](docs/screenshots/ui-removing.svg)
+
 `P` on every screen lists what reclaim never removes, rendered from the tables its checks use, and `?` lists the keys.
 The screen itself never removes anything.
 

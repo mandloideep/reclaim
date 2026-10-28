@@ -41,5 +41,6 @@ func FreeSpace(path string) (int64, error) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return 0, fmt.Errorf("statfs %s: %w", path, err)
 	}
-	return int64(min(st.Bavail*uint64(st.Bsize), uint64(1<<62))), nil
+	// On Linux the free blocks are counted in fragments, as df counts them.
+	return int64(min(st.Bavail*uint64(st.Frsize), uint64(1<<62))), nil
 }

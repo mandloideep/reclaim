@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -76,8 +75,9 @@ func (s *removingScreen) readFree() int64 {
 
 func (s *removingScreen) key(msg tea.KeyMsg) tea.Cmd {
 	if msg.String() == "ctrl+c" && !s.stopping {
-		// apply.Run checks the context between actions, so the current
-		// action finishes and the rest are marked not run.
+		// The backend turns the canceled context into apply's stop signal,
+		// checked between actions, so the current action finishes and the
+		// rest are marked not run.
 		s.stopping = true
 		s.m.stopRun()
 	}
@@ -187,13 +187,7 @@ func (s *removingScreen) view() frame {
 			continue
 		}
 		rows = append(rows, "  "+statusWord(st, o.Status)+padLeft(freedText(o), 9)+"  "+p.ActionLine(&o.Action))
-		if o.Err != nil && o.Status != apply.StatusNotRun {
-			err := o.Err
-			if o.Refusal != nil {
-				err = errors.New("refused at " + o.Refusal.Check + ": " + o.Refusal.Detail)
-			}
-			rows = append(rows, s.m.errorLines(err, strings.Repeat(" ", 22))...)
-		}
+		rows = append(rows, s.m.outcomeLines(o, strings.Repeat(" ", 22))...)
 	}
 	if s.running >= 0 && s.running < total {
 		a := &pl.Actions[s.running]
@@ -211,7 +205,7 @@ func (s *removingScreen) view() frame {
 	case s.stopping:
 		footer = []string{st.warn.Render("Stopping after the current action; the rest are marked not run.")}
 	default:
-		footer = s.m.footer(st.keys("ctrl+c", "stops after the current action"))
+		footer = s.m.footer(st.keys("ctrl+c", "stops after the current action", "?", "help"))
 	}
 	if s.logPath != "" {
 		footer = append(footer, st.dim.Render("log: "+s.m.path(s.logPath)))
@@ -259,14 +253,25 @@ func (s *removingScreen) doneView() frame {
 			continue
 		}
 		failed = append(failed, "  "+p.ActionLine(&o.Action))
-		failed = append(failed, s.m.errorLines(o.Err, "    ")...)
+		failed = append(failed, s.m.outcomeLines(o, "    ")...)
 	}
 	if len(failed) > 0 {
 		body = append(body, "", st.bold.Render("Failed:"))
 		body = append(body, failed...)
 	}
-	if s.err != nil && strings.Contains(s.err.Error(), "interrupted") {
+	switch {
+	case s.err != nil && strings.Contains(s.err.Error(), "interrupted"):
 		body = append(body, "", st.warn.Render("Stopped with ctrl+c: the actions not run are still in the plan file."))
+	case s.err != nil && len(s.summary.Outcomes) == 0:
+		// The run never started, such as for a plan apply refuses as
+		// stale, so nothing was removed and the reason is all there is.
+		body = append(body, "", st.bold.Render("Nothing was applied:"))
+		body = append(body, s.m.errorLines(s.err, "  ")...)
+	case s.err != nil && s.summary.Failed == 0:
+		// An error no failed action explains, such as a log that could
+		// not be written, is shown rather than lost.
+		body = append(body, "", st.bold.Render("The run ended with an error:"))
+		body = append(body, s.m.errorLines(s.err, "  ")...)
 	}
 	body = append(body, "")
 	if s.summary.LogPath != "" {
@@ -314,6 +319,35 @@ func sudoCommands(sum apply.Summary) []string {
 		}
 	}
 	return out
+}
+
+// outcomeLines are the lines under a row of the Removing and Done screens:
+// for a failure, the check that failed and why, with the hints and the
+// --force command of a refused worktree; for a worktree that was removed,
+// its checks by name.
+func (m *Model) outcomeLines(o apply.Outcome, indent string) []string {
+	var out []string
+	switch {
+	case o.Status == apply.StatusNotRun:
+	case o.Err != nil:
+		if failedCheck := lastFailed(o.Checks); failedCheck != "" {
+			out = append(out, indent+m.st.bad.Render("refused at "+failedCheck))
+		}
+		out = append(out, m.errorLines(o.Err, indent)...)
+	case o.Action.Action == finding.ActionGitWorktreeRemove && len(o.Checks) > 0:
+		for _, l := range wrapText(checkNames(o.Checks), m.width-len(indent)-2) {
+			out = append(out, indent+m.st.dim.Render(l))
+		}
+	}
+	return out
+}
+
+// lastFailed names the check that failed, the last one, if any did.
+func lastFailed(cs []apply.Check) string {
+	if len(cs) == 0 || cs[len(cs)-1].OK {
+		return ""
+	}
+	return cs[len(cs)-1].Name
 }
 
 // errorLines renders an error under its row: every line of it, with the

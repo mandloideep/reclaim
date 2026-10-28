@@ -48,7 +48,14 @@ func (r *runner) dockerAction(ctx context.Context, a *plan.Action) Outcome {
 	case finding.ActionDockerRemoveContainer:
 		err = removeContainer(ctx, cli, a.Target, dry, &c)
 	case finding.ActionDockerRemoveImage:
-		err = removeImage(ctx, cli, a.Target, a.Tags, dry, &c)
+		// A dry run removes no container, so the containers it checked
+		// earlier in the plan, which the real run removes first, do not
+		// keep the image in use.
+		var removedFirst map[string]bool
+		if dry {
+			removedFirst = r.containers
+		}
+		err = removeImage(ctx, cli, a.Target, a.Tags, dry, removedFirst, &c)
 	case finding.ActionDockerRemoveVolume:
 		err = removeVolume(ctx, cli, a.Target, dry, &c)
 	case finding.ActionDockerPruneBuildCache:
@@ -106,7 +113,7 @@ func removeContainer(ctx context.Context, cli dockerx.API, id string, dry bool, 
 // removeImage removes an image that no container uses. It removes each tag
 // first and then the image id, never forcing, so the daemon refuses anything
 // still referenced.
-func removeImage(ctx context.Context, cli dockerx.API, id string, planned []string, dry bool, c *checks) error {
+func removeImage(ctx context.Context, cli dockerx.API, id string, planned []string, dry bool, removedFirst map[string]bool, c *checks) error {
 	img, err := cli.ImageInspect(ctx, id)
 	if dockerx.IsNotFound(err) {
 		c.pass(CheckDockerUse, "image "+id+" no longer exists")
@@ -120,7 +127,7 @@ func removeImage(ctx context.Context, cli dockerx.API, id string, planned []stri
 		return failed(c, CheckDockerUse, fmt.Errorf("list containers: %w", err))
 	}
 	for _, ct := range containers {
-		if ct.ImageID == img.ID {
+		if ct.ImageID == img.ID && !removedFirst[ct.ID] {
 			return failed(c, CheckDockerUse, fmt.Errorf("refusing image %s: container %s uses it now", id, strings.TrimPrefix(firstOr(ct.Names, ct.ID), "/")))
 		}
 	}
